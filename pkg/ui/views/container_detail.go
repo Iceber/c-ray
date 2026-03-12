@@ -98,7 +98,7 @@ func (v *ContainerDetailView) setupLayout() {
 	v.processTreeView = NewProcessTreeView(v.app, v.rt, v.ctx)
 	v.mountsView = NewMountsView(v.app, v.rt, v.ctx)
 	v.imageLayersView = NewImageLayersView(v.app, v.rt, v.ctx)
-	v.runtimeInfoView = NewRuntimeInfoView()
+	v.runtimeInfoView = NewRuntimeInfoView(v.rt)
 
 	v.tabContent.AddPage("top", v.topView, true, true)
 	v.tabContent.AddPage("process_tree", v.processTreeView, true, false)
@@ -131,6 +131,7 @@ func (v *ContainerDetailView) SetContainer(containerID string) {
 	v.processTreeView.SetContainer(containerID)
 	v.mountsView.SetContainer(containerID)
 	v.imageLayersView.SetContainer(containerID)
+	v.runtimeInfoView.SetContainer(containerID)
 
 	// Load overview data asynchronously to avoid blocking UI
 	go v.Refresh()
@@ -168,10 +169,7 @@ func (v *ContainerDetailView) Refresh() {
 
 	v.detail = detail
 
-	// Pass detail to sub-views that need it
-	v.mountsView.SetDetail(detail)
 	v.imageLayersView.SetDetail(detail)
-	v.runtimeInfoView.SetDetail(detail)
 
 	v.app.QueueUpdateDraw(func() {
 		v.renderTitle()
@@ -241,80 +239,16 @@ func (v *ContainerDetailView) renderOverview() {
 	// Section 2: Process Info
 	processItems := []components.InfoItem{
 		{Label: "Host PID:", Value: fmt.Sprintf("%d", v.detail.PID)},
-		{Label: "Process Count:", Value: fmt.Sprintf("%d", v.detail.ProcessCount)},
-	}
-	if v.detail.ShimPID > 0 {
-		processItems = append(processItems, components.InfoItem{
-			Label: "Shim PID:", Value: fmt.Sprintf("%d", v.detail.ShimPID),
-		})
 	}
 	sections = append(sections, components.InfoSection{Title: "Process", Items: processItems})
 
-	// Section 3: CGroup Info
-	if v.detail.CGroupPath != "" {
-		cgroupItems := []components.InfoItem{
-			{Label: "CGroup Path:", Value: v.detail.CGroupPath},
-			{Label: "CGroup Version:", Value: fmt.Sprintf("v%d", v.detail.CGroupVersion)},
-		}
-		if v.detail.CGroupLimits != nil {
-			limits := v.detail.CGroupLimits
-			if limits.CPUQuota > 0 && limits.CPUPeriod > 0 {
-				cpuCores := float64(limits.CPUQuota) / float64(limits.CPUPeriod)
-				cgroupItems = append(cgroupItems, components.InfoItem{
-					Label: "CPU Limit:", Value: fmt.Sprintf("%.2f cores (%d/%d us)", cpuCores, limits.CPUQuota, limits.CPUPeriod),
-				})
-			}
-			if limits.CPUShares > 0 {
-				cgroupItems = append(cgroupItems, components.InfoItem{
-					Label: "CPU Shares:", Value: fmt.Sprintf("%d", limits.CPUShares),
-				})
-			}
-			if limits.MemoryLimit > 0 {
-				cgroupItems = append(cgroupItems, components.InfoItem{
-					Label: "Memory Limit:", Value: formatBytes(limits.MemoryLimit),
-				})
-			}
-			if limits.MemoryUsage > 0 {
-				cgroupItems = append(cgroupItems, components.InfoItem{
-					Label: "Memory Usage:", Value: formatBytes(limits.MemoryUsage),
-				})
-			}
-			if limits.PidsLimit > 0 {
-				cgroupItems = append(cgroupItems, components.InfoItem{
-					Label: "PIDs Limit:", Value: fmt.Sprintf("%d (current: %d)", limits.PidsLimit, limits.PidsCurrent),
-				})
-			}
-		}
-		sections = append(sections, components.InfoSection{Title: "CGroup", Items: cgroupItems})
-	}
-
-	// Section 4: Image Info
+	// Section 3: Image Info
 	imageItems := []components.InfoItem{
 		{Label: "Image:", Value: v.detail.ImageName},
 	}
-	if len(v.detail.ImageLayers) > 0 {
-		imageItems = append(imageItems, components.InfoItem{
-			Label: "Read-Only Layers:", Value: fmt.Sprintf("%d", len(v.detail.ImageLayers)),
-		})
-	}
-	if v.detail.ReadOnlyLayerPath != "" {
-		imageItems = append(imageItems, components.InfoItem{
-			Label: "RO Layer Path:", Value: v.detail.ReadOnlyLayerPath,
-		})
-	}
-	if v.detail.WritableLayerPath != "" {
-		imageItems = append(imageItems, components.InfoItem{
-			Label: "RW Layer Path:", Value: v.detail.WritableLayerPath,
-		})
-	}
-	if v.detail.MountCount > 0 {
-		imageItems = append(imageItems, components.InfoItem{
-			Label: "Mount Count:", Value: fmt.Sprintf("%d", v.detail.MountCount),
-		})
-	}
 	sections = append(sections, components.InfoSection{Title: "Image", Items: imageItems})
 
-	// Section 5: Pod Info (if applicable)
+	// Section 4: Pod Info (if applicable)
 	if v.detail.PodName != "" {
 		podItems := []components.InfoItem{
 			{Label: "Pod Name:", Value: v.detail.PodName},
@@ -370,6 +304,8 @@ func (v *ContainerDetailView) HandleInput(event *tcell.EventKey) *tcell.EventKey
 			go v.mountsView.Refresh(v.ctx)
 		case DetailTabImageLayers:
 			go v.imageLayersView.Refresh(v.ctx)
+		case DetailTabRuntime:
+			go v.runtimeInfoView.Refresh(v.ctx)
 		}
 		return nil
 	// Tab switching
@@ -428,6 +364,7 @@ func (v *ContainerDetailView) switchTab(tab DetailTab) {
 		v.app.SetFocus(v.imageLayersView.GetFocusPrimitive())
 	case DetailTabRuntime:
 		v.tabContent.SwitchToPage("runtime")
+		go v.runtimeInfoView.Refresh(v.ctx)
 		v.app.SetFocus(v.runtimeInfoView.GetFocusPrimitive())
 	}
 	v.updateTabBar()

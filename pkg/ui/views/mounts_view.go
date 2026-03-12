@@ -26,7 +26,6 @@ type MountsView struct {
 
 	containerID string
 	mounts      []*models.Mount
-	detail      *models.ContainerDetail
 	mu          sync.Mutex
 }
 
@@ -65,13 +64,6 @@ func (v *MountsView) SetContainer(containerID string) {
 	v.mu.Unlock()
 }
 
-// SetDetail sets the container detail (for image/layer info)
-func (v *MountsView) SetDetail(detail *models.ContainerDetail) {
-	v.mu.Lock()
-	v.detail = detail
-	v.mu.Unlock()
-}
-
 // Refresh loads and displays mount data
 func (v *MountsView) Refresh(ctx context.Context) error {
 	v.mu.Lock()
@@ -100,27 +92,10 @@ func (v *MountsView) render() {
 	v.mu.Lock()
 	mounts := make([]*models.Mount, len(v.mounts))
 	copy(mounts, v.mounts)
-	detail := v.detail
 	v.mu.Unlock()
 
 	v.app.QueueUpdateDraw(func() {
 		v.table.ClearData()
-
-		// Show image/layer info as header rows if detail is available
-		if detail != nil {
-			if detail.ImageName != "" {
-				v.table.AddRow("(image)", detail.ImageName, "image", "")
-				v.table.SetRowColor(v.table.DataRowCount()-1, tcell.ColorAqua)
-			}
-			if detail.WritableLayerPath != "" {
-				v.table.AddRow("(rw-layer)", detail.WritableLayerPath, "overlay", "read-write")
-				v.table.SetRowColor(v.table.DataRowCount()-1, tcell.ColorYellow)
-			}
-			if detail.ReadOnlyLayerPath != "" {
-				v.table.AddRow("(ro-layer)", detail.ReadOnlyLayerPath, "overlay", "read-only")
-				v.table.SetRowColor(v.table.DataRowCount()-1, tcell.ColorGray)
-			}
-		}
 
 		// Show mounts
 		for _, m := range mounts {

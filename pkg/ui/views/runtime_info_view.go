@@ -1,12 +1,14 @@
 package views
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/models"
+	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/rivo/tview"
 )
@@ -15,17 +17,20 @@ import (
 type RuntimeInfoView struct {
 	*tview.Flex
 
+	rt        runtime.Runtime
 	infoPanel *components.InfoPanel
 	statusBar *tview.TextView
 
-	detail *models.ContainerDetail
-	mu     sync.Mutex
+	containerID string
+	detail      *models.ContainerDetail
+	mu          sync.Mutex
 }
 
 // NewRuntimeInfoView creates a new runtime info view
-func NewRuntimeInfoView() *RuntimeInfoView {
+func NewRuntimeInfoView(rt runtime.Runtime) *RuntimeInfoView {
 	v := &RuntimeInfoView{
 		Flex: tview.NewFlex().SetDirection(tview.FlexRow),
+		rt:   rt,
 	}
 
 	v.infoPanel = components.NewInfoPanel()
@@ -40,12 +45,34 @@ func NewRuntimeInfoView() *RuntimeInfoView {
 	return v
 }
 
-// SetDetail sets the container detail and renders
-func (v *RuntimeInfoView) SetDetail(detail *models.ContainerDetail) {
+// SetContainer sets the container ID and clears cached data.
+func (v *RuntimeInfoView) SetContainer(containerID string) {
+	v.mu.Lock()
+	v.containerID = containerID
+	v.detail = nil
+	v.mu.Unlock()
+}
+
+// Refresh loads runtime data on demand.
+func (v *RuntimeInfoView) Refresh(ctx context.Context) error {
+	v.mu.Lock()
+	containerID := v.containerID
+	v.mu.Unlock()
+
+	if containerID == "" {
+		return nil
+	}
+
+	detail, err := v.rt.GetContainerRuntimeInfo(ctx, containerID)
+	if err != nil {
+		return err
+	}
+
 	v.mu.Lock()
 	v.detail = detail
 	v.mu.Unlock()
 	v.render()
+	return nil
 }
 
 // render updates the info panel with runtime data

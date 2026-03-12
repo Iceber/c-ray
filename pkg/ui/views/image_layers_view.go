@@ -24,6 +24,7 @@ type ImageLayersView struct {
 
 	containerID string
 	detail      *models.ContainerDetail
+	runtimeInfo *models.ContainerDetail
 	layers      []*models.ImageLayer
 	configInfo  *models.ImageConfigInfo
 	mu          sync.Mutex
@@ -68,6 +69,9 @@ func NewImageLayersView(app *tview.Application, rt runtime.Runtime, ctx context.
 func (v *ImageLayersView) SetContainer(containerID string) {
 	v.mu.Lock()
 	v.containerID = containerID
+	v.runtimeInfo = nil
+	v.layers = nil
+	v.configInfo = nil
 	v.mu.Unlock()
 }
 
@@ -81,11 +85,30 @@ func (v *ImageLayersView) SetDetail(detail *models.ContainerDetail) {
 // Refresh loads and displays image layer data
 func (v *ImageLayersView) Refresh(ctx context.Context) error {
 	v.mu.Lock()
+	id := v.containerID
 	detail := v.detail
 	v.mu.Unlock()
 
-	if detail == nil || detail.Image == "" {
+	if id == "" || detail == nil || detail.Image == "" {
 		return nil
+	}
+
+	runtimeInfo, err := v.rt.GetContainerRuntimeInfo(ctx, id)
+	if err != nil {
+		v.mu.Lock()
+		v.runtimeInfo = nil
+		v.mu.Unlock()
+	} else {
+		v.mu.Lock()
+		v.runtimeInfo = runtimeInfo
+		v.mu.Unlock()
+	}
+
+	snapshotter := detail.Snapshotter
+	rwSnapshotKey := detail.SnapshotKey
+	if runtimeInfo != nil {
+		snapshotter = runtimeInfo.Snapshotter
+		rwSnapshotKey = runtimeInfo.SnapshotKey
 	}
 
 	// Get image config info
@@ -97,7 +120,7 @@ func (v *ImageLayersView) Refresh(ctx context.Context) error {
 	}
 
 	// Get layers with snapshot info (pass snapshotter and RW key from container detail)
-	layers, err := v.rt.GetImageLayers(ctx, detail.Image, detail.Snapshotter, detail.SnapshotKey)
+	layers, err := v.rt.GetImageLayers(ctx, detail.Image, snapshotter, rwSnapshotKey)
 	if err != nil {
 		v.mu.Lock()
 		v.layers = nil
@@ -117,7 +140,7 @@ func (v *ImageLayersView) Refresh(ctx context.Context) error {
 // render builds and displays the image layers tree
 func (v *ImageLayersView) render() {
 	v.mu.Lock()
-	detail := v.detail
+	runtimeInfo := v.runtimeInfo
 	layers := v.layers
 	configInfo := v.configInfo
 	v.mu.Unlock()
@@ -134,14 +157,14 @@ func (v *ImageLayersView) render() {
 		}
 
 		// 2. RW Layer Section
-		if detail != nil && detail.RuntimeProfile != nil && detail.RuntimeProfile.RootFS != nil {
-			rootFSNode := v.createRootFSNode(detail.RuntimeProfile.RootFS)
+		if runtimeInfo != nil && runtimeInfo.RuntimeProfile != nil && runtimeInfo.RuntimeProfile.RootFS != nil {
+			rootFSNode := v.createRootFSNode(runtimeInfo.RuntimeProfile.RootFS)
 			rootNode.AddChild(rootFSNode)
 		}
 
 		// 3. RW Layer Section
-		if detail != nil && detail.SnapshotKey != "" {
-			rwNode := v.createRWNode(detail)
+		if runtimeInfo != nil && runtimeInfo.SnapshotKey != "" {
+			rwNode := v.createRWNode(runtimeInfo)
 			rootNode.AddChild(rwNode)
 		}
 

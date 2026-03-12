@@ -272,7 +272,7 @@ func testListPods(ctx context.Context, rt runtime.Runtime) {
 
 func testContainerDetail(ctx context.Context, rt runtime.Runtime, containerID string) {
 	fmt.Printf("=== Container Detail: %s ===\n", containerID)
-	detail, err := rt.GetContainerDetail(ctx, containerID)
+	detail, err := rt.GetContainerRuntimeInfo(ctx, containerID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -478,7 +478,7 @@ func testContainerLayers(ctx context.Context, rt runtime.Runtime, containerID st
 	fmt.Printf("=== Container Layers: %s ===\n\n", containerID)
 
 	// Get container detail to extract image, snapshotter and snapshot key
-	detail, err := rt.GetContainerDetail(ctx, containerID)
+	detail, err := rt.GetContainerRuntimeInfo(ctx, containerID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error getting container detail: %v\n", err)
 		os.Exit(1)

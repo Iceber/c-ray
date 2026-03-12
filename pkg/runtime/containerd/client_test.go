@@ -15,6 +15,7 @@ import (
 	"github.com/containerd/typeurl/v2"
 	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/icebergu/c-ray/pkg/sysinfo"
+	ocispec "github.com/opencontainers/runtime-spec/specs-go"
 )
 
 func TestNewContainerdRuntime(t *testing.T) {
@@ -302,6 +303,47 @@ func TestResolveRuntimeBinaryPathPrefersRuntimeOptionsBinaryName(t *testing.T) {
 	}
 	if source != "runtime-options" {
 		t.Fatalf("resolveRuntimeBinaryPath() source = %s", source)
+	}
+}
+
+func TestBuildContainerFromInfoShortIDFallback(t *testing.T) {
+	rt := &ContainerdRuntime{}
+	container := rt.buildContainerFromInfo(containers.Container{
+		ID:    "short-id",
+		Image: "example:v1",
+		Labels: map[string]string{
+			"io.kubernetes.pod.name":      "pod-a",
+			"io.kubernetes.pod.namespace": "default",
+		},
+	})
+
+	if container.Name != "short-id" {
+		t.Fatalf("buildContainerFromInfo().Name = %s, want short-id", container.Name)
+	}
+	if container.PodName != "pod-a" || container.PodNamespace != "default" {
+		t.Fatalf("buildContainerFromInfo() pod labels not preserved: %+v", container)
+	}
+}
+
+func TestBuildMountsFromSpec(t *testing.T) {
+	mounts := buildMountsFromSpec([]ocispec.Mount{{
+		Destination: "/data",
+		Source:      "/var/lib/data",
+		Type:        "bind",
+		Options:     []string{"rbind", "ro"},
+	}})
+
+	if len(mounts) != 1 {
+		t.Fatalf("buildMountsFromSpec() len = %d, want 1", len(mounts))
+	}
+	if mounts[0].Destination != "/data" || mounts[0].Source != "/var/lib/data" || mounts[0].Type != "bind" {
+		t.Fatalf("buildMountsFromSpec() mount = %+v", mounts[0])
+	}
+
+	mounts[0].Options[0] = "changed"
+	original := buildMountsFromSpec([]ocispec.Mount{{Options: []string{"rbind"}}})
+	if original[0].Options[0] != "rbind" {
+		t.Fatal("buildMountsFromSpec() should copy mount options")
 	}
 }
 

@@ -21,8 +21,11 @@ type Runtime interface {
 	// GetContainer returns a specific container by ID
 	GetContainer(ctx context.Context, id string) (*models.Container, error)
 
-	// GetContainerDetail returns detailed information about a container
+	// GetContainerDetail returns overview information for the container detail page
 	GetContainerDetail(ctx context.Context, id string) (*models.ContainerDetail, error)
+
+	// GetContainerRuntimeInfo returns runtime-specific detail for on-demand subviews
+	GetContainerRuntimeInfo(ctx context.Context, id string) (*models.ContainerDetail, error)
 
 	// ListImages returns all images
 	ListImages(ctx context.Context) ([]*models.Image, error)

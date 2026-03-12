@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	runcoptions "github.com/containerd/containerd/api/types/runc/options"
 	"github.com/containerd/containerd/v2/client"
@@ -111,32 +110,8 @@ func (r *ContainerdRuntime) convertContainer(ctx context.Context, c client.Conta
 		return nil, fmt.Errorf("failed to get container info: %w", err)
 	}
 
-	container := &models.Container{
-		ID:        info.ID,
-		Image:     info.Image,
-		CreatedAt: info.CreatedAt,
-		Labels:    info.Labels,
-	}
-
-	// Extract name from labels (k8s uses io.kubernetes.container.name)
-	if name, ok := info.Labels["io.kubernetes.container.name"]; ok {
-		container.Name = name
-	} else if name, ok := info.Labels["name"]; ok {
-		container.Name = name
-	} else {
-		container.Name = info.ID[:12] // Use short ID as fallback
-	}
-
-	// Extract Pod information from labels
-	if podName, ok := info.Labels["io.kubernetes.pod.name"]; ok {
-		container.PodName = podName
-	}
-	if podNamespace, ok := info.Labels["io.kubernetes.pod.namespace"]; ok {
-		container.PodNamespace = podNamespace
-	}
-	if podUID, ok := info.Labels["io.kubernetes.pod.uid"]; ok {
-		container.PodUID = podUID
-	}
+	containerValue := r.buildContainerFromInfo(info)
+	container := &containerValue
 
 	// Get task to determine status and PID
 	task, err := c.Task(ctx, nil)
@@ -146,17 +121,7 @@ func (r *ContainerdRuntime) convertContainer(ctx context.Context, c client.Conta
 		return container, nil
 	}
 
-	// Get task status
-	status, err := task.Status(ctx)
-	if err == nil {
-		container.Status = convertStatus(string(status.Status))
-		if string(status.Status) == "running" {
-			container.StartedAt = time.Now() // TODO: Get actual start time
-		}
-	}
-
-	// Get PID
-	container.PID = task.Pid()
+	r.populateContainerTaskState(ctx, task, container)
 
 	return container, nil
 }
@@ -183,12 +148,34 @@ func (r *ContainerdRuntime) GetContainer(ctx context.Context, id string) (*model
 		return nil, fmt.Errorf("client not connected")
 	}
 
+	c, err := r.loadContainer(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.convertContainer(ctx, c)
+}
+
+func (r *ContainerdRuntime) loadContainer(ctx context.Context, id string) (client.Container, error) {
 	c, err := r.client.LoadContainer(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load container %s: %w", id, err)
 	}
+	return c, nil
+}
 
-	return r.convertContainer(ctx, c)
+func (r *ContainerdRuntime) loadRunningTask(ctx context.Context, id string) (client.Container, client.Task, error) {
+	c, err := r.loadContainer(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	task, err := c.Task(ctx, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("container is not running")
+	}
+
+	return c, task, nil
 }
 
 // GetContainerDetail returns detailed information about a container
@@ -197,10 +184,41 @@ func (r *ContainerdRuntime) GetContainerDetail(ctx context.Context, id string) (
 		return nil, fmt.Errorf("client not connected")
 	}
 
-	// Load container
-	c, err := r.client.LoadContainer(ctx, id)
+	c, err := r.loadContainer(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load container %s: %w", id, err)
+		return nil, err
+	}
+
+	info, err := c.Info(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get container info: %w", err)
+	}
+
+	detail := &models.ContainerDetail{
+		Container: r.buildContainerFromInfo(info),
+		ImageName: info.Image,
+	}
+
+	task, err := c.Task(ctx, nil)
+	if err == nil {
+		r.populateContainerTaskState(ctx, task, &detail.Container)
+	} else {
+		detail.Status = models.ContainerStatusStopped
+	}
+
+	return detail, nil
+}
+
+// GetContainerRuntimeInfo returns runtime-specific detail for on-demand subviews.
+func (r *ContainerdRuntime) GetContainerRuntimeInfo(ctx context.Context, id string) (*models.ContainerDetail, error) {
+	if r.client == nil {
+		return nil, fmt.Errorf("client not connected")
+	}
+
+	// Load container
+	c, err := r.loadContainer(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 
 	info, err := c.Info(ctx)
@@ -227,35 +245,11 @@ func (r *ContainerdRuntime) GetContainerDetail(ctx context.Context, id string) (
 		detail.CGroupPath = spec.Linux.CgroupsPath
 	}
 
-	// Extract mounts
-	if spec.Mounts != nil {
-		detail.Mounts = make([]*models.Mount, 0, len(spec.Mounts))
-		for _, m := range spec.Mounts {
-			detail.Mounts = append(detail.Mounts, &models.Mount{
-				Source:      m.Source,
-				Destination: m.Destination,
-				Type:        m.Type,
-				Options:     m.Options,
-			})
-		}
-		detail.MountCount = len(detail.Mounts)
-	}
-
 	// Get task info
 	var shimProc *shimProcessInfo
 	task, err := c.Task(ctx, nil)
 	if err == nil {
-		// Get task PID
-		detail.PID = task.Pid()
-
-		if status, statusErr := task.Status(ctx); statusErr == nil {
-			detail.Status = convertStatus(string(status.Status))
-			if string(status.Status) == "running" {
-				detail.StartedAt = time.Now()
-			}
-		} else {
-			detail.Status = models.ContainerStatusUnknown
-		}
+		r.populateContainerTaskState(ctx, task, &detail.Container)
 
 		shimProc = r.getShimProcessInfo(detail.PID)
 		if shimProc != nil {
@@ -310,6 +304,10 @@ func (r *ContainerdRuntime) GetContainerDetail(ctx context.Context, id string) (
 			mountRootFSPath = r.resolveMountRootFSPath(mounts)
 		}
 	}
+	if detail.MountCount == 0 {
+		detail.Mounts = buildMountsFromSpec(spec.Mounts)
+		detail.MountCount = len(detail.Mounts)
+	}
 
 	// Count processes
 	if detail.PID > 0 && r.processCollector != nil {
@@ -347,6 +345,36 @@ func (r *ContainerdRuntime) buildContainerFromInfo(info containers.Container) mo
 	container.PodUID = info.Labels["io.kubernetes.pod.uid"]
 
 	return container
+}
+
+func (r *ContainerdRuntime) populateContainerTaskState(ctx context.Context, task client.Task, container *models.Container) {
+	container.PID = task.Pid()
+
+	status, err := task.Status(ctx)
+	if err != nil {
+		container.Status = models.ContainerStatusUnknown
+		return
+	}
+
+	container.Status = convertStatus(string(status.Status))
+}
+
+func buildMountsFromSpec(specMounts []runtimespec.Mount) []*models.Mount {
+	if len(specMounts) == 0 {
+		return nil
+	}
+
+	mounts := make([]*models.Mount, 0, len(specMounts))
+	for _, m := range specMounts {
+		mounts = append(mounts, &models.Mount{
+			Source:      m.Source,
+			Destination: m.Destination,
+			Type:        m.Type,
+			Options:     append([]string(nil), m.Options...),
+		})
+	}
+
+	return mounts
 }
 
 type shimProcessInfo struct {
@@ -1090,18 +1118,13 @@ func (r *ContainerdRuntime) GetContainerProcesses(ctx context.Context, id string
 		return nil, fmt.Errorf("process collector not initialized")
 	}
 
-	// Get container to find PID
-	container, err := r.GetContainer(ctx, id)
+	_, task, err := r.loadRunningTask(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
-	if container.PID == 0 {
-		return nil, fmt.Errorf("container is not running")
-	}
-
 	// Collect processes
-	return r.processCollector.CollectContainerProcesses(container.PID)
+	return r.processCollector.CollectContainerProcesses(task.Pid())
 }
 
 // GetContainerTop returns top-like process information
@@ -1114,27 +1137,19 @@ func (r *ContainerdRuntime) GetContainerTop(ctx context.Context, id string) (*mo
 		return nil, fmt.Errorf("process collector not initialized")
 	}
 
-	// Get container to find PID
-	container, err := r.GetContainer(ctx, id)
+	c, task, err := r.loadRunningTask(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
-	if container.PID == 0 {
-		return nil, fmt.Errorf("container is not running")
-	}
-
 	// Get cgroup path from OCI spec for CPU/memory limit context
 	var cgroupPath string
-	c, err := r.client.LoadContainer(ctx, id)
-	if err == nil {
-		if spec, err := c.Spec(ctx); err == nil && spec.Linux != nil {
-			cgroupPath = spec.Linux.CgroupsPath
-		}
+	if spec, err := c.Spec(ctx); err == nil && spec.Linux != nil {
+		cgroupPath = spec.Linux.CgroupsPath
 	}
 
 	// Collect top information with rate calculation
-	return r.processCollector.CollectProcessTop(container.PID, cgroupPath)
+	return r.processCollector.CollectProcessTop(task.Pid(), cgroupPath)
 }
 
 // GetContainerMounts returns mount information for a container
@@ -1147,16 +1162,11 @@ func (r *ContainerdRuntime) GetContainerMounts(ctx context.Context, id string) (
 		return nil, fmt.Errorf("mount reader not initialized")
 	}
 
-	// Get container to find PID
-	container, err := r.GetContainer(ctx, id)
+	_, task, err := r.loadRunningTask(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
-	if container.PID == 0 {
-		return nil, fmt.Errorf("container is not running")
-	}
-
 	// Read mounts
-	return r.mountReader.ReadMounts(int(container.PID))
+	return r.mountReader.ReadMounts(int(task.Pid()))
 }
