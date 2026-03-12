@@ -134,12 +134,18 @@ func (v *ImageLayersView) render() {
 		}
 
 		// 2. RW Layer Section
+		if detail != nil && detail.RuntimeProfile != nil && detail.RuntimeProfile.RootFS != nil {
+			rootFSNode := v.createRootFSNode(detail.RuntimeProfile.RootFS)
+			rootNode.AddChild(rootFSNode)
+		}
+
+		// 3. RW Layer Section
 		if detail != nil && detail.SnapshotKey != "" {
 			rwNode := v.createRWNode(detail)
 			rootNode.AddChild(rwNode)
 		}
 
-		// 3. Read-Only Layers Section (top to base)
+		// 4. Read-Only Layers Section (top to base)
 		if len(layers) > 0 {
 			roNode := v.createReadOnlyLayersNode(layers)
 			rootNode.AddChild(roNode)
@@ -149,6 +155,22 @@ func (v *ImageLayersView) render() {
 		v.tree.SetCurrentNode(rootNode)
 		v.updateStatusBar()
 	})
+}
+
+// createRootFSNode creates a node with resolved rootfs paths.
+func (v *ImageLayersView) createRootFSNode(rootFS *models.RootFSInfo) *tview.TreeNode {
+	rootFSNode := tview.NewTreeNode("[aqua::b]RootFS[-:-:-]").
+		SetSelectable(true).
+		SetExpanded(true)
+
+	if rootFS.BundleRootFSPath != "" {
+		rootFSNode.AddChild(tview.NewTreeNode(fmt.Sprintf("[gray]Bundle RootFS: [darkcyan]%s", rootFS.BundleRootFSPath)).SetSelectable(false))
+	}
+	if rootFS.MountRootFSPath != "" {
+		rootFSNode.AddChild(tview.NewTreeNode(fmt.Sprintf("[gray]Mounted RootFS: [darkcyan]%s", rootFS.MountRootFSPath)).SetSelectable(false))
+	}
+
+	return rootFSNode
 }
 
 // createConfigNode creates the Image Config info node

@@ -59,6 +59,7 @@ func (v *RuntimeInfoView) render() {
 	}
 
 	sections := []components.InfoSection{}
+	profile := detail.RuntimeProfile
 
 	// Section 1: Runtime Process
 	processSection := components.InfoSection{
@@ -72,19 +73,56 @@ func (v *RuntimeInfoView) render() {
 			Label: "Shim PID:", Value: fmt.Sprintf("%d", detail.ShimPID),
 		})
 	}
+	if profile != nil && profile.Shim != nil {
+		if profile.Shim.BinaryPath != "" {
+			processSection.Items = append(processSection.Items, components.InfoItem{
+				Label: "Shim Binary:", Value: profile.Shim.BinaryPath,
+			})
+		}
+		if profile.Shim.SocketAddress != "" {
+			processSection.Items = append(processSection.Items, components.InfoItem{
+				Label: "Shim Socket:", Value: profile.Shim.SocketAddress,
+			})
+		}
+		if len(profile.Shim.Cmdline) > 0 {
+			processSection.Items = append(processSection.Items, components.InfoItem{
+				Label: "Shim Cmdline:", Value: strings.Join(profile.Shim.Cmdline, " "),
+			})
+		}
+	}
 	sections = append(sections, processSection)
 
 	// Section 2: OCI Runtime
-	if detail.OCIBundlePath != "" || detail.OCIRuntimeDir != "" {
+	if profile != nil && profile.OCI != nil {
 		ociItems := []components.InfoItem{}
-		if detail.OCIBundlePath != "" {
+		if profile.OCI.RuntimeName != "" {
 			ociItems = append(ociItems, components.InfoItem{
-				Label: "OCI Bundle:", Value: detail.OCIBundlePath,
+				Label: "Runtime Name:", Value: profile.OCI.RuntimeName,
 			})
 		}
-		if detail.OCIRuntimeDir != "" {
+		if profile.OCI.RuntimeBinary != "" {
 			ociItems = append(ociItems, components.InfoItem{
-				Label: "OCI Runtime Dir:", Value: detail.OCIRuntimeDir,
+				Label: "Runtime Binary:", Value: profile.OCI.RuntimeBinary,
+			})
+		}
+		if profile.OCI.BundleDir != "" {
+			ociItems = append(ociItems, components.InfoItem{
+				Label: "OCI Bundle:", Value: profile.OCI.BundleDir,
+			})
+		}
+		if profile.OCI.StateDir != "" {
+			ociItems = append(ociItems, components.InfoItem{
+				Label: "OCI State Dir:", Value: profile.OCI.StateDir,
+			})
+		}
+		if profile.OCI.ConfigPath != "" {
+			ociItems = append(ociItems, components.InfoItem{
+				Label: "OCI Spec Config:", Value: profile.OCI.ConfigPath,
+			})
+		}
+		if profile.OCI.SandboxID != "" {
+			ociItems = append(ociItems, components.InfoItem{
+				Label: "Sandbox ID:", Value: profile.OCI.SandboxID,
 			})
 		}
 		sections = append(sections, components.InfoSection{Title: "OCI Runtime", Items: ociItems})
@@ -138,10 +176,12 @@ func (v *RuntimeInfoView) render() {
 	}
 
 	// Section 6: CGroup
-	if detail.CGroupPath != "" {
+	if profile != nil && profile.CGroup != nil && (profile.CGroup.RelativePath != "" || profile.CGroup.AbsolutePath != "") {
 		cgItems := []components.InfoItem{
-			{Label: "Path:", Value: detail.CGroupPath},
-			{Label: "Version:", Value: fmt.Sprintf("v%d", detail.CGroupVersion)},
+			{Label: "Relative Path:", Value: profile.CGroup.RelativePath},
+			{Label: "Absolute Path:", Value: profile.CGroup.AbsolutePath},
+			{Label: "Driver:", Value: profile.CGroup.Driver},
+			{Label: "Version:", Value: fmt.Sprintf("v%d", profile.CGroup.Version)},
 		}
 		if detail.CGroupLimits != nil {
 			limits := detail.CGroupLimits
@@ -162,6 +202,27 @@ func (v *RuntimeInfoView) render() {
 			}
 		}
 		sections = append(sections, components.InfoSection{Title: "CGroup", Items: cgItems})
+	}
+
+	// Section 7: RootFS
+	if profile != nil && profile.RootFS != nil && (profile.RootFS.BundleRootFSPath != "" || profile.RootFS.MountRootFSPath != "") {
+		rootFSItems := []components.InfoItem{}
+		if profile.RootFS.BundleRootFSPath != "" {
+			rootFSItems = append(rootFSItems, components.InfoItem{
+				Label: "Bundle RootFS:", Value: profile.RootFS.BundleRootFSPath,
+			})
+		}
+		if profile.RootFS.MountRootFSPath != "" {
+			rootFSItems = append(rootFSItems, components.InfoItem{
+				Label: "Mounted RootFS:", Value: profile.RootFS.MountRootFSPath,
+			})
+		}
+		if detail.Snapshotter != "" {
+			rootFSItems = append(rootFSItems, components.InfoItem{
+				Label: "Snapshotter:", Value: detail.Snapshotter,
+			})
+		}
+		sections = append(sections, components.InfoSection{Title: "RootFS", Items: rootFSItems})
 	}
 
 	v.infoPanel.SetSections(sections)

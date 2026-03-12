@@ -56,11 +56,12 @@ type ContainerDetail struct {
 	Mounts            []*Mount
 
 	// Runtime information
-	ShimPID       uint32
-	OCIBundlePath string
-	OCIRuntimeDir string
-	Namespaces    map[string]string // ns type -> ns path
-	Snapshotter   string            // Snapshotter name (e.g., overlayfs, native)
+	ShimPID        uint32
+	OCIBundlePath  string
+	OCIRuntimeDir  string
+	Namespaces     map[string]string // ns type -> ns path
+	Snapshotter    string            // Snapshotter name (e.g., overlayfs, native)
+	RuntimeProfile *RuntimeProfile
 
 	// RW Layer usage information
 	RWLayerSize   int64 // Content size of RW layer
@@ -101,4 +102,53 @@ type PortMapping struct {
 	HostPort      uint16
 	ContainerPort uint16
 	Protocol      string // tcp or udp
+}
+
+// RuntimeProfile contains structured runtime-specific information.
+type RuntimeProfile struct {
+	OCI    *OCIInfo
+	Shim   *ShimInfo
+	CGroup *CGroupInfo
+	RootFS *RootFSInfo
+}
+
+// OCIInfo contains OCI runtime and bundle metadata.
+type OCIInfo struct {
+	RuntimeName     string
+	RuntimeBinary   string
+	StateDir        string
+	BundleDir       string
+	ConfigPath      string
+	SandboxID       string
+	ConfigSource    string
+	StateDirSource  string
+	BundleDirSource string
+	RuntimeSource   string
+}
+
+// ShimInfo contains serving shim process metadata.
+type ShimInfo struct {
+	PID              uint32
+	BinaryPath       string
+	SocketAddress    string
+	Cmdline          []string
+	BundleDir        string
+	SandboxBundleDir string
+	Source           string
+}
+
+// CGroupInfo contains cgroup v2 metadata for the task.
+type CGroupInfo struct {
+	RelativePath string
+	AbsolutePath string
+	Version      int
+	Driver       string
+	Source       string
+}
+
+// RootFSInfo contains runtime root filesystem paths.
+type RootFSInfo struct {
+	BundleRootFSPath string
+	MountRootFSPath  string
+	Source           string
 }

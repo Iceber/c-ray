@@ -61,69 +61,156 @@ func (r *ProcReader) ReadProcess(pid int) (*models.Process, error) {
 	return process, nil
 }
 
-// readStat reads /proc/[pid]/stat
-func (r *ProcReader) readStat(pid int, process *models.Process) error {
-	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "stat")
-	data, err := os.ReadFile(path)
+// GetProcessPPID reads the parent PID for a given process.
+func (r *ProcReader) GetProcessPPID(pid int) (int, error) {
+	statFields, err := r.readStatFields(pid)
 	if err != nil {
-		return fmt.Errorf("failed to read stat: %w", err)
+		return 0, err
 	}
 
-	// Parse stat file
-	// Format: pid (comm) state ppid pgrp session tty_nr tpgid flags
-	//         minflt cminflt majflt cmajflt utime stime ...
-	// Fields after ')': index 0=state, 1=ppid, ..., 11=utime, 12=stime
-	content := string(data)
-
-	// Find the command name (enclosed in parentheses)
-	startIdx := strings.Index(content, "(")
-	endIdx := strings.LastIndex(content, ")")
-	if startIdx == -1 || endIdx == -1 {
-		return fmt.Errorf("invalid stat format")
-	}
-
-	// Extract fields after the command name
-	fields := strings.Fields(content[endIdx+2:])
-	if len(fields) < 13 {
-		return fmt.Errorf("insufficient fields in stat")
-	}
-
-	// Field 0: state
-	process.State = fields[0]
-
-	// Field 1: ppid
-	if ppid, err := strconv.Atoi(fields[1]); err == nil {
-		process.PPID = ppid
-	}
-
-	// Field 11: utime (user mode CPU ticks)
-	if utime, err := strconv.ParseUint(fields[11], 10, 64); err == nil {
-		process.UTime = utime
-	}
-
-	// Field 12: stime (kernel mode CPU ticks)
-	if stime, err := strconv.ParseUint(fields[12], 10, 64); err == nil {
-		process.STime = stime
-	}
-
-	return nil
+	return statFields.ppid, nil
 }
 
-// readCmdline reads /proc/[pid]/cmdline
-func (r *ProcReader) readCmdline(pid int, process *models.Process) error {
+// ReadCmdlineRaw reads the raw argv vector for a process.
+func (r *ProcReader) ReadCmdlineRaw(pid int) ([]string, error) {
 	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "cmdline")
 	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	parts := strings.Split(string(data), "\x00")
+	args := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		args = append(args, part)
+	}
+
+	if len(args) == 0 {
+		return nil, fmt.Errorf("empty cmdline")
+	}
+
+	return args, nil
+}
+
+// ReadExePath reads the /proc/[pid]/exe symlink target.
+func (r *ProcReader) ReadExePath(pid int) (string, error) {
+	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "exe")
+	return os.Readlink(path)
+}
+
+// ReadCwd reads the /proc/[pid]/cwd symlink target.
+func (r *ProcReader) ReadCwd(pid int) (string, error) {
+	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "cwd")
+	return os.Readlink(path)
+}
+
+// ReadUnifiedCGroupPath reads the cgroup v2 path from /proc/[pid]/cgroup.
+func (r *ProcReader) ReadUnifiedCGroupPath(pid int) (string, error) {
+	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "cgroup")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		if parts[0] == "0" && parts[1] == "" {
+			return strings.TrimSpace(parts[2]), nil
+		}
+	}
+
+	return "", fmt.Errorf("unified cgroup path not found")
+}
+
+// readStat reads /proc/[pid]/stat
+func (r *ProcReader) readStat(pid int, process *models.Process) error {
+	statFields, err := r.readStatFields(pid)
 	if err != nil {
 		return err
 	}
 
-	// cmdline is null-separated
-	parts := strings.Split(string(data), "\x00")
-	if len(parts) > 0 && parts[0] != "" {
-		process.Command = filepath.Base(parts[0])
-		if len(parts) > 1 {
-			process.Args = parts[1 : len(parts)-1] // Last element is usually empty
-		}
+	process.State = statFields.state
+	process.PPID = statFields.ppid
+	process.UTime = statFields.utime
+	process.STime = statFields.stime
+
+	return nil
+}
+
+type procStatFields struct {
+	state string
+	ppid  int
+	utime uint64
+	stime uint64
+}
+
+func (r *ProcReader) readStatFields(pid int) (*procStatFields, error) {
+	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "stat")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read stat: %w", err)
+	}
+
+	return parseProcStat(string(data))
+}
+
+func parseProcStat(content string) (*procStatFields, error) {
+	// Format: pid (comm) state ppid pgrp session tty_nr tpgid flags
+	//         minflt cminflt majflt cmajflt utime stime ...
+	// Fields after ')': index 0=state, 1=ppid, ..., 11=utime, 12=stime
+	startIdx := strings.Index(content, "(")
+	endIdx := strings.LastIndex(content, ")")
+	if startIdx == -1 || endIdx == -1 {
+		return nil, fmt.Errorf("invalid stat format")
+	}
+
+	fields := strings.Fields(content[endIdx+2:])
+	if len(fields) < 13 {
+		return nil, fmt.Errorf("insufficient fields in stat")
+	}
+
+	ppid, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid ppid in stat: %w", err)
+	}
+
+	utime, err := strconv.ParseUint(fields[11], 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid utime in stat: %w", err)
+	}
+
+	stime, err := strconv.ParseUint(fields[12], 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid stime in stat: %w", err)
+	}
+
+	return &procStatFields{
+		state: fields[0],
+		ppid:  ppid,
+		utime: utime,
+		stime: stime,
+	}, nil
+}
+
+// readCmdline reads /proc/[pid]/cmdline
+func (r *ProcReader) readCmdline(pid int, process *models.Process) error {
+	args, err := r.ReadCmdlineRaw(pid)
+	if err != nil {
+		return err
+	}
+
+	process.Command = filepath.Base(args[0])
+	if len(args) > 1 {
+		process.Args = args[1:]
 	}
 
 	return nil

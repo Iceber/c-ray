@@ -2,27 +2,38 @@ package containerd
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	runcoptions "github.com/containerd/containerd/api/types/runc/options"
 	"github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/core/snapshots"
+	"github.com/containerd/typeurl/v2"
 	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/icebergu/c-ray/pkg/sysinfo"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
 )
+
+const runtimeV2StateBase = "/run/containerd/io.containerd.runtime.v2.task"
+const defaultRuncRoot = "/run/containerd/runc"
 
 // ContainerdRuntime implements the Runtime interface for containerd
 type ContainerdRuntime struct {
 	config           *runtime.Config
 	client           *client.Client
 	processCollector *sysinfo.ProcessCollector
+	procReader       *sysinfo.ProcReader
 	cgroupReader     *sysinfo.CGroupReader
 	mountReader      *sysinfo.MountReader
 }
@@ -35,6 +46,7 @@ func NewContainerdRuntime(config *runtime.Config) *ContainerdRuntime {
 	return &ContainerdRuntime{
 		config:           config,
 		processCollector: processCollector,
+		procReader:       sysinfo.NewProcReader(),
 		cgroupReader:     cgroupReader,
 		mountReader:      sysinfo.NewMountReader(),
 	}
@@ -191,15 +203,18 @@ func (r *ContainerdRuntime) GetContainerDetail(ctx context.Context, id string) (
 		return nil, fmt.Errorf("failed to load container %s: %w", id, err)
 	}
 
-	// Get basic container info
-	container, err := r.convertContainer(ctx, c)
+	info, err := c.Info(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get container info: %w", err)
 	}
 
 	detail := &models.ContainerDetail{
-		Container: *container,
+		Container:      r.buildContainerFromInfo(info),
+		RuntimeProfile: &models.RuntimeProfile{},
 	}
+	detail.ImageName = info.Image
+	detail.SnapshotKey = info.SnapshotKey
+	detail.Snapshotter = info.Snapshotter
 
 	// Get OCI spec
 	spec, err := c.Spec(ctx)
@@ -227,25 +242,33 @@ func (r *ContainerdRuntime) GetContainerDetail(ctx context.Context, id string) (
 	}
 
 	// Get task info
+	var shimProc *shimProcessInfo
 	task, err := c.Task(ctx, nil)
 	if err == nil {
 		// Get task PID
 		detail.PID = task.Pid()
 
-		// Get shim PID (parent of task)
-		// Note: This is an approximation, actual shim PID might be different
-		detail.ShimPID = detail.PID
-	}
+		if status, statusErr := task.Status(ctx); statusErr == nil {
+			detail.Status = convertStatus(string(status.Status))
+			if string(status.Status) == "running" {
+				detail.StartedAt = time.Now()
+			}
+		} else {
+			detail.Status = models.ContainerStatusUnknown
+		}
 
-	// Get image info
-	img, err := r.client.GetImage(ctx, container.Image)
-	if err == nil {
-		detail.ImageName = img.Name()
+		shimProc = r.getShimProcessInfo(detail.PID)
+		if shimProc != nil {
+			detail.ShimPID = shimProc.pid
+		} else {
+			detail.ShimPID = r.getShimPID(detail.PID)
+		}
+	} else {
+		detail.Status = models.ContainerStatusStopped
 	}
 
 	// Get snapshot info for image layers
-	info, err := c.Info(ctx)
-	if err == nil && info.SnapshotKey != "" {
+	if info.SnapshotKey != "" {
 		// Set the snapshot key (RW layer)
 		detail.SnapshotKey = info.SnapshotKey
 		// Set the snapshotter name
@@ -278,11 +301,13 @@ func (r *ContainerdRuntime) GetContainerDetail(ctx context.Context, id string) (
 	}
 
 	// Get mount information
+	var mountRootFSPath string
 	if detail.PID > 0 && r.mountReader != nil {
 		mounts, err := r.mountReader.ReadMounts(int(detail.PID))
 		if err == nil {
 			detail.Mounts = mounts
 			detail.MountCount = len(mounts)
+			mountRootFSPath = r.resolveMountRootFSPath(mounts)
 		}
 	}
 
@@ -294,7 +319,350 @@ func (r *ContainerdRuntime) GetContainerDetail(ctx context.Context, id string) (
 		}
 	}
 
+	r.populateRuntimeProfile(detail, info, spec, shimProc, mountRootFSPath)
+
 	return detail, nil
+}
+
+func (r *ContainerdRuntime) buildContainerFromInfo(info containers.Container) models.Container {
+	container := models.Container{
+		ID:        info.ID,
+		Image:     info.Image,
+		CreatedAt: info.CreatedAt,
+		Labels:    info.Labels,
+	}
+
+	if name, ok := info.Labels["io.kubernetes.container.name"]; ok {
+		container.Name = name
+	} else if name, ok := info.Labels["name"]; ok {
+		container.Name = name
+	} else if len(info.ID) >= 12 {
+		container.Name = info.ID[:12]
+	} else {
+		container.Name = info.ID
+	}
+
+	container.PodName = info.Labels["io.kubernetes.pod.name"]
+	container.PodNamespace = info.Labels["io.kubernetes.pod.namespace"]
+	container.PodUID = info.Labels["io.kubernetes.pod.uid"]
+
+	return container
+}
+
+type shimProcessInfo struct {
+	pid        uint32
+	binaryPath string
+	cmdline    []string
+	cwd        string
+}
+
+func (r *ContainerdRuntime) getShimProcessInfo(taskPID uint32) *shimProcessInfo {
+	if taskPID == 0 || r.procReader == nil {
+		return nil
+	}
+
+	currentPID := int(taskPID)
+	for depth := 0; depth < 3; depth++ {
+		ppid, err := r.procReader.GetProcessPPID(currentPID)
+		if err != nil || ppid <= 0 {
+			return nil
+		}
+
+		exePath, _ := r.procReader.ReadExePath(ppid)
+		cmdline, _ := r.procReader.ReadCmdlineRaw(ppid)
+		if isShimProcess(exePath, cmdline) {
+			cwd, _ := r.procReader.ReadCwd(ppid)
+			return &shimProcessInfo{
+				pid:        uint32(ppid),
+				binaryPath: exePath,
+				cmdline:    cmdline,
+				cwd:        cwd,
+			}
+		}
+
+		currentPID = ppid
+	}
+
+	return nil
+}
+
+func isShimProcess(exePath string, cmdline []string) bool {
+	if strings.Contains(filepath.Base(exePath), "containerd-shim") {
+		return true
+	}
+	if len(cmdline) > 0 && strings.Contains(filepath.Base(cmdline[0]), "containerd-shim") {
+		return true
+	}
+	return false
+}
+
+func (r *ContainerdRuntime) getShimPID(taskPID uint32) uint32 {
+	if taskPID == 0 || r.procReader == nil {
+		return 0
+	}
+
+	ppid, err := r.procReader.GetProcessPPID(int(taskPID))
+	if err != nil || ppid <= 0 {
+		return 0
+	}
+
+	return uint32(ppid)
+}
+
+func (r *ContainerdRuntime) populateRuntimeProfile(detail *models.ContainerDetail, info containers.Container, spec *runtimespec.Spec, shimProc *shimProcessInfo, mountRootFSPath string) {
+	if detail.RuntimeProfile == nil {
+		detail.RuntimeProfile = &models.RuntimeProfile{}
+	}
+
+	profile := detail.RuntimeProfile
+	profile.OCI = &models.OCIInfo{}
+	profile.Shim = &models.ShimInfo{}
+	profile.CGroup = &models.CGroupInfo{}
+	profile.RootFS = &models.RootFSInfo{}
+
+	bundleDir, bundleSource := r.resolveOCIBundleDir(r.config.Namespace, info.ID)
+	stateDir, stateSource := r.resolveOCIStateDir(info, r.config.Namespace)
+
+	profile.OCI.RuntimeName = info.Runtime.Name
+	profile.OCI.RuntimeSource = "containerd"
+	profile.OCI.StateDir = stateDir
+	profile.OCI.StateDirSource = stateSource
+	profile.OCI.BundleDir = bundleDir
+	profile.OCI.BundleDirSource = bundleSource
+	profile.OCI.SandboxID = info.SandboxID
+
+	profile.Shim.PID = detail.ShimPID
+	profile.Shim.BundleDir = bundleDir
+	profile.Shim.Source = bundleSource
+	if shimProc != nil {
+		profile.Shim.BinaryPath = shimProc.binaryPath
+		profile.Shim.Cmdline = append([]string(nil), shimProc.cmdline...)
+		profile.Shim.Source = "procfs"
+	}
+
+	if runtimeBinary, runtimeSource := r.resolveRuntimeBinaryPath(bundleDir, info.Runtime, shimProc); runtimeBinary != "" {
+		profile.OCI.RuntimeBinary = runtimeBinary
+		if runtimeSource != "" {
+			profile.OCI.RuntimeSource = runtimeSource
+		}
+	}
+
+	if configPath := existingPath(filepath.Join(bundleDir, "config.json")); configPath != "" {
+		profile.OCI.ConfigPath = configPath
+		profile.OCI.ConfigSource = bundleSource
+	}
+
+	if relativePath := detail.CGroupPath; relativePath != "" {
+		profile.CGroup.RelativePath = relativePath
+		profile.CGroup.AbsolutePath = filepath.Join("/sys/fs/cgroup", strings.TrimPrefix(relativePath, "/"))
+		profile.CGroup.Driver = inferCGroupDriver(relativePath)
+		profile.CGroup.Source = "spec"
+		profile.CGroup.Version = detail.CGroupVersion
+	}
+
+	if detail.PID > 0 && r.procReader != nil {
+		if procCgroupPath, err := r.procReader.ReadUnifiedCGroupPath(int(detail.PID)); err == nil {
+			if profile.CGroup.RelativePath == "" {
+				profile.CGroup.RelativePath = procCgroupPath
+				profile.CGroup.AbsolutePath = filepath.Join("/sys/fs/cgroup", strings.TrimPrefix(procCgroupPath, "/"))
+				profile.CGroup.Driver = inferCGroupDriver(procCgroupPath)
+				profile.CGroup.Source = "procfs"
+			}
+		}
+	}
+
+	if rootfsPath := existingPath(filepath.Join(bundleDir, "rootfs")); rootfsPath != "" {
+		profile.RootFS.BundleRootFSPath = rootfsPath
+		profile.RootFS.Source = bundleSource
+	}
+	if mountRootFSPath != "" {
+		profile.RootFS.MountRootFSPath = mountRootFSPath
+		if profile.RootFS.Source == "" {
+			profile.RootFS.Source = "mountinfo"
+		}
+	}
+
+	if socketAddress, sandboxID, sandboxBundleDir, source := r.resolveShimSocketAddress(bundleDir, info.ID, profile.OCI.SandboxID); socketAddress != "" {
+		profile.Shim.SocketAddress = socketAddress
+		profile.Shim.SandboxBundleDir = sandboxBundleDir
+		if profile.OCI.SandboxID == "" {
+			profile.OCI.SandboxID = sandboxID
+		}
+		profile.Shim.Source = source
+	}
+
+	detail.OCIBundlePath = profile.OCI.BundleDir
+	detail.OCIRuntimeDir = profile.OCI.StateDir
+	if profile.Shim.PID > 0 {
+		detail.ShimPID = profile.Shim.PID
+	}
+}
+
+func (r *ContainerdRuntime) resolveRuntimeBinaryPath(bundleDir string, runtimeInfo containers.RuntimeInfo, shimProc *shimProcessInfo) (string, string) {
+	if opts := resolveRuncOptions(runtimeInfo); opts != nil && opts.BinaryName != "" {
+		return opts.BinaryName, "runtime-options"
+	}
+	runtimeName := runtimeInfo.Name
+	shimBinaryPath := filepath.Join(bundleDir, "shim-binary-path")
+	if data, err := os.ReadFile(shimBinaryPath); err == nil {
+		if value := strings.TrimSpace(string(data)); value != "" {
+			return value, "bundle"
+		}
+	}
+	if shimProc != nil && shimProc.binaryPath != "" {
+		return shimProc.binaryPath, "procfs"
+	}
+	if strings.HasPrefix(runtimeName, "/") {
+		return runtimeName, "containerd"
+	}
+	parts := strings.Split(runtimeName, ".")
+	if len(parts) >= 2 {
+		return "containerd-shim-" + parts[len(parts)-2] + "-" + parts[len(parts)-1], "derived"
+	}
+	return runtimeName, "derived"
+}
+
+func (r *ContainerdRuntime) resolveOCIBundleDir(namespace string, containerID string) (string, string) {
+	return filepath.Join(runtimeV2StateBase, namespace, containerID), "convention"
+}
+
+func (r *ContainerdRuntime) resolveOCIStateDir(info containers.Container, namespace string) (string, string) {
+	if root, source := r.resolveRuncRoot(info.Runtime); root != "" {
+		return filepath.Join(root, namespace, info.ID), source
+	}
+	return filepath.Join(runtimeV2StateBase, namespace, info.ID), "convention"
+}
+
+func (r *ContainerdRuntime) resolveRuncRoot(runtimeInfo containers.RuntimeInfo) (string, string) {
+	if opts := resolveRuncOptions(runtimeInfo); opts != nil {
+		if opts.Root != "" {
+			return opts.Root, "runtime-options"
+		}
+		if isRuncRuntimeName(runtimeInfo.Name) {
+			return defaultRuncRoot, "runtime-default"
+		}
+	}
+	if isRuncRuntimeName(runtimeInfo.Name) {
+		return defaultRuncRoot, "runtime-default"
+	}
+	return "", ""
+}
+
+func resolveRuncOptions(runtimeInfo containers.RuntimeInfo) *runcoptions.Options {
+	if runtimeInfo.Options == nil {
+		return nil
+	}
+	var opts runcoptions.Options
+	if err := typeurl.UnmarshalTo(runtimeInfo.Options, &opts); err != nil {
+		return nil
+	}
+	return &opts
+}
+
+func (r *ContainerdRuntime) resolveShimSocketAddress(bundleDir string, containerID string, sandboxIDHint string) (string, string, string, string) {
+	if address, err := readBootstrapAddress(filepath.Join(bundleDir, "bootstrap.json")); err == nil {
+		return address, "", "", "bundle"
+	}
+	if address, err := readAddressFile(filepath.Join(bundleDir, "address")); err == nil {
+		return address, "", "", "bundle"
+	}
+
+	sandboxID := sandboxIDHint
+	if sandboxID == "" {
+		sandboxData, err := os.ReadFile(filepath.Join(bundleDir, "sandbox"))
+		if err == nil {
+			sandboxID = strings.TrimSpace(string(sandboxData))
+		}
+	}
+	if sandboxID != "" {
+		sandboxBundleDir := filepath.Join(filepath.Dir(bundleDir), sandboxID)
+		if address, bootstrapErr := readBootstrapAddress(filepath.Join(sandboxBundleDir, "bootstrap.json")); bootstrapErr == nil {
+			return address, sandboxID, sandboxBundleDir, "sandbox-bundle"
+		}
+		if address, addressErr := readAddressFile(filepath.Join(sandboxBundleDir, "address")); addressErr == nil {
+			return address, sandboxID, sandboxBundleDir, "sandbox-bundle"
+		}
+		return computeShimSocketAddress(r.config.Namespace, sandboxID), sandboxID, sandboxBundleDir, "inferred"
+	}
+
+	return computeShimSocketAddress(r.config.Namespace, containerID), "", "", "inferred"
+}
+
+func readBootstrapAddress(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+
+	var params struct {
+		Address  string `json:"address"`
+		Protocol string `json:"protocol"`
+	}
+	if err := json.Unmarshal(data, &params); err != nil {
+		return "", err
+	}
+	if params.Address == "" {
+		return "", fmt.Errorf("bootstrap address missing")
+	}
+	if params.Protocol != "" {
+		return params.Protocol + "+" + params.Address, nil
+	}
+	return params.Address, nil
+}
+
+func readAddressFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimSpace(string(data))
+	if value == "" {
+		return "", fmt.Errorf("address file empty")
+	}
+	return value, nil
+}
+
+func computeShimSocketAddress(namespace string, id string) string {
+	path := filepath.Join(runtimeV2StateBase, namespace, id)
+	sum := sha256.Sum256([]byte(path))
+	return fmt.Sprintf("unix:///run/containerd/s/%x", sum)
+}
+
+func existingPath(path string) string {
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	return ""
+}
+
+func isRuncRuntimeName(runtimeName string) bool {
+	return strings.Contains(runtimeName, ".runc.") || strings.HasSuffix(runtimeName, "runc")
+}
+
+func inferCGroupDriver(path string) string {
+	if path == "" {
+		return ""
+	}
+	if strings.Contains(path, ".slice") || strings.Contains(path, ":cri-containerd:") {
+		return "systemd"
+	}
+	return "cgroupfs"
+}
+
+func (r *ContainerdRuntime) resolveMountRootFSPath(mounts []*models.Mount) string {
+	if r.mountReader == nil {
+		return ""
+	}
+	rootMount := r.mountReader.FindRootMount(mounts)
+	if rootMount == nil {
+		return ""
+	}
+	if lowerdir, upperdir, _ := r.mountReader.ParseOverlayFS(rootMount); lowerdir != "" || upperdir != "" {
+		if upperdir != "" {
+			return upperdir
+		}
+	}
+	return rootMount.Source
 }
 
 // ListImages returns all images
