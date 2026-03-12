@@ -14,6 +14,7 @@ import (
 type ImageListView struct {
 	*tview.Flex
 
+	app       *tview.Application
 	table     *components.Table
 	statusBar *tview.TextView
 	rt        runtime.Runtime
@@ -28,9 +29,10 @@ var imageColumns = []components.Column{
 }
 
 // NewImageListView creates a new image list view
-func NewImageListView(rt runtime.Runtime) *ImageListView {
+func NewImageListView(app *tview.Application, rt runtime.Runtime) *ImageListView {
 	v := &ImageListView{
 		Flex: tview.NewFlex().SetDirection(tview.FlexRow),
+		app:  app,
 		rt:   rt,
 	}
 
@@ -38,6 +40,9 @@ func NewImageListView(rt runtime.Runtime) *ImageListView {
 	v.statusBar = tview.NewTextView().
 		SetDynamicColors(true).
 		SetTextAlign(tview.AlignLeft)
+
+	// Show loading indicator initially
+	v.table.AddRow("[gray]Loading images...[-]", "", "", "")
 
 	v.Flex.AddItem(v.table, 0, 1, true)
 	v.Flex.AddItem(v.statusBar, 1, 0, false)
@@ -53,7 +58,15 @@ func (v *ImageListView) Refresh(ctx context.Context) error {
 	}
 
 	v.images = images
-	v.render()
+
+	// UI updates must be done on the main thread
+	if v.app != nil {
+		v.app.QueueUpdateDraw(func() {
+			v.render()
+		})
+	} else {
+		v.render()
+	}
 	return nil
 }
 

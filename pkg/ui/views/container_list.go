@@ -16,6 +16,7 @@ import (
 type ContainerListView struct {
 	*tview.Flex
 
+	app        *tview.Application
 	table      *components.Table
 	statusBar  *tview.TextView
 	rt         runtime.Runtime
@@ -49,9 +50,10 @@ var containerExtendedColumns = []components.Column{
 }
 
 // NewContainerListView creates a new container list view
-func NewContainerListView(rt runtime.Runtime) *ContainerListView {
+func NewContainerListView(app *tview.Application, rt runtime.Runtime) *ContainerListView {
 	v := &ContainerListView{
 		Flex: tview.NewFlex().SetDirection(tview.FlexRow),
+		app:  app,
 		rt:   rt,
 	}
 
@@ -94,7 +96,15 @@ func (v *ContainerListView) Refresh(ctx context.Context) error {
 	}
 
 	v.containers = containers
-	v.render()
+
+	// UI updates must be done on the main thread
+	if v.app != nil {
+		v.app.QueueUpdateDraw(func() {
+			v.render()
+		})
+	} else {
+		v.render()
+	}
 	return nil
 }
 

@@ -69,9 +69,9 @@ func NewMainView(app *tview.Application, rt runtime.Runtime, ctx context.Context
 	}
 
 	// Create sub-views
-	v.containerList = NewContainerTreeView(rt)
-	v.imageList = NewImageListView(rt)
-	v.podList = NewPodListView(rt)
+	v.containerList = NewContainerTreeView(app, rt)
+	v.imageList = NewImageListView(app, rt)
+	v.podList = NewPodListView(app, rt)
 
 	// Tab bar
 	v.tabBar = tview.NewTextView().
@@ -219,13 +219,9 @@ func (v *MainView) refreshCurrentTab() {
 	}
 
 	if err != nil {
-		v.app.QueueUpdateDraw(func() {
-			// Show error in status area - views handle their own status bars
-		})
+		// Views handle their own error display in status bars
 		return
 	}
-
-	v.app.QueueUpdateDraw(func() {})
 }
 
 // StartAutoRefresh starts a background goroutine to periodically refresh data

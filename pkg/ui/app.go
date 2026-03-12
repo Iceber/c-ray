@@ -175,13 +175,16 @@ func (a *App) Run() error {
 		return fmt.Errorf("failed to connect to runtime: %w", err)
 	}
 
-	// Initial data load (before event loop starts - don't use QueueUpdateDraw here)
-	a.mainView.RefreshAll()
-
-	// Start auto-refresh
+	// Start auto-refresh (for background updates after initial load)
 	a.mainView.StartAutoRefresh()
 
-	// Run the TUI application
+	// Schedule initial data load after TUI starts to avoid blocking
+	// This ensures the UI is visible immediately even if data loading is slow
+	go func() {
+		a.mainView.RefreshAll()
+	}()
+
+	// Run the TUI application (blocking)
 	return a.tviewApp.Run()
 }
 

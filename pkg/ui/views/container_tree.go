@@ -15,6 +15,7 @@ import (
 type ContainerTreeView struct {
 	*tview.Flex
 
+	app        *tview.Application
 	tree       *tview.TreeView
 	statusBar  *tview.TextView
 	rt         runtime.Runtime
@@ -54,9 +55,10 @@ type podGroup struct {
 }
 
 // NewContainerTreeView creates a new tree-based container list view
-func NewContainerTreeView(rt runtime.Runtime) *ContainerTreeView {
+func NewContainerTreeView(app *tview.Application, rt runtime.Runtime) *ContainerTreeView {
 	v := &ContainerTreeView{
 		Flex: tview.NewFlex().SetDirection(tview.FlexRow),
+		app:  app,
 		rt:   rt,
 	}
 
@@ -64,6 +66,11 @@ func NewContainerTreeView(rt runtime.Runtime) *ContainerTreeView {
 	root := tview.NewTreeNode("Containers").
 		SetColor(tcell.ColorAqua).
 		SetSelectable(false)
+
+	// Add loading indicator as initial state
+	loadingNode := tview.NewTreeNode("[gray]Loading containers...[-]").
+		SetSelectable(false)
+	root.AddChild(loadingNode)
 
 	v.tree = tview.NewTreeView().
 		SetRoot(root).
@@ -142,10 +149,18 @@ func (v *ContainerTreeView) Refresh(ctx context.Context) error {
 	savedData := v.getCurrentNodeData()
 
 	v.containers = containers
-	v.render()
 
-	// Restore selection after re-rendering
-	v.restoreSelection(savedData)
+	// UI updates must be done on the main thread
+	if v.app != nil {
+		v.app.QueueUpdateDraw(func() {
+			v.render()
+			v.restoreSelection(savedData)
+		})
+	} else {
+		v.render()
+		v.restoreSelection(savedData)
+	}
+
 	return nil
 }
 
@@ -293,15 +308,21 @@ func (v *ContainerTreeView) createContainerNode(c *models.Container, isInPod boo
 		pid = "-"
 	}
 
+	// Mark exited containers with [Exited] prefix
+	var statusPrefix string
+	if c.Status == models.ContainerStatusStopped {
+		statusPrefix = "[red][Exited][-] "
+	}
+
 	var text string
 	if isInPod {
 		// Indented for pod children
-		text = fmt.Sprintf("  ├─ [%s] %s [gray]%s[-]  [darkgray]PID:[-]%s",
-			getColorName(statusColor), displayName, c.Image, pid)
+		text = fmt.Sprintf("  ├─ [%s]%s %s [gray]%s[-]  [darkgray]PID:[-]%s",
+			getColorName(statusColor), statusPrefix, displayName, c.Image, pid)
 	} else {
 		// No indent for standalone
-		text = fmt.Sprintf("[%s] %s [gray]%s[-]  [darkgray]PID:[-]%s",
-			getColorName(statusColor), displayName, c.Image, pid)
+		text = fmt.Sprintf("[%s]%s %s [gray]%s[-]  [darkgray]PID:[-]%s",
+			getColorName(statusColor), statusPrefix, displayName, c.Image, pid)
 	}
 
 	node := tview.NewTreeNode(text).
@@ -329,6 +350,7 @@ func (v *ContainerTreeView) createContainerNode(c *models.Container, isInPod boo
 }
 
 // getPodContainers returns all containers belonging to a specific pod
+// Sorted by creation time (newest first) so that exited containers appear at the bottom
 func (v *ContainerTreeView) getPodContainers(podUID string) []*models.Container {
 	var result []*models.Container
 	for _, c := range v.containers {
@@ -336,9 +358,10 @@ func (v *ContainerTreeView) getPodContainers(podUID string) []*models.Container 
 			result = append(result, c)
 		}
 	}
-	// Sort by name
+	// Sort by creation time (newest first, oldest last)
+	// This puts exited containers (usually older) at the bottom
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].Name < result[j].Name
+		return result[i].CreatedAt.After(result[j].CreatedAt)
 	})
 	return result
 }
