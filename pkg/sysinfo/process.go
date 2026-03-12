@@ -95,6 +95,7 @@ func (t *ProcessTree) Count() int {
 type ProcessCollector struct {
 	procReader   *ProcReader
 	cgroupReader *CGroupReader
+	sampler      *Sampler
 }
 
 // NewProcessCollector creates a new process collector
@@ -107,6 +108,7 @@ func NewProcessCollector() (*ProcessCollector, error) {
 	return &ProcessCollector{
 		procReader:   NewProcReader(),
 		cgroupReader: cgroupReader,
+		sampler:      NewSampler(),
 	}, nil
 }
 
@@ -140,20 +142,40 @@ func (c *ProcessCollector) CollectContainerProcesses(containerPID uint32) ([]*mo
 	return tree.GetAllProcesses(), nil
 }
 
-// CollectProcessTop collects top-like process information
-func (c *ProcessCollector) CollectProcessTop(containerPID uint32) (*models.ProcessTop, error) {
+// CollectProcessTop collects top-like process information with CPU%, IO rate,
+// memory percent, and container-level network IO.
+func (c *ProcessCollector) CollectProcessTop(containerPID uint32, cgroupPath string) (*models.ProcessTop, error) {
 	processes, err := c.CollectContainerProcesses(containerPID)
 	if err != nil {
 		return nil, err
 	}
 
-	// TODO: Calculate CPU percentage (requires sampling over time)
-	// For now, we just return the processes with available information
-
-	return &models.ProcessTop{
+	top := &models.ProcessTop{
 		Processes: processes,
 		Timestamp: time.Now().Unix(),
-	}, nil
+	}
+
+	// Read cgroup limits for CPU/memory context
+	if cgroupPath != "" && c.cgroupReader != nil {
+		if limits, err := c.cgroupReader.ReadCGroupLimits(cgroupPath); err == nil {
+			if limits.CPUQuota > 0 && limits.CPUPeriod > 0 {
+				top.CPUCores = float64(limits.CPUQuota) / float64(limits.CPUPeriod)
+			}
+			top.MemoryLimit = limits.MemoryLimit
+		}
+	}
+
+	// Calculate CPU%, memory%, and IO rates via sampler
+	containerID := fmt.Sprintf("%d", containerPID)
+	c.sampler.CalculateProcessRates(containerID, processes, top.CPUCores, top.MemoryLimit)
+
+	// Read container-level network IO from host PID's namespace
+	if netStats, err := c.procReader.ReadNetDev(int(containerPID)); err == nil {
+		c.sampler.CalculateNetworkRates(netStats)
+		top.NetworkIO = netStats
+	}
+
+	return top, nil
 }
 
 // BuildProcessTree builds a process tree from a list of processes

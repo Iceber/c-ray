@@ -70,7 +70,9 @@ func (r *ProcReader) readStat(pid int, process *models.Process) error {
 	}
 
 	// Parse stat file
-	// Format: pid (comm) state ppid ...
+	// Format: pid (comm) state ppid pgrp session tty_nr tpgid flags
+	//         minflt cminflt majflt cmajflt utime stime ...
+	// Fields after ')': index 0=state, 1=ppid, ..., 11=utime, 12=stime
 	content := string(data)
 
 	// Find the command name (enclosed in parentheses)
@@ -82,7 +84,7 @@ func (r *ProcReader) readStat(pid int, process *models.Process) error {
 
 	// Extract fields after the command name
 	fields := strings.Fields(content[endIdx+2:])
-	if len(fields) < 2 {
+	if len(fields) < 13 {
 		return fmt.Errorf("insufficient fields in stat")
 	}
 
@@ -92,6 +94,16 @@ func (r *ProcReader) readStat(pid int, process *models.Process) error {
 	// Field 1: ppid
 	if ppid, err := strconv.Atoi(fields[1]); err == nil {
 		process.PPID = ppid
+	}
+
+	// Field 11: utime (user mode CPU ticks)
+	if utime, err := strconv.ParseUint(fields[11], 10, 64); err == nil {
+		process.UTime = utime
+	}
+
+	// Field 12: stime (kernel mode CPU ticks)
+	if stime, err := strconv.ParseUint(fields[12], 10, 64); err == nil {
+		process.STime = stime
 	}
 
 	return nil
@@ -216,6 +228,105 @@ func (r *ProcReader) ListPIDs() ([]int, error) {
 	}
 
 	return pids, nil
+}
+
+// ReadNetDev reads network interface statistics from /proc/[pid]/net/dev
+func (r *ProcReader) ReadNetDev(pid int) ([]*models.NetworkStats, error) {
+	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "net", "dev")
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var stats []*models.NetworkStats
+	scanner := bufio.NewScanner(file)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		// Skip the first 2 header lines
+		if lineNo <= 2 {
+			continue
+		}
+
+		line := scanner.Text()
+		// Format: "  iface: rx_bytes rx_packets rx_errs rx_drop rx_fifo rx_frame rx_compressed rx_multicast tx_bytes tx_packets tx_errs tx_drop tx_fifo tx_colls tx_carrier tx_compressed"
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		iface := strings.TrimSpace(parts[0])
+		if r.skipNetInterface(pid, iface) {
+			continue
+		}
+
+		fields := strings.Fields(parts[1])
+		if len(fields) < 16 {
+			continue
+		}
+
+		ns := &models.NetworkStats{Interface: iface}
+		ns.RxBytes, _ = strconv.ParseUint(fields[0], 10, 64)
+		ns.RxPackets, _ = strconv.ParseUint(fields[1], 10, 64)
+		ns.RxErrors, _ = strconv.ParseUint(fields[2], 10, 64)
+		ns.RxDropped, _ = strconv.ParseUint(fields[3], 10, 64)
+		ns.TxBytes, _ = strconv.ParseUint(fields[8], 10, 64)
+		ns.TxPackets, _ = strconv.ParseUint(fields[9], 10, 64)
+		ns.TxErrors, _ = strconv.ParseUint(fields[10], 10, 64)
+		ns.TxDropped, _ = strconv.ParseUint(fields[11], 10, 64)
+
+		stats = append(stats, ns)
+	}
+
+	return stats, scanner.Err()
+}
+
+// skipNetInterface returns true for network interfaces that are not meaningful
+// to monitor inside a container context.
+//
+// Strategy:
+//  1. Always apply name-based blacklist (lo, veth*, virbr*, kernel tunnel defaults).
+//  2. If sysfs is readable, also reject non-ARPHRD_ETHER (type != 1) interfaces.
+//
+// Both layers are needed because some kernel default devices (gretap0, erspan0,
+// ip6gretap0, ip6erspan0) operate at L2 and report ARPHRD_ETHER, so sysfs
+// alone cannot distinguish them from real interfaces.
+func (r *ProcReader) skipNetInterface(pid int, name string) bool {
+	if name == "lo" {
+		return true
+	}
+
+	// Name-based blacklist — always checked.
+	for _, prefix := range []string{"veth", "virbr"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	// Kernel default tunnel/virtual devices — auto-created by kernel modules.
+	// Includes L2 devices (gretap0, erspan0, etc.) that have ARPHRD_ETHER type.
+	kernelDefaults := map[string]struct{}{
+		"tunl0": {}, "gre0": {}, "gretap0": {}, "erspan0": {},
+		"ip_vti0": {}, "ip6_vti0": {}, "ip6tnl0": {},
+		"ip6gre0": {}, "ip6gretap0": {}, "ip6erspan0": {},
+		"sit0": {},
+	}
+	if _, skip := kernelDefaults[name]; skip {
+		return true
+	}
+
+	// sysfs-based detection: /proc/<pid>/root/sys/class/net/<iface>/type
+	// Rejects interfaces whose type is not ARPHRD_ETHER (1), e.g. IPIP(768),
+	// SIT(776), GRE(778), NONE(65534).
+	sysPath := filepath.Join(r.procRoot, strconv.Itoa(pid), "root", "sys", "class", "net", name, "type")
+	if data, err := os.ReadFile(sysPath); err == nil {
+		ifType := strings.TrimSpace(string(data))
+		if ifType != "1" {
+			return true
+		}
+	}
+
+	return false
 }
 
 // parseMemorySize parses memory size from status file (e.g., "12345 kB")

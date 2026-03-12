@@ -159,6 +159,10 @@ func (v *ProcessTreeView) buildProcessNode(p *models.Process) *tview.TreeNode {
 	// Add resource info as a child node when expanded
 	infoLabel := fmt.Sprintf("[gray]cpu:[white]%.1f%%  [gray]mem:[white]%.1f%%  [gray]rss:[white]%s",
 		p.CPUPercent, p.MemoryPercent, formatBytes(int64(p.MemoryRSS)))
+	if p.ReadBytesPerSec > 0 || p.WriteBytesPerSec > 0 {
+		infoLabel += fmt.Sprintf("  [gray]r/s:[white]%s  [gray]w/s:[white]%s",
+			formatRate(p.ReadBytesPerSec), formatRate(p.WriteBytesPerSec))
+	}
 	if p.ReadBytes > 0 || p.WriteBytes > 0 {
 		infoLabel += fmt.Sprintf("  [gray]r:[white]%s  [gray]w:[white]%s",
 			formatBytes(int64(p.ReadBytes)), formatBytes(int64(p.WriteBytes)))

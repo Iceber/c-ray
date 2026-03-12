@@ -756,8 +756,17 @@ func (r *ContainerdRuntime) GetContainerTop(ctx context.Context, id string) (*mo
 		return nil, fmt.Errorf("container is not running")
 	}
 
-	// Collect top information
-	return r.processCollector.CollectProcessTop(container.PID)
+	// Get cgroup path from OCI spec for CPU/memory limit context
+	var cgroupPath string
+	c, err := r.client.LoadContainer(ctx, id)
+	if err == nil {
+		if spec, err := c.Spec(ctx); err == nil && spec.Linux != nil {
+			cgroupPath = spec.Linux.CgroupsPath
+		}
+	}
+
+	// Collect top information with rate calculation
+	return r.processCollector.CollectProcessTop(container.PID, cgroupPath)
 }
 
 // GetContainerMounts returns mount information for a container

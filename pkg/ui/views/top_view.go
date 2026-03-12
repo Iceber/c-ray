@@ -34,15 +34,17 @@ type TopView struct {
 	ctx context.Context
 
 	table     *components.Table
+	netBar    *tview.TextView
 	statusBar *tview.TextView
 
 	containerID string
-	processes   []*models.Process
+	topData     *models.ProcessTop
 	sortField   SortField
 
 	// Auto-refresh
 	refreshInterval time.Duration
 	refreshStop     chan struct{}
+	refreshRunning  bool
 	mu              sync.Mutex
 }
 
@@ -53,6 +55,8 @@ var topColumns = []components.Column{
 	{Title: "CPU%", Width: 8, Align: tview.AlignRight},
 	{Title: "MEM%", Width: 8, Align: tview.AlignRight},
 	{Title: "RSS", Width: 10, Align: tview.AlignRight},
+	{Title: "R/s", Width: 10, Align: tview.AlignRight},
+	{Title: "W/s", Width: 10, Align: tview.AlignRight},
 	{Title: "READ", Width: 10, Align: tview.AlignRight},
 	{Title: "WRITE", Width: 10, Align: tview.AlignRight},
 	{Title: "COMMAND", Width: 0},
@@ -67,17 +71,23 @@ func NewTopView(app *tview.Application, rt runtime.Runtime, ctx context.Context)
 		ctx:             ctx,
 		sortField:       SortByCPU,
 		refreshInterval: 2 * time.Second,
-		refreshStop:     make(chan struct{}),
 	}
+
+	v.netBar = tview.NewTextView().
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignLeft)
+	v.netBar.SetBackgroundColor(tcell.ColorDarkSlateGray)
 
 	v.table = components.NewTable(topColumns)
 	v.statusBar = tview.NewTextView().
 		SetDynamicColors(true).
 		SetTextAlign(tview.AlignLeft)
 
+	v.Flex.AddItem(v.netBar, 1, 0, false)
 	v.Flex.AddItem(v.table, 0, 1, true)
 	v.Flex.AddItem(v.statusBar, 1, 0, false)
 
+	v.updateNetBar()
 	v.updateStatusBar()
 	return v
 }
@@ -105,7 +115,7 @@ func (v *TopView) Refresh(ctx context.Context) error {
 	}
 
 	v.mu.Lock()
-	v.processes = top.Processes
+	v.topData = top
 	v.mu.Unlock()
 
 	v.render()
@@ -115,8 +125,15 @@ func (v *TopView) Refresh(ctx context.Context) error {
 // render updates the table with current process data
 func (v *TopView) render() {
 	v.mu.Lock()
-	procs := make([]*models.Process, len(v.processes))
-	copy(procs, v.processes)
+	if v.topData == nil {
+		v.mu.Unlock()
+		return
+	}
+	procs := make([]*models.Process, len(v.topData.Processes))
+	copy(procs, v.topData.Processes)
+	netIO := v.topData.NetworkIO
+	cpuCores := v.topData.CPUCores
+	memLimit := v.topData.MemoryLimit
 	sf := v.sortField
 	v.mu.Unlock()
 
@@ -135,19 +152,28 @@ func (v *TopView) render() {
 				cmd = cmd[:57] + "..."
 			}
 
+			// Format CPU% with limit context
+			cpuStr := fmt.Sprintf("%.1f", p.CPUPercent)
+
+			// Format MEM% with limit context
+			memStr := fmt.Sprintf("%.1f", p.MemoryPercent)
+
 			v.table.AddRow(
 				fmt.Sprintf("%d", p.PID),
 				fmt.Sprintf("%d", p.PPID),
 				p.State,
-				fmt.Sprintf("%.1f", p.CPUPercent),
-				fmt.Sprintf("%.1f", p.MemoryPercent),
+				cpuStr,
+				memStr,
 				formatBytes(int64(p.MemoryRSS)),
+				formatRate(p.ReadBytesPerSec),
+				formatRate(p.WriteBytesPerSec),
 				formatBytes(int64(p.ReadBytes)),
 				formatBytes(int64(p.WriteBytes)),
 				cmd,
 			)
 		}
 
+		v.updateNetBarData(netIO, cpuCores, memLimit)
 		v.updateStatusBar()
 	})
 }
@@ -163,8 +189,8 @@ func sortProcesses(procs []*models.Process, field SortField) {
 		case SortByPID:
 			return procs[i].PID < procs[j].PID
 		case SortByIO:
-			totalI := procs[i].ReadBytes + procs[i].WriteBytes
-			totalJ := procs[j].ReadBytes + procs[j].WriteBytes
+			totalI := procs[i].ReadBytesPerSec + procs[i].WriteBytesPerSec
+			totalJ := procs[j].ReadBytesPerSec + procs[j].WriteBytesPerSec
 			return totalI > totalJ
 		default:
 			return procs[i].CPUPercent > procs[j].CPUPercent
@@ -203,11 +229,26 @@ func (v *TopView) setSortField(field SortField) {
 	v.render()
 }
 
-// StartAutoRefresh starts periodic refresh
+// StartAutoRefresh starts periodic refresh. It is idempotent —
+// calling it while a refresh loop is already running is a no-op.
 func (v *TopView) StartAutoRefresh() {
+	v.mu.Lock()
+	if v.refreshRunning {
+		v.mu.Unlock()
+		return
+	}
+	v.refreshRunning = true
+	v.refreshStop = make(chan struct{})
+	v.mu.Unlock()
+
 	go func() {
 		ticker := time.NewTicker(v.refreshInterval)
 		defer ticker.Stop()
+		defer func() {
+			v.mu.Lock()
+			v.refreshRunning = false
+			v.mu.Unlock()
+		}()
 
 		for {
 			select {
@@ -222,12 +263,13 @@ func (v *TopView) StartAutoRefresh() {
 	}()
 }
 
-// StopAutoRefresh stops the auto-refresh
+// StopAutoRefresh stops the auto-refresh loop.
 func (v *TopView) StopAutoRefresh() {
-	select {
-	case v.refreshStop <- struct{}{}:
-	default:
+	v.mu.Lock()
+	if v.refreshRunning {
+		close(v.refreshStop)
 	}
+	v.mu.Unlock()
 }
 
 // GetFocusPrimitive returns the focusable primitive (table)
@@ -235,11 +277,49 @@ func (v *TopView) GetFocusPrimitive() tview.Primitive {
 	return v.table
 }
 
+// updateNetBar initializes the network bar with placeholder text
+func (v *TopView) updateNetBar() {
+	v.netBar.SetText(" [gray]Network: waiting for data...[-]")
+}
+
+// updateNetBarData renders the network bar with live data
+func (v *TopView) updateNetBarData(netIO []*models.NetworkStats, cpuCores float64, memLimit int64) {
+	var parts []string
+
+	// Show limits
+	if cpuCores > 0 {
+		parts = append(parts, fmt.Sprintf("[gray]CPU Limit:[aqua]%.2f cores[-]", cpuCores))
+	}
+	if memLimit > 0 {
+		parts = append(parts, fmt.Sprintf("[gray]Mem Limit:[aqua]%s[-]", formatBytes(memLimit)))
+	}
+
+	// Show per-interface network IO
+	for _, ns := range netIO {
+		parts = append(parts, fmt.Sprintf(
+			"[gray]%s [green]↓[white]%s[gray](%s) [red]↑[white]%s[gray](%s)[-]",
+			ns.Interface,
+			formatRate(ns.RxBytesPerSec), formatBytes(int64(ns.RxBytes)),
+			formatRate(ns.TxBytesPerSec), formatBytes(int64(ns.TxBytes)),
+		))
+	}
+
+	if len(parts) == 0 {
+		v.netBar.SetText(" [gray]Network: no active interfaces[-]")
+		return
+	}
+
+	v.netBar.SetText(" " + strings.Join(parts, "  "))
+}
+
 // updateStatusBar renders the status bar
 func (v *TopView) updateStatusBar() {
 	v.mu.Lock()
 	sf := v.sortField
-	count := len(v.processes)
+	count := 0
+	if v.topData != nil {
+		count = len(v.topData.Processes)
+	}
 	v.mu.Unlock()
 
 	sortLabel := "CPU"
@@ -256,4 +336,26 @@ func (v *TopView) updateStatusBar() {
 		" [white]Processes: [green]%d[white]  |  Sort: [aqua]%s[white]  |  [yellow]c[white]:cpu [yellow]m[white]:mem [yellow]p[white]:pid [yellow]i[white]:io",
 		count, sortLabel,
 	))
+}
+
+// formatRate formats a bytes/sec value as a human-readable rate string
+func formatRate(bytesPerSec float64) string {
+	if bytesPerSec < 1 {
+		return "0 B/s"
+	}
+	const (
+		KB = 1024.0
+		MB = KB * 1024
+		GB = MB * 1024
+	)
+	switch {
+	case bytesPerSec >= GB:
+		return fmt.Sprintf("%.1f G/s", bytesPerSec/GB)
+	case bytesPerSec >= MB:
+		return fmt.Sprintf("%.1f M/s", bytesPerSec/MB)
+	case bytesPerSec >= KB:
+		return fmt.Sprintf("%.1f K/s", bytesPerSec/KB)
+	default:
+		return fmt.Sprintf("%.0f B/s", bytesPerSec)
+	}
 }
