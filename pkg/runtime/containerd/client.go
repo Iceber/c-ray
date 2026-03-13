@@ -18,6 +18,7 @@ import (
 	"github.com/containerd/typeurl/v2"
 	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
+	runtimecri "github.com/icebergu/c-ray/pkg/runtime/cri"
 	"github.com/icebergu/c-ray/pkg/sysinfo"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -27,6 +28,12 @@ import (
 const runtimeV2StateBase = "/run/containerd/io.containerd.runtime.v2.task"
 const defaultRuncRoot = "/run/containerd/runc"
 
+type criMetadataClient interface {
+	InspectContainerMounts(ctx context.Context, containerID string) (*runtimecri.ContainerMounts, error)
+	InspectPodSandboxNetwork(ctx context.Context, sandboxID string) (*runtimecri.PodSandboxNetwork, error)
+	InspectContainerStatus(ctx context.Context, containerID string) (*runtimecri.ContainerStatusInfo, error)
+}
+
 // ContainerdRuntime implements the Runtime interface for containerd
 type ContainerdRuntime struct {
 	config           *runtime.Config
@@ -35,6 +42,7 @@ type ContainerdRuntime struct {
 	procReader       *sysinfo.ProcReader
 	cgroupReader     *sysinfo.CGroupReader
 	mountReader      *sysinfo.MountReader
+	criClient        criMetadataClient
 }
 
 // NewContainerdRuntime creates a new containerd runtime instance
@@ -48,6 +56,7 @@ func NewContainerdRuntime(config *runtime.Config) *ContainerdRuntime {
 		procReader:       sysinfo.NewProcReader(),
 		cgroupReader:     cgroupReader,
 		mountReader:      sysinfo.NewMountReader(),
+		criClient:        runtimecri.NewClient(config.SocketPath),
 	}
 }
 
@@ -239,11 +248,14 @@ func (r *ContainerdRuntime) GetContainerRuntimeInfo(ctx context.Context, id stri
 	if err != nil {
 		return nil, fmt.Errorf("failed to get container spec: %w", err)
 	}
+	detail.Namespaces = buildNamespaceMap(spec)
 
 	// Extract CGroup path
 	if spec.Linux != nil && spec.Linux.CgroupsPath != "" {
 		detail.CGroupPath = spec.Linux.CgroupsPath
 	}
+	detail.Environment = buildEnvironmentFromSpec(spec)
+	detail.SharedPID = sharedPIDFromSpec(spec)
 
 	// Get task info
 	var shimProc *shimProcessInfo
@@ -294,20 +306,16 @@ func (r *ContainerdRuntime) GetContainerRuntimeInfo(ctx context.Context, id stri
 		}
 	}
 
-	// Get mount information
-	var mountRootFSPath string
-	if detail.PID > 0 && r.mountReader != nil {
-		mounts, err := r.mountReader.ReadMounts(int(detail.PID))
-		if err == nil {
-			detail.Mounts = mounts
-			detail.MountCount = len(mounts)
-			mountRootFSPath = r.resolveMountRootFSPath(mounts)
+	if r.criClient != nil {
+		if statusInfo, err := r.criClient.InspectContainerStatus(ctx, info.ID); err == nil && statusInfo != nil {
+			applyCRIContainerStatus(detail, statusInfo)
 		}
 	}
-	if detail.MountCount == 0 {
-		detail.Mounts = buildMountsFromSpec(spec.Mounts)
-		detail.MountCount = len(detail.Mounts)
-	}
+
+	// Get merged mount information from CRI config, OCI spec and live mountinfo.
+	mounts, mountRootFSPath := r.resolveContainerMounts(ctx, info.ID, spec, detail.PID)
+	detail.Mounts = mounts
+	detail.MountCount = len(mounts)
 
 	// Count processes
 	if detail.PID > 0 && r.processCollector != nil {
@@ -316,6 +324,8 @@ func (r *ContainerdRuntime) GetContainerRuntimeInfo(ctx context.Context, id stri
 			detail.ProcessCount = len(processes)
 		}
 	}
+
+	r.populatePodNetwork(ctx, detail, info, spec)
 
 	r.populateRuntimeProfile(detail, info, spec, shimProc, mountRootFSPath)
 
@@ -345,6 +355,287 @@ func (r *ContainerdRuntime) buildContainerFromInfo(info containers.Container) mo
 	container.PodUID = info.Labels["io.kubernetes.pod.uid"]
 
 	return container
+}
+
+func buildNamespaceMap(spec *runtimespec.Spec) map[string]string {
+	if spec == nil || spec.Linux == nil || len(spec.Linux.Namespaces) == 0 {
+		return nil
+	}
+
+	namespaces := make(map[string]string, len(spec.Linux.Namespaces))
+	for _, ns := range spec.Linux.Namespaces {
+		namespaces[string(ns.Type)] = ns.Path
+	}
+
+	return namespaces
+}
+
+func buildEnvironmentFromSpec(spec *runtimespec.Spec) []models.EnvVar {
+	if spec == nil || spec.Process == nil || len(spec.Process.Env) == 0 {
+		return nil
+	}
+
+	envs := make([]models.EnvVar, 0, len(spec.Process.Env))
+	for _, entry := range spec.Process.Env {
+		key, value, found := strings.Cut(entry, "=")
+		if !found || key == "" {
+			continue
+		}
+		envs = append(envs, models.EnvVar{
+			Key:          key,
+			Value:        value,
+			IsKubernetes: isKubernetesEnvKey(key),
+		})
+	}
+	return envs
+}
+
+func sharedPIDFromSpec(spec *runtimespec.Spec) *bool {
+	if spec == nil || spec.Linux == nil {
+		return nil
+	}
+	for _, ns := range spec.Linux.Namespaces {
+		if string(ns.Type) != "pid" {
+			continue
+		}
+		shared := ns.Path != ""
+		return &shared
+	}
+	return nil
+}
+
+func isKubernetesEnvKey(key string) bool {
+	return strings.HasPrefix(key, "KUBERNETES_") || strings.HasPrefix(key, "POD_") || strings.HasPrefix(key, "SERVICE_")
+}
+
+func applyCRIContainerStatus(detail *models.ContainerDetail, statusInfo *runtimecri.ContainerStatusInfo) {
+	if detail == nil || statusInfo == nil {
+		return
+	}
+	if detail.StartedAt.IsZero() && !statusInfo.StartedAt.IsZero() {
+		detail.StartedAt = statusInfo.StartedAt
+	}
+	if detail.ExitedAt.IsZero() && !statusInfo.FinishedAt.IsZero() {
+		detail.ExitedAt = statusInfo.FinishedAt
+	}
+	if detail.ExitCode == nil && statusInfo.ExitCode != nil {
+		detail.ExitCode = statusInfo.ExitCode
+	}
+	if detail.ExitReason == "" {
+		detail.ExitReason = statusInfo.Reason
+	}
+	if detail.RestartCount == nil {
+		detail.RestartCount = statusInfo.RestartCount
+	}
+	if detail.SharedPID == nil {
+		detail.SharedPID = statusInfo.SharedPID
+	}
+	if len(detail.Environment) == 0 && len(statusInfo.Envs) > 0 {
+		detail.Environment = make([]models.EnvVar, 0, len(statusInfo.Envs))
+		for _, env := range statusInfo.Envs {
+			detail.Environment = append(detail.Environment, models.EnvVar{
+				Key:          env.Key,
+				Value:        env.Value,
+				IsKubernetes: isKubernetesEnvKey(env.Key),
+			})
+		}
+	}
+}
+
+func (r *ContainerdRuntime) populatePodNetwork(ctx context.Context, detail *models.ContainerDetail, info containers.Container, spec *runtimespec.Spec) {
+	if detail == nil {
+		return
+	}
+
+	podNetwork := &models.PodNetworkInfo{
+		SandboxID: info.SandboxID,
+	}
+	if path := namespacePathFromMap(detail.Namespaces, "network"); path != "" {
+		podNetwork.NetNSPath = path
+		podNetwork.NamespaceSource = "containerd-spec"
+	}
+
+	if info.SandboxID == "" {
+		podNetwork.Warnings = append(podNetwork.Warnings, "sandbox id unresolved")
+		if shouldAttachPodNetwork(podNetwork) {
+			detail.PodNetwork = podNetwork
+		}
+		return
+	}
+	if r.criClient == nil {
+		podNetwork.Warnings = append(podNetwork.Warnings, "cri metadata client unavailable")
+		if shouldAttachPodNetwork(podNetwork) {
+			detail.PodNetwork = podNetwork
+		}
+		return
+	}
+
+	criNetwork, err := r.criClient.InspectPodSandboxNetwork(ctx, info.SandboxID)
+	if err != nil {
+		podNetwork.Warnings = append(podNetwork.Warnings, fmt.Sprintf("cri pod sandbox status failed: %v", err))
+		if shouldAttachPodNetwork(podNetwork) {
+			detail.PodNetwork = podNetwork
+		}
+		return
+	}
+
+	if criNetwork != nil {
+		podNetwork.SandboxState = criNetwork.SandboxState
+		podNetwork.PrimaryIP = criNetwork.PrimaryIP
+		podNetwork.AdditionalIPs = append([]string(nil), criNetwork.AdditionalIPs...)
+		podNetwork.HostNetwork = criNetwork.HostNetwork
+		podNetwork.NamespaceMode = criNetwork.NamespaceMode
+		podNetwork.NamespaceTargetID = criNetwork.NamespaceTargetID
+		podNetwork.Hostname = criNetwork.Hostname
+		podNetwork.RuntimeHandler = criNetwork.RuntimeHandler
+		podNetwork.RuntimeType = criNetwork.RuntimeType
+		podNetwork.StatusSource = criNetwork.StatusSource
+		podNetwork.ConfigSource = criNetwork.ConfigSource
+		if len(criNetwork.PortMappings) > 0 {
+			podNetwork.PortMappings = convertCRIPortMappings(criNetwork.PortMappings)
+		}
+		if criNetwork.DNS != nil {
+			podNetwork.DNS = &models.DNSConfig{
+				Domain:   criNetwork.DNS.Domain,
+				Servers:  append([]string(nil), criNetwork.DNS.Servers...),
+				Searches: append([]string(nil), criNetwork.DNS.Searches...),
+				Options:  append([]string(nil), criNetwork.DNS.Options...),
+			}
+		}
+		if criNetwork.CNI != nil {
+			podNetwork.CNI = convertCRICNIResult(criNetwork.CNI)
+		}
+		if criNetwork.NetNSPath != "" {
+			if podNetwork.NetNSPath != "" && podNetwork.NetNSPath != criNetwork.NetNSPath {
+				podNetwork.Warnings = append(podNetwork.Warnings, fmt.Sprintf("netns path mismatch: spec=%s cri=%s", podNetwork.NetNSPath, criNetwork.NetNSPath))
+			}
+			podNetwork.NetNSPath = criNetwork.NetNSPath
+			podNetwork.NamespaceSource = criNetwork.NamespaceSource
+		}
+		podNetwork.Warnings = append(podNetwork.Warnings, criNetwork.Warnings...)
+	}
+
+	if detail.PID > 0 && r.procReader != nil {
+		if stats, err := r.procReader.ReadNetDev(int(detail.PID)); err == nil {
+			podNetwork.ObservedInterfaces = append([]*models.NetworkStats(nil), stats...)
+		} else {
+			podNetwork.Warnings = append(podNetwork.Warnings, fmt.Sprintf("procfs net/dev read failed: %v", err))
+		}
+	}
+
+	if podNetwork.NetNSPath == "" {
+		if path := runtimeSpecNetworkPath(spec); path != "" {
+			podNetwork.NetNSPath = path
+			if podNetwork.NamespaceSource == "" {
+				podNetwork.NamespaceSource = "containerd-spec"
+			}
+		}
+	}
+
+	detail.IPAddress = podNetwork.PrimaryIP
+	detail.PortMappings = podNetwork.PortMappings
+	if shouldAttachPodNetwork(podNetwork) {
+		detail.PodNetwork = podNetwork
+	}
+}
+
+func namespacePathFromMap(namespaces map[string]string, nsType string) string {
+	if len(namespaces) == 0 {
+		return ""
+	}
+	return namespaces[nsType]
+}
+
+func runtimeSpecNetworkPath(spec *runtimespec.Spec) string {
+	if spec == nil || spec.Linux == nil {
+		return ""
+	}
+	for _, ns := range spec.Linux.Namespaces {
+		if string(ns.Type) != "network" {
+			continue
+		}
+		return ns.Path
+	}
+	return ""
+}
+
+func convertCRIPortMappings(mappings []*runtimecri.PortMapping) []*models.PortMapping {
+	if len(mappings) == 0 {
+		return nil
+	}
+
+	result := make([]*models.PortMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		if mapping == nil {
+			continue
+		}
+		result = append(result, &models.PortMapping{
+			HostIP:        mapping.HostIP,
+			HostPort:      mapping.HostPort,
+			ContainerPort: mapping.ContainerPort,
+			Protocol:      mapping.Protocol,
+		})
+	}
+	return result
+}
+
+func convertCRICNIResult(result *runtimecri.CNIResultInfo) *models.CNIResultInfo {
+	if result == nil {
+		return nil
+	}
+
+	converted := &models.CNIResultInfo{}
+	for _, iface := range result.Interfaces {
+		if iface == nil {
+			continue
+		}
+		entry := &models.CNIInterface{
+			Name:       iface.Name,
+			MAC:        iface.MAC,
+			Sandbox:    iface.Sandbox,
+			PciID:      iface.PciID,
+			SocketPath: iface.SocketPath,
+		}
+		for _, addr := range iface.Addresses {
+			if addr == nil {
+				continue
+			}
+			entry.Addresses = append(entry.Addresses, &models.CNIInterfaceAddress{
+				CIDR:    addr.CIDR,
+				Gateway: addr.Gateway,
+				Family:  addr.Family,
+			})
+		}
+		converted.Interfaces = append(converted.Interfaces, entry)
+	}
+	for _, route := range result.Routes {
+		if route == nil {
+			continue
+		}
+		converted.Routes = append(converted.Routes, &models.CNIRoute{
+			Destination: route.Destination,
+			Gateway:     route.Gateway,
+		})
+	}
+	if result.DNS != nil {
+		converted.DNS = &models.DNSConfig{
+			Domain:   result.DNS.Domain,
+			Servers:  append([]string(nil), result.DNS.Servers...),
+			Searches: append([]string(nil), result.DNS.Searches...),
+			Options:  append([]string(nil), result.DNS.Options...),
+		}
+	}
+	if len(converted.Interfaces) == 0 && len(converted.Routes) == 0 && converted.DNS == nil {
+		return nil
+	}
+	return converted
+}
+
+func shouldAttachPodNetwork(info *models.PodNetworkInfo) bool {
+	if info == nil {
+		return false
+	}
+	return info.SandboxID != "" || info.PrimaryIP != "" || len(info.AdditionalIPs) > 0 || info.NetNSPath != "" || len(info.PortMappings) > 0 || info.Hostname != "" || len(info.ObservedInterfaces) > 0 || len(info.Warnings) > 0
 }
 
 func (r *ContainerdRuntime) populateContainerTaskState(ctx context.Context, task client.Task, container *models.Container) {
@@ -815,10 +1106,15 @@ func (r *ContainerdRuntime) GetImageConfigInfo(ctx context.Context, imageID stri
 		return nil, err
 	}
 
+	targetKind, schema := describeImageTarget(info.target.MediaType)
+
 	return &models.ImageConfigInfo{
-		Digest:      info.configDesc.Digest.String(),
-		ContentPath: r.getContentPath(info.configDesc.Digest),
-		Size:        info.configDesc.Size,
+		Digest:          info.configDesc.Digest.String(),
+		ContentPath:     r.getContentPath(info.configDesc.Digest),
+		Size:            info.configDesc.Size,
+		TargetMediaType: info.target.MediaType,
+		TargetKind:      targetKind,
+		Schema:          schema,
 	}, nil
 }
 
@@ -1065,6 +1361,29 @@ func (r *ContainerdRuntime) getCompressionType(mediaType string) string {
 	}
 }
 
+func describeImageTarget(mediaType string) (string, string) {
+	kind := "Unknown"
+	schema := "Unknown"
+
+	if images.IsManifestType(mediaType) {
+		kind = "Manifest"
+	} else {
+		switch mediaType {
+		case images.MediaTypeDockerSchema2ManifestList, ocispec.MediaTypeImageIndex:
+			kind = "Index"
+		}
+	}
+
+	switch {
+	case strings.Contains(mediaType, "docker"):
+		schema = "Docker"
+	case strings.Contains(mediaType, "oci"):
+		schema = "OCI"
+	}
+
+	return kind, schema
+}
+
 // ListPods returns all pods
 func (r *ContainerdRuntime) ListPods(ctx context.Context) ([]*models.Pod, error) {
 	if r.client == nil {
@@ -1158,15 +1477,16 @@ func (r *ContainerdRuntime) GetContainerMounts(ctx context.Context, id string) (
 		return nil, fmt.Errorf("client not connected")
 	}
 
-	if r.mountReader == nil {
-		return nil, fmt.Errorf("mount reader not initialized")
-	}
-
-	_, task, err := r.loadRunningTask(ctx, id)
+	c, task, err := r.loadRunningTask(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
-	// Read mounts
-	return r.mountReader.ReadMounts(int(task.Pid()))
+	spec, err := c.Spec(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get container spec: %w", err)
+	}
+
+	mounts, _ := r.resolveContainerMounts(ctx, id, spec, task.Pid())
+	return mounts, nil
 }

@@ -3,26 +3,26 @@ package views
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
-	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/rivo/tview"
 )
 
-// DetailTab represents the active tab in the detail view's lower half
+// DetailTab represents the active tab in the container detail view.
 type DetailTab int
 
 const (
-	DetailTabTop DetailTab = iota
-	DetailTabProcessTree
-	DetailTabMounts
-	DetailTabImageLayers
+	DetailTabSummary DetailTab = iota
+	DetailTabProcesses
+	DetailTabFilesystem
 	DetailTabRuntime
+	DetailTabNetwork
 )
 
-// ContainerDetailView displays detailed information about a container
+// ContainerDetailView displays detailed information about a container.
 type ContainerDetailView struct {
 	*tview.Flex
 
@@ -30,128 +30,127 @@ type ContainerDetailView struct {
 	rt  runtime.Runtime
 	ctx context.Context
 
-	// Current container
 	containerID string
 	detail      *models.ContainerDetail
+	refreshedAt time.Time
 
-	// Layout components
-	titleBar   *tview.TextView
-	overview   *components.InfoPanel
-	tabBar     *tview.TextView
-	tabContent *tview.Pages
-	statusBar  *tview.TextView
+	headerLine1 *tview.TextView
+	headerLine2 *tview.TextView
+	contextLine *tview.TextView
+	tabBar      *tview.TextView
+	content     *tview.Pages
+	statusBar   *tview.TextView
 
-	// Sub-views for tabs
-	topView         *TopView
-	processTreeView *ProcessTreeView
-	mountsView      *MountsView
-	imageLayersView *ImageLayersView
-	runtimeInfoView *RuntimeInfoView
+	summaryView    *DetailSummaryView
+	processesView  *ProcessesView
+	filesystemView *StorageView
+	runtimeView    *RuntimeInfoView
+	networkView    *NetworkInfoView
 
-	// Tab state
 	activeTab DetailTab
-
-	// Callbacks
-	onBack func()
+	onBack    func()
 }
 
-// NewContainerDetailView creates a new container detail view
+// NewContainerDetailView creates a new container detail view.
 func NewContainerDetailView(app *tview.Application, rt runtime.Runtime, ctx context.Context) *ContainerDetailView {
 	v := &ContainerDetailView{
 		Flex:      tview.NewFlex().SetDirection(tview.FlexRow),
 		app:       app,
 		rt:        rt,
 		ctx:       ctx,
-		activeTab: DetailTabTop,
+		activeTab: DetailTabSummary,
 	}
 
 	v.setupLayout()
 	return v
 }
 
-// setupLayout creates the detail view layout
 func (v *ContainerDetailView) setupLayout() {
-	// Title bar - shows container name and ID
-	v.titleBar = tview.NewTextView().
-		SetDynamicColors(true).
-		SetTextAlign(tview.AlignLeft)
-	v.titleBar.SetBackgroundColor(tcell.ColorDarkSlateGray)
+	v.headerLine1 = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
+	v.headerLine2 = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
+	v.contextLine = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
+	v.tabBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
+	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
 
-	// Overview panel - upper half with container information
-	v.overview = components.NewInfoPanel()
-	v.overview.SetBorder(true).
-		SetBorderColor(tcell.ColorDarkCyan).
-		SetTitle(" Overview ").
-		SetTitleColor(tcell.ColorAqua)
-
-	// Tab bar for lower half
-	v.tabBar = tview.NewTextView().
-		SetDynamicColors(true).
-		SetTextAlign(tview.AlignLeft)
+	v.headerLine1.SetBackgroundColor(tcell.ColorDarkSlateGray)
+	v.headerLine2.SetBackgroundColor(tcell.ColorBlack)
+	v.contextLine.SetBackgroundColor(tcell.ColorBlack)
 	v.tabBar.SetBackgroundColor(tcell.ColorDarkSlateGray)
 
-	// Tab content area
-	v.tabContent = tview.NewPages()
+	v.summaryView = NewDetailSummaryView(v.app)
+	v.processesView = NewProcessesView(v.app, v.rt, v.ctx)
+	v.filesystemView = NewStorageView(v.app, v.rt, v.ctx)
+	v.runtimeView = NewRuntimeInfoView(v.rt)
+	v.networkView = NewNetworkInfoView(v.rt)
 
-	// Create sub-views for tabs
-	v.topView = NewTopView(v.app, v.rt, v.ctx)
-	v.processTreeView = NewProcessTreeView(v.app, v.rt, v.ctx)
-	v.mountsView = NewMountsView(v.app, v.rt, v.ctx)
-	v.imageLayersView = NewImageLayersView(v.app, v.rt, v.ctx)
-	v.runtimeInfoView = NewRuntimeInfoView(v.rt)
+	v.content = tview.NewPages()
+	v.content.AddPage("summary", v.summaryView, true, true)
+	v.content.AddPage("processes", v.processesView, true, false)
+	v.content.AddPage("filesystem", v.filesystemView, true, false)
+	v.content.AddPage("runtime", v.runtimeView, true, false)
+	v.content.AddPage("network", v.networkView, true, false)
 
-	v.tabContent.AddPage("top", v.topView, true, true)
-	v.tabContent.AddPage("process_tree", v.processTreeView, true, false)
-	v.tabContent.AddPage("mounts", v.mountsView, true, false)
-	v.tabContent.AddPage("image_layers", v.imageLayersView, true, false)
-	v.tabContent.AddPage("runtime", v.runtimeInfoView, true, false)
-
-	// Status bar
-	v.statusBar = tview.NewTextView().
-		SetDynamicColors(true).
-		SetTextAlign(tview.AlignLeft)
-
-	// Assemble layout: title(1) + overview(flex) + tabBar(1) + tabContent(flex) + statusBar(1)
-	v.Flex.AddItem(v.titleBar, 1, 0, false)
-	v.Flex.AddItem(v.overview, 0, 1, false)
+	v.Flex.AddItem(v.headerLine1, 1, 0, false)
+	v.Flex.AddItem(v.headerLine2, 1, 0, false)
+	v.Flex.AddItem(v.contextLine, 1, 0, false)
 	v.Flex.AddItem(v.tabBar, 1, 0, false)
-	v.Flex.AddItem(v.tabContent, 0, 1, false)
+	v.Flex.AddItem(v.content, 0, 1, false)
 	v.Flex.AddItem(v.statusBar, 1, 0, false)
 
+	v.renderHeader()
 	v.updateTabBar()
 	v.updateStatusBar()
 }
 
-// SetContainer sets the container to display and loads its details
+// SetContainer sets the container to display and loads its details.
 func (v *ContainerDetailView) SetContainer(containerID string) {
 	v.containerID = containerID
+	v.detail = nil
+	v.refreshedAt = time.Time{}
 
-	// Update sub-views with container ID
-	v.topView.SetContainer(containerID)
-	v.processTreeView.SetContainer(containerID)
-	v.mountsView.SetContainer(containerID)
-	v.imageLayersView.SetContainer(containerID)
-	v.runtimeInfoView.SetContainer(containerID)
+	v.summaryView.SetDetail(nil)
+	v.processesView.SetContainer(containerID)
+	v.processesView.SetDetail(nil)
+	v.filesystemView.SetContainer(containerID)
+	v.filesystemView.SetDetail(nil)
+	v.runtimeView.SetContainer(containerID)
+	v.networkView.SetContainer(containerID)
 
-	// Load overview data asynchronously to avoid blocking UI
+	queueUpdateDraw(v.app, func() {
+		v.renderHeader()
+		v.updateStatusBar()
+	})
+
 	go v.Refresh()
-
-	// Load initial top data and start auto-refresh
-	go v.topView.Refresh(v.ctx)
-	v.topView.StartAutoRefresh()
 }
 
-// SetBackFunc sets the callback for when user navigates back
+// SetBackFunc sets the callback for when user navigates back.
 func (v *ContainerDetailView) SetBackFunc(handler func()) {
 	v.onBack = handler
 }
 
-// Leave is called when navigating away from the detail view
+// Leave is called when navigating away from the detail view.
 func (v *ContainerDetailView) Leave() {
-	v.topView.StopAutoRefresh()
+	v.processesView.StopAutoRefresh()
 }
 
-// Refresh loads and displays container detail data
+// GetFocusPrimitive returns the currently active focus primitive.
+func (v *ContainerDetailView) GetFocusPrimitive() tview.Primitive {
+	switch v.activeTab {
+	case DetailTabProcesses:
+		return v.processesView.GetFocusPrimitive()
+	case DetailTabFilesystem:
+		return v.filesystemView.GetFocusPrimitive()
+	case DetailTabRuntime:
+		return v.runtimeView.GetFocusPrimitive()
+	case DetailTabNetwork:
+		return v.networkView.GetFocusPrimitive()
+	default:
+		return v.summaryView.GetFocusPrimitive()
+	}
+}
+
+// Refresh loads and displays container detail data.
 func (v *ContainerDetailView) Refresh() {
 	if v.containerID == "" {
 		return
@@ -159,130 +158,109 @@ func (v *ContainerDetailView) Refresh() {
 
 	detail, err := v.rt.GetContainerDetail(v.ctx, v.containerID)
 	if err != nil {
-		v.app.QueueUpdateDraw(func() {
-			v.overview.SetItems([]components.InfoItem{
-				{Label: "Error", Value: fmt.Sprintf("Failed to load: %v", err), Color: tcell.ColorRed},
-			})
+		queueUpdateDraw(v.app, func() {
+			v.headerLine1.SetText(fmt.Sprintf(" [red]Failed to load container detail: %v[-]", err))
+			v.headerLine2.SetText(" ")
+			v.contextLine.SetText(" ")
 		})
 		return
 	}
 
+	v.enrichDetail(detail)
+
 	v.detail = detail
+	v.refreshedAt = time.Now()
+	v.summaryView.SetDetail(detail)
+	v.processesView.SetDetail(detail)
+	v.filesystemView.SetDetail(detail)
 
-	v.imageLayersView.SetDetail(detail)
-
-	v.app.QueueUpdateDraw(func() {
-		v.renderTitle()
-		v.renderOverview()
+	queueUpdateDraw(v.app, func() {
+		v.renderHeader()
+		v.updateStatusBar()
 	})
 }
 
-// renderTitle updates the title bar
-func (v *ContainerDetailView) renderTitle() {
+func (v *ContainerDetailView) enrichDetail(detail *models.ContainerDetail) {
+	if detail == nil {
+		return
+	}
+
+	if runtimeDetail, err := v.rt.GetContainerRuntimeInfo(v.ctx, v.containerID); err == nil && runtimeDetail != nil {
+		mergeRuntimeDetail(detail, runtimeDetail)
+	}
+
+	imageRef := detail.Image
+	if imageRef == "" {
+		imageRef = detail.ImageName
+	}
+	if imageRef == "" {
+		return
+	}
+
+	if image, err := v.rt.GetImage(v.ctx, imageRef); err == nil && image != nil {
+		if detail.ImageName == "" {
+			detail.ImageName = image.Name
+		}
+		if detail.ImageID == "" {
+			detail.ImageID = image.Digest
+		}
+	}
+
+	if configInfo, err := v.rt.GetImageConfigInfo(v.ctx, imageRef); err == nil && configInfo != nil {
+		detail.ImageConfig = configInfo
+	}
+}
+
+func (v *ContainerDetailView) renderHeader() {
 	if v.detail == nil {
+		v.headerLine1.SetText(" [gray]Loading container detail...[-]")
+		v.headerLine2.SetText(" ")
+		v.contextLine.SetText(" ")
 		return
 	}
 
 	name := v.detail.Name
 	if name == "" {
-		name = v.detail.ID
+		name = shortID(v.detail.ID)
 	}
 
-	id := v.detail.ID
-	if len(id) > 12 {
-		id = id[:12]
-	}
-
-	statusColor := "white"
-	switch v.detail.Status {
-	case models.ContainerStatusRunning:
-		statusColor = "green"
-	case models.ContainerStatusPaused:
-		statusColor = "yellow"
-	case models.ContainerStatusStopped:
-		statusColor = "red"
-	case models.ContainerStatusCreated:
-		statusColor = "darkcyan"
-	}
-
-	v.titleBar.SetText(fmt.Sprintf(
-		" [aqua::b]Container[-:-:-]  [white]%s[gray] (%s)  [%s]%s[-]",
-		name, id, statusColor, string(v.detail.Status),
+	v.headerLine1.SetText(fmt.Sprintf(
+		" [white::b]%s[-:-:-] [gray](%s)[-]   %s   [gray]Created[-] %s",
+		name,
+		shortID(v.detail.ID),
+		detailRuntimeHeadline(v.detail),
+		detailTimeLabel(v.detail.CreatedAt),
 	))
+	v.headerLine2.SetText(" " + detailSecondaryHeadline(v.detail))
+
+	if v.detail.PodNamespace != "" || v.detail.PodName != "" {
+		v.contextLine.SetText(fmt.Sprintf(" [gray]Pod[-] [white]%s/%s[-]", fallbackValue(v.detail.PodNamespace, "?"), fallbackValue(v.detail.PodName, "?")))
+	} else {
+		v.contextLine.SetText(" ")
+	}
 }
 
-// renderOverview renders the overview information panel
-func (v *ContainerDetailView) renderOverview() {
-	if v.detail == nil {
-		return
-	}
-
-	sections := []components.InfoSection{}
-
-	// Section 1: Basic Info
-	basicItems := []components.InfoItem{
-		{Label: "Container ID:", Value: v.detail.ID},
-		{Label: "Name:", Value: v.detail.Name},
-		{Label: "Status:", Value: string(v.detail.Status), Color: statusColor(v.detail.Status)},
-		{Label: "Created:", Value: v.detail.CreatedAt.Format("2006-01-02 15:04:05")},
-	}
-	if !v.detail.StartedAt.IsZero() {
-		basicItems = append(basicItems, components.InfoItem{
-			Label: "Started:", Value: v.detail.StartedAt.Format("2006-01-02 15:04:05"),
-		})
-		basicItems = append(basicItems, components.InfoItem{
-			Label: "Uptime:", Value: formatAge(v.detail.StartedAt),
-		})
-	}
-	sections = append(sections, components.InfoSection{Title: "Basic", Items: basicItems})
-
-	// Section 2: Process Info
-	processItems := []components.InfoItem{
-		{Label: "Host PID:", Value: fmt.Sprintf("%d", v.detail.PID)},
-	}
-	sections = append(sections, components.InfoSection{Title: "Process", Items: processItems})
-
-	// Section 3: Image Info
-	imageItems := []components.InfoItem{
-		{Label: "Image:", Value: v.detail.ImageName},
-	}
-	sections = append(sections, components.InfoSection{Title: "Image", Items: imageItems})
-
-	// Section 4: Pod Info (if applicable)
-	if v.detail.PodName != "" {
-		podItems := []components.InfoItem{
-			{Label: "Pod Name:", Value: v.detail.PodName},
-			{Label: "Pod Namespace:", Value: v.detail.PodNamespace},
-		}
-		if v.detail.PodUID != "" {
-			podItems = append(podItems, components.InfoItem{
-				Label: "Pod UID:", Value: v.detail.PodUID,
-			})
-		}
-		sections = append(sections, components.InfoSection{Title: "Pod", Items: podItems})
-	}
-
-	v.overview.SetSections(sections)
-}
-
-// HandleInput processes key events for the detail view
+// HandleInput processes key events for the detail view.
 func (v *ContainerDetailView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
-	// Global quit - always allow exit
 	if event.Key() == tcell.KeyCtrlC {
-		return event // Let parent handle it
+		return event
 	}
-	// Exit application with 'Q' (uppercase)
 	if event.Rune() == 'Q' {
-		return event // Let parent handle global quit
+		return event
 	}
 
-	// Back navigation
 	switch event.Key() {
 	case tcell.KeyEscape:
 		if v.onBack != nil {
 			v.Leave()
 			v.onBack()
 		}
+		return nil
+	case tcell.KeyTab:
+		v.switchTab((v.activeTab + 1) % 5)
+		return nil
+	case tcell.KeyBacktab:
+		v.switchTab((v.activeTab + 4) % 5)
 		return nil
 	}
 
@@ -295,128 +273,294 @@ func (v *ContainerDetailView) HandleInput(event *tcell.EventKey) *tcell.EventKey
 		return nil
 	case 'r', 'R':
 		go v.Refresh()
-		switch v.activeTab {
-		case DetailTabTop:
-			go v.topView.Refresh(v.ctx)
-		case DetailTabProcessTree:
-			go v.processTreeView.Refresh(v.ctx)
-		case DetailTabMounts:
-			go v.mountsView.Refresh(v.ctx)
-		case DetailTabImageLayers:
-			go v.imageLayersView.Refresh(v.ctx)
-		case DetailTabRuntime:
-			go v.runtimeInfoView.Refresh(v.ctx)
+		if v.activeTab == DetailTabProcesses {
+			go v.processesView.Refresh(v.ctx)
+		} else if v.activeTab == DetailTabFilesystem {
+			go v.filesystemView.Refresh(v.ctx)
+		} else if v.activeTab == DetailTabRuntime {
+			go v.runtimeView.Refresh(v.ctx)
+		} else if v.activeTab == DetailTabNetwork {
+			go v.networkView.Refresh(v.ctx)
 		}
 		return nil
-	// Tab switching
 	case '1':
-		v.switchTab(DetailTabTop)
+		v.switchTab(DetailTabSummary)
 		return nil
 	case '2':
-		v.switchTab(DetailTabProcessTree)
+		v.switchTab(DetailTabProcesses)
 		return nil
 	case '3':
-		v.switchTab(DetailTabMounts)
+		v.switchTab(DetailTabFilesystem)
 		return nil
 	case '4':
-		v.switchTab(DetailTabImageLayers)
-		return nil
-	case '5':
 		v.switchTab(DetailTabRuntime)
 		return nil
+	case '5':
+		v.switchTab(DetailTabNetwork)
+		return nil
 	}
 
-	// Delegate to active tab's input handler
 	switch v.activeTab {
-	case DetailTabTop:
-		return v.topView.HandleInput(event)
-	case DetailTabProcessTree:
-		return v.processTreeView.HandleInput(event)
-	case DetailTabMounts:
-		return v.mountsView.HandleInput(event)
-	case DetailTabImageLayers:
-		return v.imageLayersView.HandleInput(event)
+	case DetailTabProcesses:
+		return v.processesView.HandleInput(event)
+	case DetailTabFilesystem:
+		return v.filesystemView.HandleInput(event)
 	case DetailTabRuntime:
-		return v.runtimeInfoView.HandleInput(event)
+		return v.runtimeView.HandleInput(event)
+	case DetailTabNetwork:
+		return v.networkView.HandleInput(event)
+	default:
+		return v.summaryView.HandleInput(event)
 	}
-
-	return event
 }
 
-// switchTab switches the active detail tab
 func (v *ContainerDetailView) switchTab(tab DetailTab) {
+	if v.activeTab == DetailTabProcesses && tab != DetailTabProcesses {
+		v.processesView.StopAutoRefresh()
+	}
+
 	v.activeTab = tab
 	switch tab {
-	case DetailTabTop:
-		v.tabContent.SwitchToPage("top")
-		v.app.SetFocus(v.topView.GetFocusPrimitive())
-	case DetailTabProcessTree:
-		v.tabContent.SwitchToPage("process_tree")
-		go v.processTreeView.Refresh(v.ctx)
-		v.app.SetFocus(v.processTreeView.GetFocusPrimitive())
-	case DetailTabMounts:
-		v.tabContent.SwitchToPage("mounts")
-		go v.mountsView.Refresh(v.ctx)
-		v.app.SetFocus(v.mountsView.GetFocusPrimitive())
-	case DetailTabImageLayers:
-		v.tabContent.SwitchToPage("image_layers")
-		go v.imageLayersView.Refresh(v.ctx)
-		v.app.SetFocus(v.imageLayersView.GetFocusPrimitive())
+	case DetailTabSummary:
+		v.content.SwitchToPage("summary")
+		v.app.SetFocus(v.summaryView.GetFocusPrimitive())
+	case DetailTabProcesses:
+		v.content.SwitchToPage("processes")
+		v.processesView.StartAutoRefresh()
+		go v.processesView.Refresh(v.ctx)
+		v.app.SetFocus(v.processesView.GetFocusPrimitive())
+	case DetailTabFilesystem:
+		v.content.SwitchToPage("filesystem")
+		go v.filesystemView.Refresh(v.ctx)
+		v.app.SetFocus(v.filesystemView.GetFocusPrimitive())
 	case DetailTabRuntime:
-		v.tabContent.SwitchToPage("runtime")
-		go v.runtimeInfoView.Refresh(v.ctx)
-		v.app.SetFocus(v.runtimeInfoView.GetFocusPrimitive())
+		v.content.SwitchToPage("runtime")
+		go v.runtimeView.Refresh(v.ctx)
+		v.app.SetFocus(v.runtimeView.GetFocusPrimitive())
+	case DetailTabNetwork:
+		v.content.SwitchToPage("network")
+		go v.networkView.Refresh(v.ctx)
+		v.app.SetFocus(v.networkView.GetFocusPrimitive())
 	}
+
 	v.updateTabBar()
+	v.updateStatusBar()
 }
 
-// updateTabBar renders the tab bar
 func (v *ContainerDetailView) updateTabBar() {
 	tabs := []struct {
 		label string
 		key   string
 	}{
-		{"Top", "1"},
+		{"Summary", "1"},
 		{"Processes", "2"},
-		{"Mounts", "3"},
-		{"Layers", "4"},
-		{"Runtime", "5"},
+		{"Filesystem", "3"},
+		{"Runtime", "4"},
+		{"Network", "5"},
 	}
 
 	text := " "
-	for i, t := range tabs {
+	for i, tab := range tabs {
 		if DetailTab(i) == v.activeTab {
-			text += fmt.Sprintf("[black:aqua] %s(%s) [-:-] ", t.label, t.key)
+			text += fmt.Sprintf("[black:aqua] %s(%s) [-:-] ", tab.label, tab.key)
 		} else {
-			text += fmt.Sprintf("[white:darkslategray] %s(%s) [-:-] ", t.label, t.key)
+			text += fmt.Sprintf("[white:darkslategray] %s(%s) [-:-] ", tab.label, tab.key)
 		}
 	}
-
 	v.tabBar.SetText(text)
 }
 
-// updateStatusBar renders the status bar
 func (v *ContainerDetailView) updateStatusBar() {
-	v.statusBar.SetText(" [yellow]Esc/q[white]:back  [yellow]1-5[white]:tabs  [yellow]r[white]:refresh  [yellow]?[white]:help")
+	text := " [yellow]Esc/q[white]:back  [yellow]1-5[white]:pages  [yellow]Tab[white]:next page  [yellow]r[white]:refresh"
+	if v.activeTab == DetailTabProcesses {
+		text += "  [yellow]s/g/t[white]:process tabs  [yellow][/[white]]:cycle"
+	} else if v.activeTab == DetailTabFilesystem {
+		text += "  [yellow]m/l[white]:filesystem tabs"
+	} else if v.activeTab == DetailTabRuntime || v.activeTab == DetailTabNetwork {
+		text += "  [yellow]e[white]:toggle  [yellow]a[white]:expand/collapse"
+	}
+	v.statusBar.SetText(text)
 }
 
-// statusColor returns the tcell color for a container status
-func statusColor(status models.ContainerStatus) tcell.Color {
-	switch status {
+func detailRuntimeHeadline(detail *models.ContainerDetail) string {
+	switch detail.Status {
 	case models.ContainerStatusRunning:
-		return tcell.ColorGreen
-	case models.ContainerStatusPaused:
-		return tcell.ColorYellow
+		if detail.PID > 0 {
+			return fmt.Sprintf("[green]PID %d[-]", detail.PID)
+		}
+		return "[green]Running[-]"
 	case models.ContainerStatusStopped:
-		return tcell.ColorRed
+		if detail.ExitCode != nil {
+			return fmt.Sprintf("[red]Exit %d[-]", *detail.ExitCode)
+		}
+		return "[red]Exit unknown[-]"
 	case models.ContainerStatusCreated:
-		return tcell.ColorDarkCyan
+		return "[darkcyan]Created[-]"
+	case models.ContainerStatusPaused:
+		if detail.PID > 0 {
+			return fmt.Sprintf("[yellow]Paused PID %d[-]", detail.PID)
+		}
+		return "[yellow]Paused[-]"
 	default:
-		return tcell.ColorWhite
+		return "[white]Unknown[-]"
 	}
 }
 
-// formatBytes formats bytes into a human-readable string
+func detailSecondaryHeadline(detail *models.ContainerDetail) string {
+	switch detail.Status {
+	case models.ContainerStatusRunning:
+		if !detail.StartedAt.IsZero() {
+			return fmt.Sprintf("Started %s", detailTimeLabel(detail.StartedAt))
+		}
+		return "Started unknown"
+	case models.ContainerStatusStopped:
+		exited := "Exited time unknown"
+		if !detail.ExitedAt.IsZero() {
+			exited = fmt.Sprintf("Exited %s", detailTimeLabel(detail.ExitedAt))
+		}
+		if detail.ExitReason != "" {
+			return exited + "  Reason " + detail.ExitReason
+		}
+		return exited + "  Reason unknown"
+	case models.ContainerStatusCreated:
+		return "Not started"
+	case models.ContainerStatusPaused:
+		if !detail.StartedAt.IsZero() {
+			return fmt.Sprintf("Paused after start %s", detailTimeLabel(detail.StartedAt))
+		}
+		return "Paused"
+	default:
+		return "State unknown"
+	}
+}
+
+func detailTimeLabel(ts time.Time) string {
+	if ts.IsZero() {
+		return "unknown"
+	}
+	return fmt.Sprintf("%s ago", formatAge(ts))
+}
+
+func fallbackValue(value string, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func shortID(value string) string {
+	if value == "" {
+		return "unknown"
+	}
+	if len(value) <= 12 {
+		return value
+	}
+	return value[:12]
+}
+
+func truncateForCard(value string, width int) string {
+	if len(value) <= width {
+		return value
+	}
+	if width <= 3 {
+		return value[:width]
+	}
+	return value[:width-3] + "..."
+}
+
+func mergeRuntimeDetail(base *models.ContainerDetail, runtimeDetail *models.ContainerDetail) {
+	if base == nil || runtimeDetail == nil {
+		return
+	}
+
+	if base.ImageName == "" {
+		base.ImageName = runtimeDetail.ImageName
+	}
+	if base.ImageID == "" {
+		base.ImageID = runtimeDetail.ImageID
+	}
+	if base.ImageConfig == nil {
+		base.ImageConfig = runtimeDetail.ImageConfig
+	}
+	if base.SnapshotKey == "" {
+		base.SnapshotKey = runtimeDetail.SnapshotKey
+	}
+	if base.Snapshotter == "" {
+		base.Snapshotter = runtimeDetail.Snapshotter
+	}
+	if base.CGroupPath == "" {
+		base.CGroupPath = runtimeDetail.CGroupPath
+	}
+	if base.CGroupVersion == 0 {
+		base.CGroupVersion = runtimeDetail.CGroupVersion
+	}
+	if base.CGroupLimits == nil {
+		base.CGroupLimits = runtimeDetail.CGroupLimits
+	}
+	if base.RuntimeProfile == nil {
+		base.RuntimeProfile = runtimeDetail.RuntimeProfile
+	}
+	if base.PodNetwork == nil {
+		base.PodNetwork = runtimeDetail.PodNetwork
+	}
+	if base.Namespaces == nil {
+		base.Namespaces = runtimeDetail.Namespaces
+	}
+	if base.Mounts == nil {
+		base.Mounts = runtimeDetail.Mounts
+		base.MountCount = runtimeDetail.MountCount
+	}
+	if base.ProcessCount == 0 {
+		base.ProcessCount = runtimeDetail.ProcessCount
+	}
+	if len(base.Environment) == 0 {
+		base.Environment = runtimeDetail.Environment
+	}
+	if base.SharedPID == nil {
+		base.SharedPID = runtimeDetail.SharedPID
+	}
+	if base.RestartCount == nil {
+		base.RestartCount = runtimeDetail.RestartCount
+	}
+	if base.ExitedAt.IsZero() {
+		base.ExitedAt = runtimeDetail.ExitedAt
+	}
+	if base.ExitCode == nil {
+		base.ExitCode = runtimeDetail.ExitCode
+	}
+	if base.ExitReason == "" {
+		base.ExitReason = runtimeDetail.ExitReason
+	}
+	if base.ShimPID == 0 {
+		base.ShimPID = runtimeDetail.ShimPID
+	}
+	if base.OCIBundlePath == "" {
+		base.OCIBundlePath = runtimeDetail.OCIBundlePath
+	}
+	if base.OCIRuntimeDir == "" {
+		base.OCIRuntimeDir = runtimeDetail.OCIRuntimeDir
+	}
+	if base.WritableLayerPath == "" {
+		base.WritableLayerPath = runtimeDetail.WritableLayerPath
+	}
+	if base.ReadOnlyLayerPath == "" {
+		base.ReadOnlyLayerPath = runtimeDetail.ReadOnlyLayerPath
+	}
+	if base.RWLayerUsage == 0 {
+		base.RWLayerUsage = runtimeDetail.RWLayerUsage
+	}
+	if base.RWLayerInodes == 0 {
+		base.RWLayerInodes = runtimeDetail.RWLayerInodes
+	}
+	if base.IPAddress == "" {
+		base.IPAddress = runtimeDetail.IPAddress
+	}
+	if len(base.PortMappings) == 0 {
+		base.PortMappings = runtimeDetail.PortMappings
+	}
+}
+
+// formatBytes formats bytes into a human-readable string.
 func formatBytes(b int64) string {
 	const (
 		KB = 1024

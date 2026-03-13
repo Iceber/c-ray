@@ -152,7 +152,7 @@ func (v *ContainerTreeView) Refresh(ctx context.Context) error {
 
 	// UI updates must be done on the main thread
 	if v.app != nil {
-		v.app.QueueUpdateDraw(func() {
+		queueUpdateDraw(v.app, func() {
 			v.render()
 			v.restoreSelection(savedData)
 		})

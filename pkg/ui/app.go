@@ -38,6 +38,8 @@ func NewApp(rt runtime.Runtime) *App {
 		cancel:   cancel,
 	}
 
+	views.TrackApplicationLifecycle(app.tviewApp)
+
 	app.nav = NewNavigator(app.tviewApp, app.pages)
 	app.setupUI()
 	app.setupKeybindings()
@@ -59,7 +61,7 @@ func (a *App) setupUI() {
 	// Set container selection handler - navigate to detail page
 	a.mainView.SetContainerSelectFunc(func(containerID string) {
 		a.detailView.SetContainer(containerID)
-		a.nav.NavigateTo(PageContainerDetail)
+		a.nav.NavigateToAndFocus(PageContainerDetail, a.detailView.GetFocusPrimitive())
 	})
 
 	// Set back handler on detail view
@@ -142,14 +144,25 @@ func (a *App) showHelp() {
 
 [yellow::b]Detail View[-:-:-]
   [yellow]Esc/q[-]       Back to list
-  [yellow]1-5[-]         Switch tab (Top/Processes/Mounts/Layers/Runtime)
+	[yellow]1-5[-]         Switch page (Summary/Processes/Filesystem/Runtime/Network)
+	[yellow]Tab[-]         Next page
+	[yellow]Shift+Tab[-]   Previous page
   [yellow]r[-]           Refresh data
 
-[yellow::b]Top Tab[-:-:-]
+[yellow::b]Processes Workspace[-:-:-]
+	[yellow]s[-]           Switch to summary mode
+	[yellow]g[-]           Switch to tree mode
+	[yellow]t[-]           Switch to top mode
+	[yellow][ / ][-]       Cycle process sub-tabs
   [yellow]c[-]           Sort by CPU
   [yellow]m[-]           Sort by Memory
   [yellow]p[-]           Sort by PID
   [yellow]i[-]           Sort by I/O
+
+[yellow::b]Filesystem Workspace[-:-:-]
+	[yellow]l[-]           Switch to Rootfs Layers
+	[yellow]m[-]           Switch to Mounts
+	[yellow]i[-]           Toggle layer file browser in Rootfs Layers
 
 [yellow::b]Tree Views[-:-:-]
   [yellow]e[-]           Toggle expand/collapse
@@ -198,6 +211,7 @@ func (a *App) Stop() {
 	}
 	a.cancel()
 	a.runtime.Close()
+	views.UntrackApplicationLifecycle(a.tviewApp)
 	a.tviewApp.Stop()
 }
 

@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ type ProcessTreeView struct {
 
 	containerID string
 	processes   []*models.Process
+	detail      *models.ContainerDetail
 	mu          sync.Mutex
 }
 
@@ -64,6 +66,13 @@ func (v *ProcessTreeView) SetContainer(containerID string) {
 	v.mu.Unlock()
 }
 
+// SetDetail sets container detail used for shim context.
+func (v *ProcessTreeView) SetDetail(detail *models.ContainerDetail) {
+	v.mu.Lock()
+	v.detail = detail
+	v.mu.Unlock()
+}
+
 // Refresh loads and displays process tree data
 func (v *ProcessTreeView) Refresh(ctx context.Context) error {
 	v.mu.Lock()
@@ -92,6 +101,7 @@ func (v *ProcessTreeView) render() {
 	v.mu.Lock()
 	procs := make([]*models.Process, len(v.processes))
 	copy(procs, v.processes)
+	detail := v.detail
 	v.mu.Unlock()
 
 	// Build a map for quick lookup
@@ -111,9 +121,10 @@ func (v *ProcessTreeView) render() {
 		return roots[i].PID < roots[j].PID
 	})
 
-	v.app.QueueUpdateDraw(func() {
-		rootNode := tview.NewTreeNode("[aqua::b]Process Tree[-:-:-]").
-			SetSelectable(false)
+	queueUpdateDraw(v.app, func() {
+		rootNode := tview.NewTreeNode(processTreeRootLabel(detail)).
+			SetSelectable(true).
+			SetExpanded(true)
 
 		for _, root := range roots {
 			node := v.buildProcessNode(root)
@@ -128,14 +139,6 @@ func (v *ProcessTreeView) render() {
 
 // buildProcessNode recursively builds a tree node for a process and its children
 func (v *ProcessTreeView) buildProcessNode(p *models.Process) *tview.TreeNode {
-	cmd := p.Command
-	if len(p.Args) > 0 {
-		cmd = p.Command + " " + strings.Join(p.Args, " ")
-	}
-	if len(cmd) > 80 {
-		cmd = cmd[:77] + "..."
-	}
-
 	stateColor := "white"
 	switch p.State {
 	case "S":
@@ -150,26 +153,18 @@ func (v *ProcessTreeView) buildProcessNode(p *models.Process) *tview.TreeNode {
 		stateColor = "gray"
 	}
 
-	label := fmt.Sprintf("[yellow]%d[white] [%s](%s)[-] %s", p.PID, stateColor, p.State, cmd)
+	label := fmt.Sprintf(
+		"[white::b]%s[-:-:-] [gray][pid:%d][-] [%s](%s)[-] %s",
+		processDisplayName(p),
+		p.PID,
+		stateColor,
+		p.State,
+		processCommandSummary(p),
+	)
 	node := tview.NewTreeNode(label).
 		SetSelectable(true).
 		SetExpanded(true).
 		SetReference(p)
-
-	// Add resource info as a child node when expanded
-	infoLabel := fmt.Sprintf("[gray]cpu:[white]%.1f%%  [gray]mem:[white]%.1f%%  [gray]rss:[white]%s",
-		p.CPUPercent, p.MemoryPercent, formatBytes(int64(p.MemoryRSS)))
-	if p.ReadBytesPerSec > 0 || p.WriteBytesPerSec > 0 {
-		infoLabel += fmt.Sprintf("  [gray]r/s:[white]%s  [gray]w/s:[white]%s",
-			formatRate(p.ReadBytesPerSec), formatRate(p.WriteBytesPerSec))
-	}
-	if p.ReadBytes > 0 || p.WriteBytes > 0 {
-		infoLabel += fmt.Sprintf("  [gray]r:[white]%s  [gray]w:[white]%s",
-			formatBytes(int64(p.ReadBytes)), formatBytes(int64(p.WriteBytes)))
-	}
-	infoNode := tview.NewTreeNode(infoLabel).
-		SetSelectable(false)
-	node.AddChild(infoNode)
 
 	// Add children processes
 	if len(p.Children) > 0 {
@@ -178,13 +173,42 @@ func (v *ProcessTreeView) buildProcessNode(p *models.Process) *tview.TreeNode {
 		sort.Slice(children, func(i, j int) bool {
 			return children[i].PID < children[j].PID
 		})
-		for _, child := range children {
-			childNode := v.buildProcessNode(child)
+		for _, childNode := range v.buildChildNodes(children) {
 			node.AddChild(childNode)
 		}
 	}
 
 	return node
+}
+
+func (v *ProcessTreeView) buildChildNodes(children []*models.Process) []*tview.TreeNode {
+	groups := make(map[string][]*models.Process)
+	order := make([]string, 0)
+	for _, child := range children {
+		key := processGroupKey(child)
+		if _, ok := groups[key]; !ok {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], child)
+	}
+
+	nodes := make([]*tview.TreeNode, 0, len(order))
+	for _, key := range order {
+		group := groups[key]
+		if len(group) == 1 {
+			nodes = append(nodes, v.buildProcessNode(group[0]))
+			continue
+		}
+
+		agg := tview.NewTreeNode(fmt.Sprintf("[aqua]%d ×[-] %s [gray][same command][-]", len(group), processCommandSummary(group[0]))).
+			SetSelectable(true).
+			SetExpanded(false)
+		for _, child := range group {
+			agg.AddChild(v.buildProcessNode(child))
+		}
+		nodes = append(nodes, agg)
+	}
+	return nodes
 }
 
 // HandleInput processes key events
@@ -248,6 +272,14 @@ func (v *ProcessTreeView) GetFocusPrimitive() tview.Primitive {
 	return v.tree
 }
 
+// SnapshotProcessCount returns a thread-safe count of processes.
+// This method is designed to be called from other views without breaking encapsulation.
+func (v *ProcessTreeView) SnapshotProcessCount() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return len(v.processes)
+}
+
 // updateStatusBar renders the status bar
 func (v *ProcessTreeView) updateStatusBar() {
 	v.mu.Lock()
@@ -255,7 +287,51 @@ func (v *ProcessTreeView) updateStatusBar() {
 	v.mu.Unlock()
 
 	v.statusBar.SetText(fmt.Sprintf(
-		" [white]Processes: [green]%d[white]  |  [yellow]e[white]:toggle expand  [yellow]a[white]:expand/collapse all  [yellow]Enter[white]:select",
+		" [white]Tree: [green]%d[white]  |  [aqua]root[-]: shim -> container process tree  |  [yellow]e[white]:toggle expand  [yellow]a[white]:expand/collapse all",
 		count,
 	))
+}
+
+func processTreeRootLabel(detail *models.ContainerDetail) string {
+	shimName := "containerd-shim"
+	shimPID := uint32(0)
+	if detail != nil {
+		shimPID = detail.ShimPID
+		if detail.RuntimeProfile != nil && detail.RuntimeProfile.Shim != nil && detail.RuntimeProfile.Shim.BinaryPath != "" {
+			shimName = filepath.Base(detail.RuntimeProfile.Shim.BinaryPath)
+		}
+	}
+	if shimPID > 0 {
+		return fmt.Sprintf("[aqua::b]Shim[-:-:-] [gray](%s, not in container)[-] [white][pid:%d][-]", shimName, shimPID)
+	}
+	return fmt.Sprintf("[aqua::b]Shim[-:-:-] [gray](%s, not in container)[-]", shimName)
+}
+
+func processDisplayName(process *models.Process) string {
+	if process.Command != "" {
+		return filepath.Base(process.Command)
+	}
+	if len(process.Args) > 0 {
+		return filepath.Base(process.Args[0])
+	}
+	return fmt.Sprintf("pid-%d", process.PID)
+}
+
+func processCommandSummary(process *models.Process) string {
+	parts := []string{}
+	if process.Command != "" {
+		parts = append(parts, process.Command)
+	}
+	if len(process.Args) > 0 {
+		parts = append(parts, strings.Join(process.Args, " "))
+	}
+	cmd := strings.TrimSpace(strings.Join(parts, " "))
+	if cmd == "" {
+		cmd = processDisplayName(process)
+	}
+	return truncateForCard(cmd, 72)
+}
+
+func processGroupKey(process *models.Process) string {
+	return processDisplayName(process) + "\x00" + processCommandSummary(process)
 }

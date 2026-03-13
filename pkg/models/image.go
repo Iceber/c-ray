@@ -16,9 +16,12 @@ type Image struct {
 
 // ImageConfigInfo holds metadata about the image config
 type ImageConfigInfo struct {
-	Digest      string
-	ContentPath string
-	Size        int64
+	Digest          string
+	ContentPath     string
+	Size            int64
+	TargetMediaType string
+	TargetKind      string
+	Schema          string
 }
 
 // ImageLayer represents a single layer in an image

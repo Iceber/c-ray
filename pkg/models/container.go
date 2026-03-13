@@ -2,6 +2,13 @@ package models
 
 import "time"
 
+// EnvVar represents one process environment variable.
+type EnvVar struct {
+	Key          string
+	Value        string
+	IsKubernetes bool
+}
+
 // Container represents a container instance
 type Container struct {
 	ID        string
@@ -40,6 +47,12 @@ type ContainerDetail struct {
 	// Process information
 	ProcessCount int
 	Processes    []*Process
+	Environment  []EnvVar
+	SharedPID    *bool
+	RestartCount *uint32
+	ExitedAt     time.Time
+	ExitCode     *int32
+	ExitReason   string
 
 	// CGroup information
 	CGroupPath    string
@@ -48,6 +61,7 @@ type ContainerDetail struct {
 
 	// Image information
 	ImageName         string
+	ImageConfig       *ImageConfigInfo
 	ImageLayers       []string // Snapshot keys
 	SnapshotKey       string   // Container's active snapshot key (RW layer)
 	ReadOnlyLayerPath string
@@ -71,6 +85,7 @@ type ContainerDetail struct {
 	// Network information
 	IPAddress    string
 	PortMappings []*PortMapping
+	PodNetwork   *PodNetworkInfo
 }
 
 // CGroupLimits contains cgroup resource limits
@@ -94,7 +109,30 @@ type Mount struct {
 	Destination string
 	Type        string
 	Options     []string
+	HostPath    string
+	LiveSource  string
+	Origin      MountOrigin
+	State       MountState
+	Note        string
 }
+
+// MountOrigin describes which subsystem contributed the mount row.
+type MountOrigin string
+
+const (
+	MountOriginCRI            MountOrigin = "cri"
+	MountOriginRuntimeDefault MountOrigin = "runtime-default"
+	MountOriginLiveExtra      MountOrigin = "live-extra"
+)
+
+// MountState describes whether a mount was declared, observed live, or both.
+type MountState string
+
+const (
+	MountStateDeclaredLive MountState = "declared+live"
+	MountStateDeclaredOnly MountState = "declared-only"
+	MountStateLiveOnly     MountState = "live-only"
+)
 
 // PortMapping represents a port mapping
 type PortMapping struct {
@@ -102,6 +140,67 @@ type PortMapping struct {
 	HostPort      uint16
 	ContainerPort uint16
 	Protocol      string // tcp or udp
+}
+
+// DNSConfig describes Pod-level DNS settings from CRI sandbox config.
+type DNSConfig struct {
+	Domain   string
+	Servers  []string
+	Searches []string
+	Options  []string
+}
+
+// CNIInterfaceAddress describes one CNI-assigned address in CIDR form.
+type CNIInterfaceAddress struct {
+	CIDR    string
+	Gateway string
+	Family  string
+}
+
+// CNIInterface describes one interface returned by CNI result.
+type CNIInterface struct {
+	Name       string
+	MAC        string
+	Sandbox    string
+	PciID      string
+	SocketPath string
+	Addresses  []*CNIInterfaceAddress
+}
+
+// CNIRoute describes one route returned by CNI result.
+type CNIRoute struct {
+	Destination string
+	Gateway     string
+}
+
+// CNIResultInfo contains normalized network data from CNI result.
+type CNIResultInfo struct {
+	Interfaces []*CNIInterface
+	Routes     []*CNIRoute
+	DNS        *DNSConfig
+}
+
+// PodNetworkInfo contains PodSandbox-scoped network metadata collected from CRI.
+type PodNetworkInfo struct {
+	SandboxID          string
+	SandboxState       string
+	PrimaryIP          string
+	AdditionalIPs      []string
+	HostNetwork        bool
+	NamespaceMode      string
+	NamespaceTargetID  string
+	NetNSPath          string
+	Hostname           string
+	DNS                *DNSConfig
+	PortMappings       []*PortMapping
+	RuntimeHandler     string
+	RuntimeType        string
+	StatusSource       string
+	ConfigSource       string
+	NamespaceSource    string
+	CNI                *CNIResultInfo
+	ObservedInterfaces []*NetworkStats
+	Warnings           []string
 }
 
 // RuntimeProfile contains structured runtime-specific information.

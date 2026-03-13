@@ -13,10 +13,31 @@ import (
 	runcoptions "github.com/containerd/containerd/api/types/runc/options"
 	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/typeurl/v2"
+	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
+	runtimecri "github.com/icebergu/c-ray/pkg/runtime/cri"
 	"github.com/icebergu/c-ray/pkg/sysinfo"
 	ocispec "github.com/opencontainers/runtime-spec/specs-go"
 )
+
+type stubCRIMetadataClient struct {
+	mounts     *runtimecri.ContainerMounts
+	podNetwork *runtimecri.PodSandboxNetwork
+	container  *runtimecri.ContainerStatusInfo
+	err        error
+}
+
+func (s stubCRIMetadataClient) InspectContainerMounts(ctx context.Context, containerID string) (*runtimecri.ContainerMounts, error) {
+	return s.mounts, s.err
+}
+
+func (s stubCRIMetadataClient) InspectPodSandboxNetwork(ctx context.Context, sandboxID string) (*runtimecri.PodSandboxNetwork, error) {
+	return s.podNetwork, s.err
+}
+
+func (s stubCRIMetadataClient) InspectContainerStatus(ctx context.Context, containerID string) (*runtimecri.ContainerStatusInfo, error) {
+	return s.container, s.err
+}
 
 func TestNewContainerdRuntime(t *testing.T) {
 	config := &runtime.Config{
@@ -427,5 +448,109 @@ func TestListImages_NotConnected(t *testing.T) {
 	_, err := rt.ListImages(ctx)
 	if err == nil {
 		t.Error("Expected error when listing images without connection")
+	}
+}
+
+func TestBuildNamespaceMap(t *testing.T) {
+	got := buildNamespaceMap(&ocispec.Spec{
+		Linux: &ocispec.Linux{Namespaces: []ocispec.LinuxNamespace{{Type: ocispec.NetworkNamespace, Path: "/var/run/netns/pod"}, {Type: ocispec.PIDNamespace, Path: ""}}},
+	})
+	if got["network"] != "/var/run/netns/pod" {
+		t.Fatalf("network namespace = %q", got["network"])
+	}
+	if _, ok := got["pid"]; !ok {
+		t.Fatal("pid namespace missing from map")
+	}
+}
+
+func TestPopulatePodNetwork(t *testing.T) {
+	rt := &ContainerdRuntime{
+		criClient: stubCRIMetadataClient{podNetwork: &runtimecri.PodSandboxNetwork{
+			SandboxID:       "sandbox-1",
+			SandboxState:    "SANDBOX_READY",
+			PrimaryIP:       "10.244.0.12",
+			AdditionalIPs:   []string{"fd00::12"},
+			HostNetwork:     false,
+			NamespaceMode:   "POD",
+			NetNSPath:       "/var/run/netns/from-cri",
+			Hostname:        "pod-a",
+			RuntimeHandler:  "runc",
+			StatusSource:    "cri-status",
+			ConfigSource:    "cri-info",
+			NamespaceSource: "cri-info-metadata",
+			DNS: &runtimecri.DNSConfig{
+				Servers: []string{"10.96.0.10"},
+			},
+			PortMappings: []*runtimecri.PortMapping{{
+				HostIP:        "0.0.0.0",
+				HostPort:      30080,
+				ContainerPort: 8080,
+				Protocol:      "tcp",
+			}},
+		}},
+	}
+	detail := &models.ContainerDetail{Namespaces: map[string]string{"network": "/var/run/netns/from-spec"}}
+	spec := &ocispec.Spec{Linux: &ocispec.Linux{Namespaces: []ocispec.LinuxNamespace{{Type: ocispec.NetworkNamespace, Path: "/var/run/netns/from-spec"}}}}
+
+	rt.populatePodNetwork(context.Background(), detail, containers.Container{SandboxID: "sandbox-1"}, spec)
+
+	if detail.PodNetwork == nil {
+		t.Fatal("PodNetwork = nil")
+	}
+	if detail.IPAddress != "10.244.0.12" {
+		t.Fatalf("IPAddress = %s", detail.IPAddress)
+	}
+	if detail.PodNetwork.NetNSPath != "/var/run/netns/from-cri" {
+		t.Fatalf("NetNSPath = %s", detail.PodNetwork.NetNSPath)
+	}
+	if detail.PodNetwork.NamespaceSource != "cri-info-metadata" {
+		t.Fatalf("NamespaceSource = %s", detail.PodNetwork.NamespaceSource)
+	}
+	if len(detail.PodNetwork.Warnings) == 0 {
+		t.Fatal("Warnings = 0, want spec/cri netns mismatch warning")
+	}
+	if detail.PodNetwork.DNS == nil || len(detail.PodNetwork.PortMappings) != 1 {
+		t.Fatalf("PodNetwork DNS/ports not populated: %+v", detail.PodNetwork)
+	}
+}
+
+func TestPopulatePodNetworkReadsObservedInterfacesFromProcfs(t *testing.T) {
+	procRoot := t.TempDir()
+	writeProcNetDev(t, procRoot, 123, "Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n  lo: 100 1 0 0 0 0 0 0 100 1 0 0 0 0 0 0\neth0: 2048 20 1 2 0 0 0 0 4096 40 3 4 0 0 0 0\n")
+
+	rt := &ContainerdRuntime{
+		criClient:  stubCRIMetadataClient{},
+		procReader: sysinfo.NewProcReaderWithRoot(procRoot),
+	}
+	detail := &models.ContainerDetail{Container: models.Container{PID: 123}}
+	spec := &ocispec.Spec{Linux: &ocispec.Linux{Namespaces: []ocispec.LinuxNamespace{{Type: ocispec.NetworkNamespace, Path: "/var/run/netns/from-spec"}}}}
+
+	rt.populatePodNetwork(context.Background(), detail, containers.Container{SandboxID: "sandbox-1"}, spec)
+
+	if detail.PodNetwork == nil {
+		t.Fatal("PodNetwork = nil")
+	}
+	if len(detail.PodNetwork.ObservedInterfaces) != 1 {
+		t.Fatalf("ObservedInterfaces len = %d, want 1", len(detail.PodNetwork.ObservedInterfaces))
+	}
+	if detail.PodNetwork.ObservedInterfaces[0].Interface != "eth0" {
+		t.Fatalf("Observed interface = %+v", detail.PodNetwork.ObservedInterfaces[0])
+	}
+	if detail.PodNetwork.ObservedInterfaces[0].RxBytes != 2048 || detail.PodNetwork.ObservedInterfaces[0].TxBytes != 4096 {
+		t.Fatalf("Observed interface counters = %+v", detail.PodNetwork.ObservedInterfaces[0])
+	}
+	if detail.PodNetwork.NetNSPath != "/var/run/netns/from-spec" {
+		t.Fatalf("NetNSPath = %s", detail.PodNetwork.NetNSPath)
+	}
+}
+
+func writeProcNetDev(t *testing.T, procRoot string, pid int, content string) {
+	t.Helper()
+	pidDir := filepath.Join(procRoot, strconv.Itoa(pid), "net")
+	if err := os.MkdirAll(pidDir, 0o755); err != nil {
+		t.Fatalf("failed to create net directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pidDir, "dev"), []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write net/dev: %v", err)
 	}
 }

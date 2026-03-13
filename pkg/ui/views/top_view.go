@@ -140,7 +140,7 @@ func (v *TopView) render() {
 	// Sort processes
 	sortProcesses(procs, sf)
 
-	v.app.QueueUpdateDraw(func() {
+	queueUpdateDraw(v.app, func() {
 		v.table.ClearData()
 
 		for _, p := range procs {
@@ -233,13 +233,13 @@ func (v *TopView) setSortField(field SortField) {
 // calling it while a refresh loop is already running is a no-op.
 func (v *TopView) StartAutoRefresh() {
 	v.mu.Lock()
+	defer v.mu.Unlock()
+
 	if v.refreshRunning {
-		v.mu.Unlock()
 		return
 	}
 	v.refreshRunning = true
 	v.refreshStop = make(chan struct{})
-	v.mu.Unlock()
 
 	go func() {
 		ticker := time.NewTicker(v.refreshInterval)
@@ -263,11 +263,14 @@ func (v *TopView) StartAutoRefresh() {
 	}()
 }
 
-// StopAutoRefresh stops the auto-refresh loop.
+// StopAutoRefresh stops the auto-refresh loop. It is idempotent —
+// calling it when refresh is not running is a no-op.
 func (v *TopView) StopAutoRefresh() {
 	v.mu.Lock()
-	if v.refreshRunning {
+	if v.refreshRunning && v.refreshStop != nil {
 		close(v.refreshStop)
+		v.refreshRunning = false
+		v.refreshStop = nil
 	}
 	v.mu.Unlock()
 }
@@ -275,6 +278,30 @@ func (v *TopView) StopAutoRefresh() {
 // GetFocusPrimitive returns the focusable primitive (table)
 func (v *TopView) GetFocusPrimitive() tview.Primitive {
 	return v.table
+}
+
+// SnapshotData returns a thread-safe snapshot of the current top data and process count.
+// This method is designed to be called from other views without breaking encapsulation.
+func (v *TopView) SnapshotData() (*models.ProcessTop, int) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if v.topData == nil {
+		return nil, 0
+	}
+
+	// Create a shallow copy of topData with copied slices
+	snapshot := &models.ProcessTop{
+		Processes:   make([]*models.Process, len(v.topData.Processes)),
+		NetworkIO:   make([]*models.NetworkStats, len(v.topData.NetworkIO)),
+		Timestamp:   v.topData.Timestamp,
+		CPUCores:    v.topData.CPUCores,
+		MemoryLimit: v.topData.MemoryLimit,
+	}
+	copy(snapshot.Processes, v.topData.Processes)
+	copy(snapshot.NetworkIO, v.topData.NetworkIO)
+
+	return snapshot, len(snapshot.Processes)
 }
 
 // updateNetBar initializes the network bar with placeholder text
@@ -333,7 +360,7 @@ func (v *TopView) updateStatusBar() {
 	}
 
 	v.statusBar.SetText(fmt.Sprintf(
-		" [white]Processes: [green]%d[white]  |  Sort: [aqua]%s[white]  |  [yellow]c[white]:cpu [yellow]m[white]:mem [yellow]p[white]:pid [yellow]i[white]:io",
+		" [white]Top: [green]%d[white]  |  [aqua]hotspot sort[-]: %s  |  [yellow]c[white]:cpu [yellow]m[white]:mem [yellow]p[white]:pid [yellow]i[white]:io",
 		count, sortLabel,
 	))
 }

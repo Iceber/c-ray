@@ -3,63 +3,73 @@ package views
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
-	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/rivo/tview"
 )
 
-// RuntimeInfoView displays container runtime information
+// RuntimeInfoView renders the Runtime page.
 type RuntimeInfoView struct {
 	*tview.Flex
 
-	rt        runtime.Runtime
-	infoPanel *components.InfoPanel
-	statusBar *tview.TextView
-
+	rt          runtime.Runtime
+	tree        *tview.TreeView
+	statusBar   *tview.TextView
 	containerID string
 	detail      *models.ContainerDetail
 	mu          sync.Mutex
 }
 
-// NewRuntimeInfoView creates a new runtime info view
+// NewRuntimeInfoView creates a new runtime info view.
 func NewRuntimeInfoView(rt runtime.Runtime) *RuntimeInfoView {
 	v := &RuntimeInfoView{
 		Flex: tview.NewFlex().SetDirection(tview.FlexRow),
 		rt:   rt,
 	}
 
-	v.infoPanel = components.NewInfoPanel()
+	v.tree = tview.NewTreeView()
+	v.tree.SetBorder(false)
+	v.tree.SetGraphics(true)
+	v.tree.SetGraphicsColor(tcell.ColorDarkCyan)
+	v.tree.SetRoot(tview.NewTreeNode("[gray]No runtime data[-]").SetSelectable(false))
+	v.tree.SetSelectedFunc(func(node *tview.TreeNode) {
+		if node != nil {
+			node.SetExpanded(!node.IsExpanded())
+		}
+	})
+
 	v.statusBar = tview.NewTextView().
 		SetDynamicColors(true).
 		SetTextAlign(tview.AlignLeft)
 
-	v.Flex.AddItem(v.infoPanel, 0, 1, true)
+	v.Flex.AddItem(v.tree, 0, 1, true)
 	v.Flex.AddItem(v.statusBar, 1, 0, false)
-
 	v.updateStatusBar()
 	return v
 }
 
-// SetContainer sets the container ID and clears cached data.
+// SetContainer sets the active container.
 func (v *RuntimeInfoView) SetContainer(containerID string) {
 	v.mu.Lock()
 	v.containerID = containerID
 	v.detail = nil
 	v.mu.Unlock()
+	v.render()
+	v.updateStatusBar()
 }
 
-// Refresh loads runtime data on demand.
+// Refresh loads runtime metadata.
 func (v *RuntimeInfoView) Refresh(ctx context.Context) error {
 	v.mu.Lock()
 	containerID := v.containerID
 	v.mu.Unlock()
-
-	if containerID == "" {
+	if strings.TrimSpace(containerID) == "" {
+		v.render()
 		return nil
 	}
 
@@ -72,200 +82,163 @@ func (v *RuntimeInfoView) Refresh(ctx context.Context) error {
 	v.detail = detail
 	v.mu.Unlock()
 	v.render()
+	v.updateStatusBar()
 	return nil
 }
 
-// render updates the info panel with runtime data
+// HandleInput processes tree interaction.
+func (v *RuntimeInfoView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
+	if event == nil {
+		return nil
+	}
+	if event.Key() == tcell.KeyCtrlC {
+		return event
+	}
+	switch event.Key() {
+	case tcell.KeyEnter:
+		if node := v.tree.GetCurrentNode(); node != nil {
+			node.SetExpanded(!node.IsExpanded())
+		}
+		return nil
+	}
+	switch event.Rune() {
+	case 'e', 'E':
+		if node := v.tree.GetCurrentNode(); node != nil {
+			node.SetExpanded(!node.IsExpanded())
+		}
+		return nil
+	case 'a', 'A':
+		v.expandAll()
+		return nil
+	}
+	return event
+}
+
+// GetFocusPrimitive returns the tree focus target.
+func (v *RuntimeInfoView) GetFocusPrimitive() tview.Primitive {
+	return v.tree
+}
+
 func (v *RuntimeInfoView) render() {
 	v.mu.Lock()
 	detail := v.detail
 	v.mu.Unlock()
 
+	root := tview.NewTreeNode("[aqua::b]Runtime[-:-:-]").SetSelectable(false).SetExpanded(true)
 	if detail == nil {
+		root.AddChild(tview.NewTreeNode("[gray]Refresh to resolve shim, OCI runtime and namespace metadata[-]").SetSelectable(false))
+		v.tree.SetRoot(root)
+		v.tree.SetCurrentNode(root)
 		return
 	}
 
-	sections := []components.InfoSection{}
-	profile := detail.RuntimeProfile
+	root.AddChild(buildRuntimeShimNode(detail))
+	root.AddChild(buildRuntimeOCINode(detail))
+	root.AddChild(buildRuntimeNamespaceNode(detail))
 
-	// Section 1: Runtime Process
-	processSection := components.InfoSection{
-		Title: "Runtime Process",
-		Items: []components.InfoItem{
-			{Label: "Host PID:", Value: fmt.Sprintf("%d", detail.PID)},
-		},
-	}
-	if detail.ShimPID > 0 {
-		processSection.Items = append(processSection.Items, components.InfoItem{
-			Label: "Shim PID:", Value: fmt.Sprintf("%d", detail.ShimPID),
-		})
-	}
-	if profile != nil && profile.Shim != nil {
-		if profile.Shim.BinaryPath != "" {
-			processSection.Items = append(processSection.Items, components.InfoItem{
-				Label: "Shim Binary:", Value: profile.Shim.BinaryPath,
-			})
-		}
-		if profile.Shim.SocketAddress != "" {
-			processSection.Items = append(processSection.Items, components.InfoItem{
-				Label: "Shim Socket:", Value: profile.Shim.SocketAddress,
-			})
-		}
-		if len(profile.Shim.Cmdline) > 0 {
-			processSection.Items = append(processSection.Items, components.InfoItem{
-				Label: "Shim Cmdline:", Value: strings.Join(profile.Shim.Cmdline, " "),
-			})
-		}
-	}
-	sections = append(sections, processSection)
-
-	// Section 2: OCI Runtime
-	if profile != nil && profile.OCI != nil {
-		ociItems := []components.InfoItem{}
-		if profile.OCI.RuntimeName != "" {
-			ociItems = append(ociItems, components.InfoItem{
-				Label: "Runtime Name:", Value: profile.OCI.RuntimeName,
-			})
-		}
-		if profile.OCI.RuntimeBinary != "" {
-			ociItems = append(ociItems, components.InfoItem{
-				Label: "Runtime Binary:", Value: profile.OCI.RuntimeBinary,
-			})
-		}
-		if profile.OCI.BundleDir != "" {
-			ociItems = append(ociItems, components.InfoItem{
-				Label: "OCI Bundle:", Value: profile.OCI.BundleDir,
-			})
-		}
-		if profile.OCI.StateDir != "" {
-			ociItems = append(ociItems, components.InfoItem{
-				Label: "OCI State Dir:", Value: profile.OCI.StateDir,
-			})
-		}
-		if profile.OCI.ConfigPath != "" {
-			ociItems = append(ociItems, components.InfoItem{
-				Label: "OCI Spec Config:", Value: profile.OCI.ConfigPath,
-			})
-		}
-		if profile.OCI.SandboxID != "" {
-			ociItems = append(ociItems, components.InfoItem{
-				Label: "Sandbox ID:", Value: profile.OCI.SandboxID,
-			})
-		}
-		sections = append(sections, components.InfoSection{Title: "OCI Runtime", Items: ociItems})
-	}
-
-	// Section 3: Namespaces
-	if len(detail.Namespaces) > 0 {
-		nsItems := []components.InfoItem{}
-		for nsType, nsPath := range detail.Namespaces {
-			nsItems = append(nsItems, components.InfoItem{
-				Label: nsType + ":", Value: nsPath, Color: tcell.ColorDarkCyan,
-			})
-		}
-		sections = append(sections, components.InfoSection{Title: "Namespaces", Items: nsItems})
-	}
-
-	// Section 4: Network
-	if detail.IPAddress != "" || len(detail.PortMappings) > 0 {
-		netItems := []components.InfoItem{}
-		if detail.IPAddress != "" {
-			netItems = append(netItems, components.InfoItem{
-				Label: "IP Address:", Value: detail.IPAddress, Color: tcell.ColorGreen,
-			})
-		}
-		for _, pm := range detail.PortMappings {
-			netItems = append(netItems, components.InfoItem{
-				Label: "Port Mapping:", Value: fmt.Sprintf("%s:%d -> %d/%s",
-					pm.HostIP, pm.HostPort, pm.ContainerPort, pm.Protocol),
-			})
-		}
-		sections = append(sections, components.InfoSection{Title: "Network", Items: netItems})
-	}
-
-	// Section 5: Labels
-	if len(detail.Labels) > 0 {
-		labelItems := []components.InfoItem{}
-		for k, val := range detail.Labels {
-			label := k
-			if len(label) > 40 {
-				label = label[:37] + "..."
-			}
-			value := val
-			if len(value) > 60 {
-				value = value[:57] + "..."
-			}
-			labelItems = append(labelItems, components.InfoItem{
-				Label: label + ":", Value: value, Color: tcell.ColorGray,
-			})
-		}
-		sections = append(sections, components.InfoSection{Title: "Labels", Items: labelItems})
-	}
-
-	// Section 6: CGroup
-	if profile != nil && profile.CGroup != nil && (profile.CGroup.RelativePath != "" || profile.CGroup.AbsolutePath != "") {
-		cgItems := []components.InfoItem{
-			{Label: "Relative Path:", Value: profile.CGroup.RelativePath},
-			{Label: "Absolute Path:", Value: profile.CGroup.AbsolutePath},
-			{Label: "Driver:", Value: profile.CGroup.Driver},
-			{Label: "Version:", Value: fmt.Sprintf("v%d", profile.CGroup.Version)},
-		}
-		if detail.CGroupLimits != nil {
-			limits := detail.CGroupLimits
-			parts := []string{}
-			if limits.CPUQuota > 0 && limits.CPUPeriod > 0 {
-				parts = append(parts, fmt.Sprintf("CPU: %.2f cores", float64(limits.CPUQuota)/float64(limits.CPUPeriod)))
-			}
-			if limits.MemoryLimit > 0 {
-				parts = append(parts, fmt.Sprintf("Mem: %s", formatBytes(limits.MemoryLimit)))
-			}
-			if limits.PidsLimit > 0 {
-				parts = append(parts, fmt.Sprintf("PIDs: %d", limits.PidsLimit))
-			}
-			if len(parts) > 0 {
-				cgItems = append(cgItems, components.InfoItem{
-					Label: "Limits:", Value: strings.Join(parts, ", "),
-				})
-			}
-		}
-		sections = append(sections, components.InfoSection{Title: "CGroup", Items: cgItems})
-	}
-
-	// Section 7: RootFS
-	if profile != nil && profile.RootFS != nil && (profile.RootFS.BundleRootFSPath != "" || profile.RootFS.MountRootFSPath != "") {
-		rootFSItems := []components.InfoItem{}
-		if profile.RootFS.BundleRootFSPath != "" {
-			rootFSItems = append(rootFSItems, components.InfoItem{
-				Label: "Bundle RootFS:", Value: profile.RootFS.BundleRootFSPath,
-			})
-		}
-		if profile.RootFS.MountRootFSPath != "" {
-			rootFSItems = append(rootFSItems, components.InfoItem{
-				Label: "Mounted RootFS:", Value: profile.RootFS.MountRootFSPath,
-			})
-		}
-		if detail.Snapshotter != "" {
-			rootFSItems = append(rootFSItems, components.InfoItem{
-				Label: "Snapshotter:", Value: detail.Snapshotter,
-			})
-		}
-		sections = append(sections, components.InfoSection{Title: "RootFS", Items: rootFSItems})
-	}
-
-	v.infoPanel.SetSections(sections)
+	v.tree.SetRoot(root)
+	v.tree.SetCurrentNode(root)
 }
 
-// HandleInput processes key events
-func (v *RuntimeInfoView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
-	return event
+func (v *RuntimeInfoView) expandAll() {
+	root := v.tree.GetRoot()
+	if root == nil {
+		return
+	}
+	expand := !root.IsExpanded()
+	var walk func(node *tview.TreeNode)
+	walk = func(node *tview.TreeNode) {
+		node.SetExpanded(expand)
+		for _, child := range node.GetChildren() {
+			walk(child)
+		}
+	}
+	walk(root)
+	root.SetExpanded(true)
+	v.tree.SetCurrentNode(root)
 }
 
-// GetFocusPrimitive returns the focusable primitive (infoPanel)
-func (v *RuntimeInfoView) GetFocusPrimitive() tview.Primitive {
-	return v.infoPanel
-}
-
-// updateStatusBar renders the status bar
 func (v *RuntimeInfoView) updateStatusBar() {
-	v.statusBar.SetText(" [white]Runtime information  |  [yellow]r[white]:refresh")
+	v.statusBar.SetText(" [white]Runtime:[-] shim, OCI runtime and namespace anchors  |  [yellow]e[white]:toggle  [yellow]a[white]:expand/collapse all")
+}
+
+func buildRuntimeShimNode(detail *models.ContainerDetail) *tview.TreeNode {
+	node := tview.NewTreeNode("[yellow::b]Shim[-:-:-]").SetSelectable(true).SetExpanded(true)
+	shim := (*models.ShimInfo)(nil)
+	if detail.RuntimeProfile != nil {
+		shim = detail.RuntimeProfile.Shim
+	}
+	rows := []string{
+		fmt.Sprintf("Task PID: %d", detail.PID),
+		fmt.Sprintf("Shim PID: %d", detail.ShimPID),
+	}
+	if shim != nil {
+		if shim.BinaryPath != "" {
+			rows = append(rows, "Binary: "+shim.BinaryPath)
+		}
+		if shim.SocketAddress != "" {
+			rows = append(rows, "Socket: "+shim.SocketAddress)
+		}
+		if len(shim.Cmdline) > 0 {
+			rows = append(rows, "Command: "+strings.Join(shim.Cmdline, " "))
+		}
+		if shim.SandboxBundleDir != "" {
+			rows = append(rows, "Sandbox Bundle: "+shim.SandboxBundleDir)
+		}
+	}
+	for _, row := range rows {
+		node.AddChild(tview.NewTreeNode("[gray]  " + row + "[-]").SetSelectable(false))
+	}
+	return node
+}
+
+func buildRuntimeOCINode(detail *models.ContainerDetail) *tview.TreeNode {
+	node := tview.NewTreeNode("[aqua::b]OCI Runtime[-:-:-]").SetSelectable(true).SetExpanded(true)
+	oci := (*models.OCIInfo)(nil)
+	if detail.RuntimeProfile != nil {
+		oci = detail.RuntimeProfile.OCI
+	}
+	rows := []string{}
+	if oci != nil {
+		if oci.RuntimeName != "" {
+			rows = append(rows, "Runtime Name: "+oci.RuntimeName)
+		}
+		if oci.RuntimeBinary != "" {
+			rows = append(rows, "Runtime Binary: "+oci.RuntimeBinary)
+		}
+		if oci.BundleDir != "" {
+			rows = append(rows, "Bundle Dir: "+oci.BundleDir)
+		}
+		if oci.StateDir != "" {
+			rows = append(rows, "State Dir: "+oci.StateDir)
+		}
+		if oci.ConfigPath != "" {
+			rows = append(rows, "Config Path: "+oci.ConfigPath)
+		}
+	}
+	if len(rows) == 0 {
+		rows = append(rows, "OCI runtime metadata unresolved")
+	}
+	for _, row := range rows {
+		node.AddChild(tview.NewTreeNode("[gray]  " + row + "[-]").SetSelectable(false))
+	}
+	return node
+}
+
+func buildRuntimeNamespaceNode(detail *models.ContainerDetail) *tview.TreeNode {
+	node := tview.NewTreeNode("[aqua::b]Namespace[-:-:-]").SetSelectable(true).SetExpanded(true)
+	if len(detail.Namespaces) == 0 {
+		node.AddChild(tview.NewTreeNode("[gray]  Namespace metadata unresolved[-]").SetSelectable(false))
+		return node
+	}
+
+	keys := make([]string, 0, len(detail.Namespaces))
+	for key := range detail.Namespaces {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		node.AddChild(tview.NewTreeNode(fmt.Sprintf("[gray]  %s: [white]%s[-]", key, detail.Namespaces[key])).SetSelectable(false))
+	}
+	return node
 }
