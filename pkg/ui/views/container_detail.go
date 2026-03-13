@@ -188,6 +188,12 @@ func (v *ContainerDetailView) enrichDetail(detail *models.ContainerDetail) {
 	if runtimeDetail, err := v.rt.GetContainerRuntimeInfo(v.ctx, v.containerID); err == nil && runtimeDetail != nil {
 		mergeRuntimeDetail(detail, runtimeDetail)
 	}
+	if storageDetail, err := v.rt.GetContainerStorageInfo(v.ctx, v.containerID); err == nil && storageDetail != nil {
+		mergeRuntimeDetail(detail, storageDetail)
+	}
+	if networkDetail, err := v.rt.GetContainerNetworkInfo(v.ctx, v.containerID); err == nil && networkDetail != nil {
+		mergeRuntimeDetail(detail, networkDetail)
+	}
 
 	imageRef := detail.Image
 	if imageRef == "" {

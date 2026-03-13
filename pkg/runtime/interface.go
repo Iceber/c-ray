@@ -24,8 +24,14 @@ type Runtime interface {
 	// GetContainerDetail returns overview information for the container detail page
 	GetContainerDetail(ctx context.Context, id string) (*models.ContainerDetail, error)
 
-	// GetContainerRuntimeInfo returns runtime-specific detail for on-demand subviews
+	// GetContainerRuntimeInfo returns runtime/shim/OCI detail for on-demand runtime views
 	GetContainerRuntimeInfo(ctx context.Context, id string) (*models.ContainerDetail, error)
+
+	// GetContainerStorageInfo returns storage/snapshot/rootfs detail for on-demand storage views
+	GetContainerStorageInfo(ctx context.Context, id string) (*models.ContainerDetail, error)
+
+	// GetContainerNetworkInfo returns network namespace and CNI/CRI detail for on-demand network views
+	GetContainerNetworkInfo(ctx context.Context, id string) (*models.ContainerDetail, error)
 
 	// ListImages returns all images
 	ListImages(ctx context.Context) ([]*models.Image, error)

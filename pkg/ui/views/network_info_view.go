@@ -73,7 +73,7 @@ func (v *NetworkInfoView) Refresh(ctx context.Context) error {
 		return nil
 	}
 
-	detail, err := v.rt.GetContainerRuntimeInfo(ctx, containerID)
+	detail, err := v.rt.GetContainerNetworkInfo(ctx, containerID)
 	if err != nil {
 		return err
 	}

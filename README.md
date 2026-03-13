@@ -204,10 +204,16 @@ docker exec kind-control-plane cray test list-containers
 
 ### 运行时抽象
 
+运行时接口字段来源与拆分说明见：
+- [`docs/runtime-spec/runtime-interface-implementation.md`](docs/runtime-spec/runtime-interface-implementation.md)
+
 ```go
 type Runtime interface {
     ListContainers(ctx context.Context) ([]*models.Container, error)
     GetContainerDetail(ctx context.Context, id string) (*models.ContainerDetail, error)
+    GetContainerRuntimeInfo(ctx context.Context, id string) (*models.ContainerDetail, error)
+    GetContainerStorageInfo(ctx context.Context, id string) (*models.ContainerDetail, error)
+    GetContainerNetworkInfo(ctx context.Context, id string) (*models.ContainerDetail, error)
     GetContainerProcesses(ctx context.Context, id string) ([]*models.Process, error)
     GetContainerTop(ctx context.Context, id string) (*models.TopInfo, error)
     GetContainerMounts(ctx context.Context, id string) ([]*models.Mount, error)

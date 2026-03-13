@@ -187,8 +187,14 @@ func (r *ContainerdRuntime) loadRunningTask(ctx context.Context, id string) (cli
 	return c, task, nil
 }
 
-// GetContainerDetail returns detailed information about a container
-func (r *ContainerdRuntime) GetContainerDetail(ctx context.Context, id string) (*models.ContainerDetail, error) {
+type containerDetailState struct {
+	container client.Container
+	info      containers.Container
+	task      client.Task
+	detail    *models.ContainerDetail
+}
+
+func (r *ContainerdRuntime) loadContainerDetailState(ctx context.Context, id string) (*containerDetailState, error) {
 	if r.client == nil {
 		return nil, fmt.Errorf("client not connected")
 	}
@@ -204,8 +210,10 @@ func (r *ContainerdRuntime) GetContainerDetail(ctx context.Context, id string) (
 	}
 
 	detail := &models.ContainerDetail{
-		Container: r.buildContainerFromInfo(info),
-		ImageName: info.Image,
+		Container:   r.buildContainerFromInfo(info),
+		ImageName:   info.Image,
+		SnapshotKey: info.SnapshotKey,
+		Snapshotter: info.Snapshotter,
 	}
 
 	task, err := c.Task(ctx, nil)
@@ -215,119 +223,138 @@ func (r *ContainerdRuntime) GetContainerDetail(ctx context.Context, id string) (
 		detail.Status = models.ContainerStatusStopped
 	}
 
-	return detail, nil
+	return &containerDetailState{
+		container: c,
+		info:      info,
+		task:      task,
+		detail:    detail,
+	}, nil
 }
 
-// GetContainerRuntimeInfo returns runtime-specific detail for on-demand subviews.
-func (r *ContainerdRuntime) GetContainerRuntimeInfo(ctx context.Context, id string) (*models.ContainerDetail, error) {
-	if r.client == nil {
-		return nil, fmt.Errorf("client not connected")
-	}
-
-	// Load container
-	c, err := r.loadContainer(ctx, id)
+// GetContainerDetail returns detailed information about a container
+func (r *ContainerdRuntime) GetContainerDetail(ctx context.Context, id string) (*models.ContainerDetail, error) {
+	state, err := r.loadContainerDetailState(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
-	info, err := c.Info(ctx)
+	detail := state.detail
+	spec, err := state.container.Spec(ctx)
+	if err == nil {
+		detail.Namespaces = buildNamespaceMap(spec)
+		if spec.Linux != nil && spec.Linux.CgroupsPath != "" {
+			detail.CGroupPath = spec.Linux.CgroupsPath
+		}
+		detail.Environment = buildEnvironmentFromSpec(spec)
+		detail.SharedPID = sharedPIDFromSpec(spec)
+	}
+
+	if detail.CGroupPath != "" && r.cgroupReader != nil {
+		if limits, err := r.cgroupReader.ReadCGroupLimits(detail.CGroupPath); err == nil {
+			detail.CGroupLimits = limits
+			detail.CGroupVersion = int(r.cgroupReader.GetVersion())
+		}
+	}
+
+	if r.criClient != nil {
+		if statusInfo, err := r.criClient.InspectContainerStatus(ctx, state.info.ID); err == nil && statusInfo != nil {
+			applyCRIContainerStatus(detail, statusInfo)
+		}
+	}
+
+	if detail.PID > 0 && r.processCollector != nil {
+		if processes, err := r.processCollector.CollectContainerProcesses(detail.PID); err == nil {
+			detail.ProcessCount = len(processes)
+		}
+	}
+
+	return detail, nil
+}
+
+// GetContainerRuntimeInfo returns runtime-specific detail for on-demand runtime views.
+func (r *ContainerdRuntime) GetContainerRuntimeInfo(ctx context.Context, id string) (*models.ContainerDetail, error) {
+	state, err := r.loadContainerDetailState(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get container info: %w", err)
+		return nil, err
 	}
 
-	detail := &models.ContainerDetail{
-		Container:      r.buildContainerFromInfo(info),
-		RuntimeProfile: &models.RuntimeProfile{},
-	}
-	detail.ImageName = info.Image
-	detail.SnapshotKey = info.SnapshotKey
-	detail.Snapshotter = info.Snapshotter
-
-	// Get OCI spec
-	spec, err := c.Spec(ctx)
+	spec, err := state.container.Spec(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get container spec: %w", err)
 	}
+
+	detail := state.detail
 	detail.Namespaces = buildNamespaceMap(spec)
 
-	// Extract CGroup path
 	if spec.Linux != nil && spec.Linux.CgroupsPath != "" {
 		detail.CGroupPath = spec.Linux.CgroupsPath
 	}
-	detail.Environment = buildEnvironmentFromSpec(spec)
-	detail.SharedPID = sharedPIDFromSpec(spec)
 
-	// Get task info
 	var shimProc *shimProcessInfo
-	task, err := c.Task(ctx, nil)
-	if err == nil {
-		r.populateContainerTaskState(ctx, task, &detail.Container)
-
+	if state.task != nil {
 		shimProc = r.getShimProcessInfo(detail.PID)
 		if shimProc != nil {
 			detail.ShimPID = shimProc.pid
 		} else {
 			detail.ShimPID = r.getShimPID(detail.PID)
 		}
-	} else {
-		detail.Status = models.ContainerStatusStopped
 	}
 
-	// Get snapshot info for image layers
-	if info.SnapshotKey != "" {
-		// Set the snapshot key (RW layer)
-		detail.SnapshotKey = info.SnapshotKey
-		// Set the snapshotter name
-		detail.Snapshotter = info.Snapshotter
+	r.populateRuntimeProfile(detail, state.info, spec, shimProc, "")
 
-		// Get snapshotter
-		snapshotter := r.client.SnapshotService(info.Snapshotter)
+	return detail, nil
+}
+
+// GetContainerStorageInfo returns storage-specific detail for on-demand filesystem views.
+func (r *ContainerdRuntime) GetContainerStorageInfo(ctx context.Context, id string) (*models.ContainerDetail, error) {
+	state, err := r.loadContainerDetailState(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	spec, err := state.container.Spec(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get container spec: %w", err)
+	}
+
+	detail := state.detail
+	if state.info.SnapshotKey != "" {
+		snapshotter := r.client.SnapshotService(state.info.Snapshotter)
 		if snapshotter != nil {
-			// Get RW layer path (upperdir) using Mounts API
-			if path, err := r.getRWLayerPathFromMounts(ctx, snapshotter, info.SnapshotKey); err == nil {
+			if path, err := r.getRWLayerPathFromMounts(ctx, snapshotter, state.info.SnapshotKey); err == nil {
 				detail.WritableLayerPath = path
 			}
 
-			// Get RW layer usage information
-			if usage, err := snapshotter.Usage(ctx, info.SnapshotKey); err == nil {
+			if usage, err := snapshotter.Usage(ctx, state.info.SnapshotKey); err == nil {
 				detail.RWLayerUsage = usage.Size
 				detail.RWLayerInodes = usage.Inodes
 			}
 		}
 	}
 
-	// Get CGroup information
-	if detail.CGroupPath != "" && r.cgroupReader != nil {
-		limits, err := r.cgroupReader.ReadCGroupLimits(detail.CGroupPath)
-		if err == nil {
-			detail.CGroupLimits = limits
-			// Detect CGroup version
-			detail.CGroupVersion = int(r.cgroupReader.GetVersion())
-		}
-	}
-
-	if r.criClient != nil {
-		if statusInfo, err := r.criClient.InspectContainerStatus(ctx, info.ID); err == nil && statusInfo != nil {
-			applyCRIContainerStatus(detail, statusInfo)
-		}
-	}
-
-	// Get merged mount information from CRI config, OCI spec and live mountinfo.
-	mounts, mountRootFSPath := r.resolveContainerMounts(ctx, info.ID, spec, detail.PID)
+	mounts, mountRootFSPath := r.resolveContainerMounts(ctx, state.info.ID, spec, detail.PID)
 	detail.Mounts = mounts
 	detail.MountCount = len(mounts)
+	r.populateStorageProfile(detail, state.info, mountRootFSPath)
 
-	// Count processes
-	if detail.PID > 0 && r.processCollector != nil {
-		processes, err := r.processCollector.CollectContainerProcesses(detail.PID)
-		if err == nil {
-			detail.ProcessCount = len(processes)
-		}
+	return detail, nil
+}
+
+// GetContainerNetworkInfo returns network-specific detail for on-demand network views.
+func (r *ContainerdRuntime) GetContainerNetworkInfo(ctx context.Context, id string) (*models.ContainerDetail, error) {
+	state, err := r.loadContainerDetailState(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 
-	r.populatePodNetwork(ctx, detail, info, spec)
+	spec, err := state.container.Spec(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get container spec: %w", err)
+	}
 
-	r.populateRuntimeProfile(detail, info, spec, shimProc, mountRootFSPath)
+	detail := state.detail
+	detail.Namespaces = buildNamespaceMap(spec)
+	r.populatePodNetwork(ctx, detail, state.info, spec)
 
 	return detail, nil
 }
@@ -814,6 +841,28 @@ func (r *ContainerdRuntime) populateRuntimeProfile(detail *models.ContainerDetai
 	detail.OCIRuntimeDir = profile.OCI.StateDir
 	if profile.Shim.PID > 0 {
 		detail.ShimPID = profile.Shim.PID
+	}
+}
+
+func (r *ContainerdRuntime) populateStorageProfile(detail *models.ContainerDetail, info containers.Container, mountRootFSPath string) {
+	if detail.RuntimeProfile == nil {
+		detail.RuntimeProfile = &models.RuntimeProfile{}
+	}
+	if detail.RuntimeProfile.RootFS == nil {
+		detail.RuntimeProfile.RootFS = &models.RootFSInfo{}
+	}
+
+	rootfs := detail.RuntimeProfile.RootFS
+	bundleDir, bundleSource := r.resolveOCIBundleDir(r.config.Namespace, info.ID)
+	if rootfsPath := existingPath(filepath.Join(bundleDir, "rootfs")); rootfsPath != "" {
+		rootfs.BundleRootFSPath = rootfsPath
+		rootfs.Source = bundleSource
+	}
+	if mountRootFSPath != "" {
+		rootfs.MountRootFSPath = mountRootFSPath
+		if rootfs.Source == "" {
+			rootfs.Source = "mountinfo"
+		}
 	}
 }
 

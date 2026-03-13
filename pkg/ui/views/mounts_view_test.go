@@ -79,7 +79,10 @@ func TestDisplayMountSourceUsesRootfsPathForRootMount(t *testing.T) {
 func TestStorageViewSwitchToMountsUsesRuntimeRootfsPath(t *testing.T) {
 	view := NewStorageView(nil, storageTestRuntime{}, context.Background())
 	view.SetContainer("container-1")
-	view.switchMode(StorageModeMounts)
+	view.activeMode = StorageModeMounts
+	if err := view.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh() error = %v", err)
+	}
 
 	root := view.mountsView.tree.GetRoot()
 	if root == nil || len(root.GetChildren()) == 0 {
@@ -87,8 +90,8 @@ func TestStorageViewSwitchToMountsUsesRuntimeRootfsPath(t *testing.T) {
 	}
 
 	first := root.GetChildren()[0]
-	if !strings.Contains(first.GetText(), "/run/containerd/io.containerd.runtime.v2.task/k8s.io/test/rootfs") {
-		t.Fatalf("root mount text = %q, want rootfs path", first.GetText())
+	if !strings.Contains(view.mountsView.detailView.GetText(false), "/run/containerd/io.containerd.runtime.v2.task/k8s.io/test/rootfs") {
+		t.Fatalf("root mount text = %q, detail = %q, want rootfs path", first.GetText(), view.mountsView.detailView.GetText(false))
 	}
 }
 
@@ -111,6 +114,10 @@ func (storageTestRuntime) GetContainerDetail(context.Context, string) (*models.C
 }
 
 func (storageTestRuntime) GetContainerRuntimeInfo(context.Context, string) (*models.ContainerDetail, error) {
+	return &models.ContainerDetail{}, nil
+}
+
+func (storageTestRuntime) GetContainerStorageInfo(context.Context, string) (*models.ContainerDetail, error) {
 	return &models.ContainerDetail{
 		RuntimeProfile: &models.RuntimeProfile{
 			RootFS: &models.RootFSInfo{
@@ -118,6 +125,10 @@ func (storageTestRuntime) GetContainerRuntimeInfo(context.Context, string) (*mod
 			},
 		},
 	}, nil
+}
+
+func (storageTestRuntime) GetContainerNetworkInfo(context.Context, string) (*models.ContainerDetail, error) {
+	return &models.ContainerDetail{}, nil
 }
 
 func (storageTestRuntime) ListImages(context.Context) ([]*models.Image, error) { return nil, nil }

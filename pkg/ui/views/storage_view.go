@@ -97,7 +97,7 @@ func (v *StorageView) Refresh(ctx context.Context) error {
 	v.mu.Unlock()
 
 	if containerID != "" {
-		runtimeInfo, err := v.rt.GetContainerRuntimeInfo(ctx, containerID)
+		runtimeInfo, err := v.rt.GetContainerStorageInfo(ctx, containerID)
 		if err == nil {
 			v.mu.Lock()
 			v.runtimeInfo = runtimeInfo

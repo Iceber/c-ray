@@ -35,6 +35,14 @@ func (stubRuntime) GetContainerRuntimeInfo(ctx context.Context, id string) (*mod
 	return &models.ContainerDetail{}, nil
 }
 
+func (stubRuntime) GetContainerStorageInfo(ctx context.Context, id string) (*models.ContainerDetail, error) {
+	return &models.ContainerDetail{}, nil
+}
+
+func (stubRuntime) GetContainerNetworkInfo(ctx context.Context, id string) (*models.ContainerDetail, error) {
+	return &models.ContainerDetail{}, nil
+}
+
 func (stubRuntime) ListImages(ctx context.Context) ([]*models.Image, error) {
 	return nil, nil
 }

@@ -130,6 +130,8 @@ sysinfo.SortProcessesByIO(processes)
 // GetContainerDetail 现在包含:
 - CGroup 信息 (limits, version)
 - 进程数量
+
+// GetContainerStorageInfo 现在包含:
 - 完整的挂载信息
 
 // GetContainerProcesses

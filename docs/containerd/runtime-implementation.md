@@ -13,11 +13,14 @@
   - 从 labels 提取 Pod 信息 (io.kubernetes.*)
   - 获取容器运行状态和 PID
 - `GetContainer()`: 获取单个容器信息
-- `GetContainerDetail()`: 获取容器详细信息
-  - OCI Spec 信息
-  - CGroup 路径
-  - 挂载信息
-  - Snapshot 信息
+- `GetContainerDetail()`: 获取容器概览与进程摘要相关信息
+  - OCI Spec 中与概览直接相关的信息（namespace、环境变量、SharedPID、CGroup 路径）
+  - CGroup limits / version
+  - 进程数量
+  - CRI 状态补充（重启次数、退出状态）
+- `GetContainerRuntimeInfo()`: 获取 runtime / shim / OCI 元数据
+- `GetContainerStorageInfo()`: 获取 snapshot、rootfs、挂载与 RW layer 信息
+- `GetContainerNetworkInfo()`: 获取 sandbox、netns、CNI/CRI 网络信息
 
 ### 3. 镜像管理
 - `ListImages()`: 获取所有镜像列表
@@ -83,7 +86,7 @@ for _, c := range containers {
         c.Name, c.ID[:12], c.Status)
 }
 
-// 获取容器详情
+// 获取容器概览
 detail, err := rt.GetContainerDetail(ctx, containerID)
 if err != nil {
     log.Fatal(err)
@@ -91,7 +94,14 @@ if err != nil {
 
 fmt.Printf("PID: %d\n", detail.PID)
 fmt.Printf("CGroup: %s\n", detail.CGroupPath)
-fmt.Printf("Mounts: %d\n", detail.MountCount)
+
+// 获取存储信息
+storageDetail, err := rt.GetContainerStorageInfo(ctx, containerID)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Mounts: %d\n", storageDetail.MountCount)
 
 // 列出镜像
 images, err := rt.ListImages(ctx)

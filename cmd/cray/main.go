@@ -272,7 +272,12 @@ func testListPods(ctx context.Context, rt runtime.Runtime) {
 
 func testContainerDetail(ctx context.Context, rt runtime.Runtime, containerID string) {
 	fmt.Printf("=== Container Detail: %s ===\n", containerID)
-	detail, err := rt.GetContainerRuntimeInfo(ctx, containerID)
+	detail, err := rt.GetContainerDetail(ctx, containerID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	storageDetail, err := rt.GetContainerStorageInfo(ctx, containerID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -321,10 +326,10 @@ func testContainerDetail(ctx context.Context, rt runtime.Runtime, containerID st
 	}
 
 	fmt.Println("\n--- Mount Info ---")
-	fmt.Printf("Mount Count:   %d\n", detail.MountCount)
-	if len(detail.Mounts) > 0 {
+	fmt.Printf("Mount Count:   %d\n", storageDetail.MountCount)
+	if len(storageDetail.Mounts) > 0 {
 		fmt.Println("\nFirst 5 mounts:")
-		for i, m := range detail.Mounts {
+		for i, m := range storageDetail.Mounts {
 			if i >= 5 {
 				break
 			}
@@ -334,8 +339,8 @@ func testContainerDetail(ctx context.Context, rt runtime.Runtime, containerID st
 
 	fmt.Println("\n--- Image Info ---")
 	fmt.Printf("Image Name:    %s\n", detail.ImageName)
-	if detail.WritableLayerPath != "" {
-		fmt.Printf("Writable Layer: %s\n", detail.WritableLayerPath)
+	if storageDetail.WritableLayerPath != "" {
+		fmt.Printf("Writable Layer: %s\n", storageDetail.WritableLayerPath)
 	}
 }
 
@@ -478,7 +483,7 @@ func testContainerLayers(ctx context.Context, rt runtime.Runtime, containerID st
 	fmt.Printf("=== Container Layers: %s ===\n\n", containerID)
 
 	// Get container detail to extract image, snapshotter and snapshot key
-	detail, err := rt.GetContainerRuntimeInfo(ctx, containerID)
+	detail, err := rt.GetContainerStorageInfo(ctx, containerID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error getting container detail: %v\n", err)
 		os.Exit(1)
