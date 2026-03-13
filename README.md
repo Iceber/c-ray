@@ -218,6 +218,8 @@ type Runtime interface {
 }
 ```
 
+详细的字段来源、获取路径和实现逻辑说明见：`docs/runtime-spec/runtime-interface-implementation.md`
+
 ### CRI 元数据增强
 
 通过独立的 CRI 客户端获取 Kubernetes 级别的元数据：
