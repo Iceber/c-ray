@@ -300,7 +300,7 @@ func (r *ContainerdRuntime) GetContainerRuntimeInfo(ctx context.Context, id stri
 		}
 	}
 
-	r.populateRuntimeProfile(detail, state.info, spec, shimProc, "")
+	r.populateRuntimeProfile(detail, state.info, shimProc)
 
 	return detail, nil
 }
@@ -335,7 +335,7 @@ func (r *ContainerdRuntime) GetContainerStorageInfo(ctx context.Context, id stri
 	mounts, mountRootFSPath := r.resolveContainerMounts(ctx, state.info.ID, spec, detail.PID)
 	detail.Mounts = mounts
 	detail.MountCount = len(mounts)
-	r.populateStorageProfile(detail, state.info, mountRootFSPath)
+	r.populateRootFSProfile(detail, state.info, mountRootFSPath)
 
 	return detail, nil
 }
@@ -755,7 +755,7 @@ func (r *ContainerdRuntime) getShimPID(taskPID uint32) uint32 {
 	return uint32(ppid)
 }
 
-func (r *ContainerdRuntime) populateRuntimeProfile(detail *models.ContainerDetail, info containers.Container, spec *runtimespec.Spec, shimProc *shimProcessInfo, mountRootFSPath string) {
+func (r *ContainerdRuntime) populateRuntimeProfile(detail *models.ContainerDetail, info containers.Container, shimProc *shimProcessInfo) {
 	if detail.RuntimeProfile == nil {
 		detail.RuntimeProfile = &models.RuntimeProfile{}
 	}
@@ -764,7 +764,6 @@ func (r *ContainerdRuntime) populateRuntimeProfile(detail *models.ContainerDetai
 	profile.OCI = &models.OCIInfo{}
 	profile.Shim = &models.ShimInfo{}
 	profile.CGroup = &models.CGroupInfo{}
-	profile.RootFS = &models.RootFSInfo{}
 
 	bundleDir, bundleSource := r.resolveOCIBundleDir(r.config.Namespace, info.ID)
 	stateDir, stateSource := r.resolveOCIStateDir(info, r.config.Namespace)
@@ -817,17 +816,6 @@ func (r *ContainerdRuntime) populateRuntimeProfile(detail *models.ContainerDetai
 		}
 	}
 
-	if rootfsPath := existingPath(filepath.Join(bundleDir, "rootfs")); rootfsPath != "" {
-		profile.RootFS.BundleRootFSPath = rootfsPath
-		profile.RootFS.Source = bundleSource
-	}
-	if mountRootFSPath != "" {
-		profile.RootFS.MountRootFSPath = mountRootFSPath
-		if profile.RootFS.Source == "" {
-			profile.RootFS.Source = "mountinfo"
-		}
-	}
-
 	if socketAddress, sandboxID, sandboxBundleDir, source := r.resolveShimSocketAddress(bundleDir, info.ID, profile.OCI.SandboxID); socketAddress != "" {
 		profile.Shim.SocketAddress = socketAddress
 		profile.Shim.SandboxBundleDir = sandboxBundleDir
@@ -844,7 +832,7 @@ func (r *ContainerdRuntime) populateRuntimeProfile(detail *models.ContainerDetai
 	}
 }
 
-func (r *ContainerdRuntime) populateStorageProfile(detail *models.ContainerDetail, info containers.Container, mountRootFSPath string) {
+func (r *ContainerdRuntime) populateRootFSProfile(detail *models.ContainerDetail, info containers.Container, mountRootFSPath string) {
 	if detail.RuntimeProfile == nil {
 		detail.RuntimeProfile = &models.RuntimeProfile{}
 	}
