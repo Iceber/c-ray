@@ -893,7 +893,7 @@ containerd 运行时的挂载不是只看一个来源，而是把以下 3 份数
 | `procReader *sysinfo.ProcReader` | 读取 `/proc` | procfs | 识别 `conmon`、读取 net/dev、cwd、exe 等 |
 | `cgroupReader *sysinfo.CGroupReader` | 读取 cgroup | `/sys/fs/cgroup` | 可复用现有模块 |
 | `mountReader *sysinfo.MountReader` | 读取 live mounts | `/proc/<pid>/mountinfo` | 可复用现有模块 |
-| `configReader`（可选） | 解析 `crio.conf` / storage.conf | `/etc/crio/crio.conf`、`/etc/containers/storage.conf` | 用于 root/runroot/default runtime 等路径推导 |
+| `configReader`（可选） | 解析 `crio.conf` / `storage.conf` | `/etc/crio/crio.conf`、`/etc/containers/storage.conf` | 用于 root/runroot/default runtime 等路径推导 |
 
 ### 8.3 `CRI-O` 建议优先使用的数据源
 
@@ -935,7 +935,7 @@ containerd 运行时的挂载不是只看一个来源，而是把以下 3 份数
 2. 如果调用方没传，默认回退到 `crio.conf` 中的 `crio.api.listen`
 3. 如果配置文件也不可读，再回退到 CRI-O 默认 socket：
 
-```text
+```
 /var/run/crio/crio.sock
 ```
 
@@ -1033,7 +1033,7 @@ containerd 运行时的挂载不是只看一个来源，而是把以下 3 份数
 |---|---|---|---|
 | `ImageName` | CRI status | image ref / repo tag | - |
 | `ImageConfig` | CRI image verbose info 或本地存储元数据 | 若后续无法稳定经 CRI 拿到 config digest，则可作为第二阶段实现 | `CRI-O` 不一定像 containerd 那样直接暴露 content store |
-| `ImageLayers` | containers/storage 元数据 | 可能需要单独的 storage 读取层 | 与 containerd 的 snapshotter 模型不同，建议独立设计 |
+| `ImageLayers` | `containers/storage` 元数据 | 可能需要单独的 storage 读取层 | 与 containerd 的 snapshotter 模型不同，建议独立设计 |
 | `SnapshotKey` | 不建议照搬 containerd 语义 | - | `CRI-O` 没有 containerd snapshot key 的统一概念，建议单独定义为 storage layer id 或保留空值 |
 | `Snapshotter` | 不建议强行映射 | - | 可保留空值，或改由 runtime profile 展示 storage driver |
 | `WritableLayerPath` | CRI-O runroot/root + live root mount | 优先解析 live root mount 的 upperdir；其次结合 `root`/`runroot` 与 verbose info 推导 | 更推荐走 live mountinfo，而不是猜测目录结构 |
