@@ -852,365 +852,392 @@ containerd 运行时的挂载不是只看一个来源，而是把以下 3 份数
 
 ---
 
-## 8. 规划中的 `CRI-O` 实现：建议的数据源与字段解析路径
+## 8. 规划中的 `CRI-O` 实现：按 `CRI-O` 自身语义组织的字段与数据流
 
 > 本节描述的是**未来新增 `CRI-O` 运行时实现时建议采用的解析路径**，不是当前仓库已经存在的实现。  
-> 当前仓库里只有 `containerd` 的具体实现；`CRI-O` 部分的目的，是在编码前先把字段来源、优先级和 fallback 讲清楚。
+> 重点不是把 containerd 的术语强行套到 `CRI-O` 上，而是按 `CRI-O` 自己的运行时分层来定义：**CRI API、`containers/image`、`containers/storage`、`conmon`、OCI runtime、procfs/mountinfo/cgroup**。
 
-本节主要依据以下事实整理：
+### 8.1 设计原则：不要用 containerd 概念反推 `CRI-O`
 
-- 当前仓库已存在可复用的 CRI 元数据客户端：`pkg/runtime/cri`
-- CRI-O 官方文档给出了默认的 `listen`、`root`、`runroot`、`default_runtime`、`cgroup_manager` 等配置项
-- 对于进程、mount、cgroup、网络速率等宿主机观测信息，仍可直接复用 `pkg/sysinfo`
+规划 `CRI-O` 实现时，建议先明确下面 4 条原则：
 
-### 8.1 为什么 `CRI-O` 需要单独规划
+1. **容器/Pod 生命周期优先看 CRI**
+   - `CRI-O` 对 kubelet 暴露的是标准 CRI。
+   - 容器列表、PodSandbox、状态、挂载、网络、生命周期字段，首先应来自 CRI，而不是先假设某个内部 state 目录结构。
 
-虽然 `CRI-O` 和 containerd 都实现了 Kubernetes CRI，但它们的“强项数据源”并不完全一样：
+2. **镜像与层信息优先看 containers 生态**
+   - `CRI-O` 的镜像与本地存储不应继续用 containerd 的 `content store`、`snapshotter`、`chainID` 去解释。
+   - 规划时应优先考虑：
+     - `go.podman.io/image/v5`（原 `containers/image`）
+     - `go.podman.io/storage`（原 `containers/storage`）
 
-1. **CRI 层能力更统一**
-   - 容器/镜像/PodSandbox 的列表、状态、网络、挂载、生命周期信息，都可以优先通过 CRI 获取。
-   - 这部分更适合复用仓库现有的 `pkg/runtime/cri` 能力，或在其上继续扩展。
+3. **监控进程应明确写成 `conmon`**
+   - `conmon` 是 `CRI-O` / Podman 体系里的容器 monitor 和通信进程。
+   - 它不是 containerd runtime v2 里的 “shim”；文档里不建议继续把这层概念写成 `shim` 语义。
 
-2. **运行时内部状态路径不同**
-   - containerd 主要围绕 containerd metadata、snapshotter、runtime v2 state 目录展开。
-   - `CRI-O` 的状态目录、镜像存储和监控进程（如 `conmon`）来自另一套实现体系。
+4. **允许为 `CRI-O` 扩展 runtime-specific 字段**
+   - 当前 `pkg/models` 里已有一些明显偏 containerd 的命名，例如：
+     - `SnapshotKey`
+     - `Snapshotter`
+     - `ImageConfigInfo.ContentPath`
+     - `RuntimeProfile.Shim`
+   - `CRI-O` 实现不应为了兼容这些名字而歪曲数据来源。
+   - 如果落地时发现信息结构确实不同，建议新增 `CRI-O` 专属字段或子结构，而不是继续硬套 containerd 术语。
 
-3. **因此设计重点应该调整为：**
-   - **列表类与状态类字段优先走 CRI**
-   - **进程、挂载、rootfs、cgroup 继续走 procfs / mountinfo / cgroup**
-   - **CRI-O 专属路径尽量来自配置文件或运行时约定，不要硬编码到 UI 层**
+### 8.2 `CRI-O` 的建议数据源与可借助库
 
-### 8.2 建议的 `CrioRuntime` 结构体
+建议把 `CRI-O` 实现的数据源分成 6 层：
 
-如果后续新增 `pkg/runtime/crio`，建议保留与 `ContainerdRuntime` 相似的结构分层：
-
-| 字段 | 作用 | 主要数据源 | 备注 |
+| 层级 | 主要内容 | 推荐入口/库 | 作用 |
 |---|---|---|---|
-| `config *runtime.Config` | 保存 socket / namespace / timeout | 调用方配置 | `Namespace` 对 `CRI-O` 不一定像 containerd 那样是强语义字段，可作为保留配置 |
-| `criRuntimeClient` | 访问 CRI RuntimeService | `/var/run/crio/crio.sock` 或配置中的 `listen` | 容器、PodSandbox、状态、挂载、网络的核心入口 |
-| `criImageClient` | 访问 CRI ImageService | 同一个 CRI socket | 镜像列表、镜像状态、镜像大小、repo tags/digests |
-| `processCollector *sysinfo.ProcessCollector` | 进程 / top / 网络速率 | procfs + cgroup | 可直接复用现有模块 |
-| `procReader *sysinfo.ProcReader` | 读取 `/proc` | procfs | 识别 `conmon`、读取 net/dev、cwd、exe 等 |
-| `cgroupReader *sysinfo.CGroupReader` | 读取 cgroup | `/sys/fs/cgroup` | 可复用现有模块 |
-| `mountReader *sysinfo.MountReader` | 读取 live mounts | `/proc/<pid>/mountinfo` | 可复用现有模块 |
-| `configReader`（可选） | 解析 `crio.conf` / `storage.conf` | `/etc/crio/crio.conf`、`/etc/containers/storage.conf` | 用于 root/runroot/default runtime 等路径推导 |
+| CRI Runtime | 容器、PodSandbox、状态、挂载、网络 | `k8s.io/cri-api` + gRPC；仓库现有 `pkg/runtime/cri` | 主入口，负责 kubelet 视角的运行时信息 |
+| CRI Image | 镜像列表与镜像状态 | `k8s.io/cri-api` + gRPC | 镜像基础信息 |
+| CRI-O 配置 | `crio.conf`、运行时选择、默认挂载、cgroup driver | 配置文件解析；可结合 containers 生态配置库 | 解释默认行为与路径约定 |
+| Image 库 | 镜像引用、manifest、config、digest/media type | `go.podman.io/image/v5`（原 `containers/image`） | 补 image config、manifest、registry/ref 语义 |
+| Storage 库 | 本地 layer/image/container 存储元数据 | `go.podman.io/storage`（原 `containers/storage`） | 补 layer 拓扑、rw layer、usage、driver 信息 |
+| 宿主机观测 | `conmon`、主进程、mount、cgroup、net/dev | `pkg/sysinfo`、`/proc`、`/sys/fs/cgroup`、mountinfo | 补 live 状态与宿主机视图 |
 
-### 8.3 `CRI-O` 建议优先使用的数据源
+### 8.3 建议的 `CrioRuntime` 依赖结构
 
-对于未来 `CRI-O` 实现，建议按下面顺序取数：
+如果后续新增 `pkg/runtime/crio`，建议结构体依赖直接按 `CRI-O` 的分层来设计：
 
-1. **CRI RuntimeService**
-   - `ListContainers`
-   - `ContainerStatus(verbose=true)`
-   - `ListPodSandbox`
-   - `PodSandboxStatus(verbose=true)`
-   - `ListContainerStats` / `ContainerStats`（如果未来要补更多 CRI 统计）
+| 字段 | 作用 | 建议实现/库 | 备注 |
+|---|---|---|---|
+| `config *runtime.Config` | 保存 socket / timeout 等配置 | 本仓库 `runtime.Config` | `Namespace` 对 `CRI-O` 不是核心语义，可弱化 |
+| `runtimeClient` | CRI RuntimeService client | `k8s.io/cri-api` | 取容器、Pod、状态、挂载、网络 |
+| `imageClient` | CRI ImageService client | `k8s.io/cri-api` | 取镜像列表与镜像状态 |
+| `imageInspector` | 读镜像 config/manifest/ref | `go.podman.io/image/v5` | 比继续写 “content store” 更贴近 `CRI-O` |
+| `storageStore` | 读本地镜像/容器/layer 存储 | `go.podman.io/storage` | 用于 layer、rw layer、driver、usage |
+| `procReader` | 读取 `/proc` | `pkg/sysinfo` | 识别主进程、`conmon`、net/dev、cwd、exe |
+| `cgroupReader` | 读取 cgroup | `pkg/sysinfo` | limits / usage / cgroup version |
+| `mountReader` | 读取 mountinfo | `pkg/sysinfo` | live mounts、rootfs、upperdir |
+| `processCollector` | top/进程/网络速率 | `pkg/sysinfo` | 可直接复用当前实现 |
+| `configReader`（可选） | 读取 `crio.conf` / `storage.conf` | 本地解析器或 containers 生态配置库 | 用于解释 root/runroot/default mounts |
 
-2. **CRI ImageService**
-   - `ListImages`
-   - `ImageStatus(verbose=true)`
+### 8.4 `CRI-O` 数据获取总流程
 
-3. **OCI/runtime 配置文件与运行时配置**
-   - `crio.conf`
-     - `listen`
-     - `root`
-     - `runroot`
-     - `default_runtime`
-     - `cgroup_manager`
-     - `default_mounts_file`
-   - `containers-storage.conf`
+建议把 `CRI-O` 运行时实现理解为下面这条链路：
 
-4. **宿主机观测面**
-   - `/proc/<pid>/...`
-   - `/proc/<pid>/mountinfo`
-   - `/sys/fs/cgroup/...`
-
-### 8.4 连接与配置解析路径
-
-#### `Connect(ctx)`
-
-建议实现：
-
-1. 优先使用 `runtime.Config.SocketPath`
-2. 如果调用方没传，默认回退到 `crio.conf` 中的 `crio.api.listen`
-3. 如果配置文件也不可读，再回退到 CRI-O 默认 socket：
+1. **先连 CRI socket**
+   - 默认优先读 `runtime.Config.SocketPath`
+   - 若未配置，再读 `crio.conf` 的 `listen`
+   - 最后回退到：
 
 ```
 /var/run/crio/crio.sock
 ```
 
-#### 建议新增的配置来源说明
+2. **先拿 kubelet 视角的数据**
+   - `ListContainers`
+   - `ContainerStatus(verbose=true)`
+   - `ListPodSandbox`
+   - `PodSandboxStatus(verbose=true)`
+   - `ListImages`
+   - `ImageStatus(verbose=true)`
 
-依据 CRI-O 官方文档，以下配置对 runtime introspection 最有帮助：
+3. **再拿 `CRI-O` 本地补充数据**
+   - `crio.conf`
+   - `storage.conf`
+   - `go.podman.io/image/v5` 的 image/config/manifest 信息
+   - `go.podman.io/storage` 的 layer/container/image/store 信息
 
-| 配置项 | 默认值/常见值 | 用途 |
+4. **最后叠加宿主机 live 观测**
+   - `/proc/<pid>/...`
+   - `/proc/<pid>/mountinfo`
+   - `/sys/fs/cgroup/...`
+   - `conmon` 进程信息
+
+文档中建议始终把字段来源写成：
+
+1. **CRI**
+2. **containers 库**
+3. **host observation**
+4. **inferred**
+
+不要再把 `CRI-O` 的说明组织成 “metadata → content → snapshot → shim”。
+
+### 8.5 连接、配置与默认行为字段
+
+`CRI-O` 的很多“为什么会这样”字段，不来自某个 container object，而来自配置：
+
+| 配置项 | 常见默认值 | 说明 |
 |---|---|---|
-| `crio.api.listen` | `/var/run/crio/crio.sock` | CRI gRPC socket |
-| `root` | `/var/lib/containers/storage` | 镜像和容器持久化存储根目录 |
-| `runroot` | `/var/run/containers/storage` | 运行态 state 根目录 |
-| `default_runtime` | 常见为 `crun` | 展示默认 OCI runtime |
-| `cgroup_manager` | 常见为 `systemd` | 解释 cgroup driver |
-| `default_mounts_file` | 由 CRI-O / containers 配置决定 | 解释 runtime default mounts |
+| `listen` | `/var/run/crio/crio.sock` | CRI gRPC socket |
+| `root` | `/var/lib/containers/storage` | 持久化镜像/容器存储根目录 |
+| `runroot` | `/var/run/containers/storage` | 运行态存储根目录 |
+| `default_runtime` | 常见为 `crun` | 默认 OCI runtime |
+| `cgroup_manager` | 常见为 `systemd` | cgroup driver |
+| `default_mounts_file` | 依发行版/配置而定 | 默认挂载来源 |
+| `log_dir` | 常见为 `/var/log/crio/pods` | 容器日志目录语义 |
 
-### 8.5 `models.Container` 字段在 `CRI-O` 中的建议解析路径
+这些配置不应该被解释为 containerd 的 runtime dir/snapshotter 配置；它们是 `CRI-O` 自己的行为来源。
 
-对于 `CRI-O`，建议把 `models.Container` 的来源切换为 **CRI 容器列表 + 容器状态补全**：
+### 8.6 `models.Container`：建议保留的公共字段
+
+`models.Container` 这类“基础视图”字段，可以继续共用当前模型，但来源应明确改成 `CRI-O` 语义：
 
 | 字段 | 建议来源 | 获取路径 | 说明 |
 |---|---|---|---|
 | `ID` | CRI `ListContainers` | `Container.Id` | 直接使用 CRI container id |
-| `Name` | CRI labels / metadata | 优先 `io.kubernetes.container.name`；否则 `metadata.name`；最后截断 id | 与 containerd 保持一致的优先级体验 |
-| `Image` | CRI image reference | `Container.Image.Image` 或 status 中 image ref | 建议保留用户可读引用 |
-| `ImageID` | CRI image ref | `Container.ImageRef` / `status.ImageRef` | 这会是 `CRI-O` 实现里比当前 containerd 更容易补齐的字段 |
-| `Status` | CRI state | `Container.State` / `ContainerStatus.State` | 建议映射到现有 `ContainerStatus` 枚举 |
-| `CreatedAt` | CRI | `Container.CreatedAt` | CRI 时间戳通常为 UnixNano |
-| `StartedAt` | CRI status | `status.StartedAt` | 建议在列表之外的详情方法里补齐 |
-| `PID` | CRI verbose status / info | `status.Info["info"]` 中运行时专有 pid，或其他显式 pid 字段 | 需要结合 `verbose=true` 的运行时扩展信息 |
-| `PodName` | CRI labels | `io.kubernetes.pod.name` | 与 containerd 一致 |
-| `PodNamespace` | CRI labels | `io.kubernetes.pod.namespace` | 与 containerd 一致 |
-| `PodUID` | CRI labels | `io.kubernetes.pod.uid` | 与 containerd 一致 |
-| `Labels` | CRI | `Container.Labels` / `status.Labels` | 原样透传 |
+| `Name` | CRI labels / metadata | `io.kubernetes.container.name` → `metadata.name` → 截断 id | 与当前 UI 体验保持一致 |
+| `Image` | CRI | `Container.Image.Image` 或 `status.Image.Image` | 用户可读引用 |
+| `ImageID` | CRI | `Container.ImageRef` / `status.ImageRef` | 对 `CRI-O` 来说应是强字段 |
+| `Status` | CRI | `Container.State` / `ContainerStatus.State` | 统一映射到内部状态 |
+| `CreatedAt` | CRI | `Container.CreatedAt` | - |
+| `StartedAt` | CRI status | `status.StartedAt` | 建议详情接口填充 |
+| `PID` | CRI verbose status + host 观测 | `status.Info` 或 pidfile / procfs | 允许多源回退 |
+| `PodName` / `PodNamespace` / `PodUID` | CRI labels | Kubernetes labels | 与当前 containerd 实现一致 |
+| `Labels` | CRI | `Container.Labels` / `status.Labels` | 透传 |
 
-### 8.6 `GetContainerDetail()` / `GetContainerRuntimeInfo()` 在 `CRI-O` 中的建议分工
+### 8.7 `models.ContainerDetail`：建议拆成 5 组来解释
 
-建议保持与 containerd 一样的职责边界：
-
-- `GetContainerDetail()`：轻量概览
-- `GetContainerRuntimeInfo()`：重型运行时探测
-
-#### `GetContainerDetail()` 建议填充
-
-| 字段 | 建议来源 |
-|---|---|
-| `Container.*` | `ListContainers` + `ContainerStatus` |
-| `ImageName` | CRI status/image |
-| `PID` / `Status` | CRI status |
-
-#### `GetContainerRuntimeInfo()` 建议额外填充
-
-| 字段组 | 建议来源 |
-|---|---|
-| lifecycle | `ContainerStatus(verbose=true)` |
-| mounts | CRI mounts + live mountinfo + runtime default mounts file |
-| network | `PodSandboxStatus(verbose=true)` + `/proc/<pid>/net/dev` |
-| runtime profile | `crio.conf` + verbose info + procfs + runroot/root 推导 |
-| cgroup | verbose info / OCI spec / procfs + cgroup fs |
-| process count | `/proc/<pid>/root/proc` |
-
-### 8.7 `models.ContainerDetail` 字段在 `CRI-O` 中的建议解析路径
-
-#### 8.7.1 lifecycle / process 相关字段
-
-| 字段 | 建议来源 | 获取路径 | 逻辑 |
-|---|---|---|---|
-| `ProcessCount` | procfs | `CollectContainerProcesses(pid)` | 与 containerd 方案一致 |
-| `Processes` | 单独接口 | `GetContainerProcesses()` | 不建议在 detail 主接口里直接塞完整进程树 |
-| `Environment` | CRI config / OCI config | `ContainerStatus(verbose=true)` 里的 config env；若能定位 OCI `config.json`，可与其交叉核对 | `CRI-O` 实现里 CRI 很可能是主来源 |
-| `SharedPID` | CRI namespace options / OCI config | `NamespaceOptions.Pid`；如能读取 OCI spec 再进行校验 | 建议“CRI 优先，OCI 校验/回填” |
-| `RestartCount` | CRI status metadata | `status.Metadata.Attempt` | 与 containerd 中的 CRI 路径一致 |
-| `ExitedAt` | CRI status | `status.FinishedAt` | - |
-| `ExitCode` | CRI status | `status.ExitCode` | - |
-| `ExitReason` | CRI status | `status.Reason` | - |
-
-#### 8.7.2 CGroup 字段
-
-`CRI-O` 下 cgroup 的根解析思路建议是：
-
-1. 优先取 runtime/verbose info 暴露的 cgroup 路径
-2. 其次读 OCI `config.json` 的 `linux.cgroupsPath`
-3. 再次读 `/proc/<pid>/cgroup`
-4. 最后用现有 `CGroupReader` 到 `/sys/fs/cgroup` 读 limits/usage
+#### 8.7.1 生命周期与进程字段
 
 | 字段 | 建议来源 | 说明 |
 |---|---|---|
-| `CGroupPath` | verbose info / OCI spec / procfs | 需要保留 source 标记 |
+| `ProcessCount` | `/proc/<pid>/root/proc` | 与现有采集方式一致 |
+| `Processes` | `GetContainerProcesses()` | 单独接口返回完整进程列表 |
+| `Environment` | CRI status verbose / OCI config | `CRI-O` 下 CRI 配置通常应作为主来源 |
+| `SharedPID` | CRI namespace options | 必要时用 OCI config 校验 |
+| `RestartCount` | CRI status metadata | `Attempt` |
+| `ExitedAt` | CRI status | `FinishedAt` |
+| `ExitCode` | CRI status | `ExitCode` |
+| `ExitReason` | CRI status | `Reason` |
+
+#### 8.7.2 cgroup 与资源字段
+
+`CRI-O` 下建议用下面顺序取 cgroup：
+
+1. CRI verbose status / runtime info
+2. OCI `config.json`
+3. `/proc/<pid>/cgroup`
+4. cgroup fs
+
+| 字段 | 建议来源 | 说明 |
+|---|---|---|
+| `CGroupPath` | CRI / OCI / procfs | 记录最终采用的 source |
 | `CGroupVersion` | `CGroupReader.GetVersion()` | 可直接复用 |
-| `CGroupLimits.*` | cgroup fs | 直接复用现有 cgroup reader |
+| `CGroupLimits.*` | cgroup fs | 直接复用现有 reader |
 
-#### 8.7.3 镜像 / rootfs / mount 字段
+#### 8.7.3 挂载与 rootfs 字段
 
-| 字段 | 建议来源 | 获取路径 | 逻辑 |
-|---|---|---|---|
-| `ImageName` | CRI status | image ref / repo tag | - |
-| `ImageConfig` | CRI image verbose info 或本地存储元数据 | 若后续无法稳定经 CRI 拿到 config digest，则可作为第二阶段实现 | `CRI-O` 不一定像 containerd 那样直接暴露 content store |
-| `ImageLayers` | `containers/storage` 元数据 | 可能需要单独的 storage 读取层 | 与 containerd 的 snapshotter 模型不同，建议独立设计 |
-| `SnapshotKey` | 不建议照搬 containerd 语义 | - | `CRI-O` 没有 containerd snapshot key 的统一概念，建议单独定义为 storage layer id 或保留空值 |
-| `Snapshotter` | 不建议强行映射 | - | 可保留空值，或改由 runtime profile 展示 storage driver |
-| `WritableLayerPath` | CRI-O runroot/root + live root mount | 优先解析 live root mount 的 upperdir；其次结合 `root`/`runroot` 与 verbose info 推导 | 更推荐走 live mountinfo，而不是猜测目录结构 |
-| `Mounts` | CRI config mounts + CRI status mounts + live mountinfo + default mounts file | 复用当前 merge 思路，但把“runtime default”来源改成 `default_mounts_file` / CRI-O 插入的默认挂载 | 保持 `Origin/State/Note` 语义不变 |
-| `MountCount` | 计算值 | `len(mounts)` | - |
-| `RWLayerUsage` | live rootfs + storage usage | 若能从 storage 元数据读到大小则补齐，否则允许为空 | 可以分阶段实现 |
-| `RWLayerInodes` | 同上 | - | 可以分阶段实现 |
+对 `CRI-O` 而言，挂载与 rootfs 建议按下面顺序：
 
-### 8.8 `RuntimeProfile` 在 `CRI-O` 中的建议设计
-
-对于 `CRI-O`，建议继续复用 `RuntimeProfile` 结构，但字段解释要从“containerd shim/runtime v2”切到“CRI-O + OCI runtime + conmon”。
-
-#### `RuntimeProfile.OCI`
+1. CRI config mounts
+2. CRI status mounts
+3. `default_mounts_file` 和 `CRI-O` 自动注入挂载
+4. live mountinfo
 
 | 字段 | 建议来源 | 说明 |
 |---|---|---|
-| `RuntimeName` | `crio.conf.default_runtime` 或 verbose info runtime handler | 常见为 `crun`/`runc` |
-| `RuntimeBinary` | runtime handler 配置 / procfs | 如果能定位到真实 runtime binary 则填，否则仅填名称 |
-| `StateDir` | `runroot` | 比 containerd 更适合从 CRI-O 配置出发 |
-| `BundleDir` | runtime state / OCI bundle 目录 | 建议优先从 verbose info 或 `conmon` cwd 推导，不要只靠固定约定 |
-| `ConfigPath` | `bundleDir/config.json` | 若 bundle 目录可解析 |
-| `SandboxID` | CRI sandbox id | 与 CRI 原生字段保持一致 |
-| `*Source` 字段 | 配置 / verbose info / procfs / inferred | 必须保留来源说明 |
+| `Mounts` | 上述 4 路合并 | 继续输出统一 `Origin/State/Note` |
+| `MountCount` | 计算值 | `len(mounts)` |
+| `WritableLayerPath` | live root mount + storage store | 优先信任 live mountinfo |
+| `ReadOnlyLayerPath` | storage store / live mount | 取决于 driver 与 layer 挂载方式 |
+| `RWLayerUsage` / `RWLayerInodes` | `go.podman.io/storage` + fs 统计 | 不必再表述成 snapshot usage |
 
-#### `RuntimeProfile.Shim`
-
-在 `CRI-O` 场景里，这一层建议解释为“容器监控进程”，通常更接近 `conmon`：
+#### 8.7.4 网络字段
 
 | 字段 | 建议来源 | 说明 |
 |---|---|---|
-| `PID` | procfs / verbose info | 可通过容器主进程向上查找 `conmon` |
-| `BinaryPath` | `/proc/<pid>/exe` | 识别 `conmon` |
-| `SocketAddress` | 运行时 state 文件 / attach socket 目录 | 可结合 `container-attach-socket-dir` 或 verbose info |
-| `Cmdline` | `/proc/<pid>/cmdline` | - |
-| `BundleDir` | `conmon` cwd / runtime state | 这通常比写死路径更稳妥 |
-| `Source` | `procfs` / `config` / `inferred` | - |
+| `IPAddress` | `PodSandboxStatus(verbose=true)` | 以 sandbox 为准 |
+| `PortMappings` | CRI sandbox config/status | Pod 维度字段 |
+| `PodNetwork` | CRI + CNI result + `/proc/<pid>/net/dev` | 建议继续复用当前 `PodNetworkInfo` 结构 |
 
-#### `RuntimeProfile.CGroup`
+#### 8.7.5 运行时字段
 
-建议与 containerd 共用同一结构和同一套 cgroup reader，不必为 `CRI-O` 单独造模型。
+这一组是本次整理里最需要“去 containerd 化”的部分。
 
-#### `RuntimeProfile.RootFS`
+当前模型里的这些字段：
 
-| 字段 | 建议来源 | 说明 |
+- `ShimPID`
+- `OCIBundlePath`
+- `OCIRuntimeDir`
+- `Snapshotter`
+- `SnapshotKey`
+- `RuntimeProfile.Shim`
+
+都带有明显的 containerd 偏向。对于 `CRI-O`，建议处理方式如下：
+
+| 现有字段 | 对 `CRI-O` 的建议 |
+|---|---|
+| `ShimPID` | 可临时复用为 `conmon` PID 的兼容出口，但文档应明确它表示的是 `conmon`，不是 shim |
+| `OCIBundlePath` | 可以继续保留，表示 OCI bundle 目录 |
+| `OCIRuntimeDir` | 可以继续保留，但应解释为 `CRI-O` runtime state dir / OCI runtime work dir |
+| `Snapshotter` | 建议忽略；若需要展示存储后端，应扩展为 `StorageDriver` |
+| `SnapshotKey` | 建议忽略；若需要唯一标识 rw layer，应扩展为 `ContainerLayerID` / `RWLayerID` |
+| `RuntimeProfile.Shim` | 建议不要再按 shim 语义写文档；若模型允许调整，建议扩展为 `Monitor` / `Conmon` 子结构 |
+
+### 8.8 `CRI-O` 建议新增或扩展的 runtime-specific 字段
+
+为了避免继续把 `CRI-O` 解释成 containerd，建议在真正实现时允许增加 `CRI-O` 专属字段。下面是更贴近 `CRI-O` 的命名方向：
+
+| 建议字段/结构 | 含义 | 推荐来源 |
 |---|---|---|
-| `BundleRootFSPath` | OCI bundle | 仅当 bundle 可直接定位时填充 |
-| `MountRootFSPath` | `/proc/<pid>/mountinfo` 根挂载 | 优先从 live mount 解析 upperdir/source |
-| `Source` | `mountinfo` / `bundle` / `config` | 建议优先信任 live mount |
+| `ConmonPID` | `conmon` 进程 PID | procfs / runtime state |
+| `ConmonBinary` | `conmon` 可执行路径 | `/proc/<pid>/exe` |
+| `ConmonCmdline` | `conmon` 启动参数 | `/proc/<pid>/cmdline` |
+| `ConmonAttachSocket` | attach socket 地址 | runtime state / config |
+| `ConmonLogPath` | 容器日志文件或 pod log 路径 | `log_dir` + CRI/container state |
+| `StorageDriver` | 当前 `CRI-O` 使用的 storage driver | `storage.conf` / store |
+| `StoreImageID` | storage 层 image id | `go.podman.io/storage` |
+| `TopLayerID` | image 顶层 layer id | `go.podman.io/storage` |
+| `ContainerLayerID` | 容器可写层 id | `go.podman.io/storage` |
+| `ManifestDigest` | manifest digest | `go.podman.io/image/v5` |
+| `ConfigDigest` | config digest | `go.podman.io/image/v5` |
 
-### 8.9 `models.Image` / `models.ImageConfigInfo` / `models.ImageLayer` 在 `CRI-O` 中的建议解析路径
+如果这些字段最终需要展示在 UI 中，建议把它们视作 **`CRI-O` runtime-specific profile**，而不是继续塞回 snapshot/shim 命名下。
+
+### 8.9 镜像与层：按 `containers/image` + `containers/storage` 解释
 
 #### `models.Image`
 
-`CRI-O` 下建议优先走 CRI ImageService：
+基础镜像字段仍建议以 CRI ImageService 为主：
 
-| 字段 | 建议来源 | 获取路径 |
+| 字段 | 主来源 | 补充来源 |
 |---|---|---|
-| `Name` | CRI image repo tags / repo digests | `ListImages` / `ImageStatus` |
-| `Digest` | repo digest / image id | `RepoDigests` 或 `Id` |
-| `Size` | CRI image status | `Size_` |
-| `CreatedAt` | 若 CRI 未直接提供则可能为空 | 需要看 verbose info 或本地存储 |
-| `Labels` | CRI image annotations/spec | 若可得则透传，否则允许为空 |
-| `Layers` | 第二阶段实现 | 需要落到 containers/storage 元数据 |
+| `Name` | CRI repo tags/digests | `go.podman.io/image/v5` |
+| `Digest` | CRI image id / repo digest | image manifest/config |
+| `Size` | CRI image status | storage usage |
+| `CreatedAt` | image inspect / config metadata | 若 CRI 不提供则从 image 库补 |
+| `Labels` | image config labels | image inspect |
+| `Layers` | image inspect + storage store | 不必再写成 containerd layer digests 语义 |
 
 #### `models.ImageConfigInfo`
 
-由于 `CRI-O` 更偏向 CRI + containers/storage，而不是 containerd content store，因此建议分层实现：
+`ImageConfigInfo` 对 `CRI-O` 的解释建议改成：
 
-1. **第一阶段**
-   - 只保证 `Digest`、`Size`、`TargetKind` 等能稳定输出的字段
-2. **第二阶段**
-   - 再去解析本地镜像配置 blob 与真实内容路径
+| 字段 | 对 `CRI-O` 的建议解释 |
+|---|---|
+| `Digest` | image config digest |
+| `ContentPath` | 若继续保留，表示本地 image/config blob 路径，而不是 containerd content store 路径 |
+| `Size` | config blob size |
+| `TargetMediaType` | manifest / config media type |
+| `TargetKind` | manifest kind / schema kind |
+| `Schema` | OCI / Docker schema |
+
+这里的数据获取更适合经 `go.podman.io/image/v5`，而不是继续写 “content store lookup”。
 
 #### `models.ImageLayer`
 
-`CRI-O` 场景不要直接照搬 containerd 的 `snapshotter + chainID` 语义，建议改成：
+这是最不建议继续照搬 containerd 语义的模型之一。对 `CRI-O` 而言，层信息更适合解释成：
+
+| 字段 | 对 `CRI-O` 的建议解释 |
+|---|---|
+| `CompressedDigest` | manifest layer digest |
+| `UncompressedDigest` | diff id |
+| `Size` | manifest size |
+| `CompressionType` | layer compression |
+| `ContentPath` | layer/blob 在本地 store 中的实际路径 |
+| `SnapshotKey` | 建议忽略或重释为 layer id；不要继续称为 snapshot key |
+| `SnapshotPath` | 建议忽略或重释为 mounted layer / cache path |
+| `SnapshotExists` | 建议忽略或重释为 layer locally present |
+| `UsageSize` / `UsageInodes` | layer 实际磁盘占用 |
+
+如果后续发现 `ImageLayer` 模型和 `CRI-O` 语义偏差过大，建议在实现前先调整模型，而不是在实现里不断加注释解释“它其实不是 snapshot”。
+
+### 8.10 `conmon`：建议单独写清楚的数据流
+
+`conmon` 在 `CRI-O` 里承担的是：
+
+- 容器 monitor
+- attach socket 中转
+- stdout/stderr 日志落盘或转 journald
+- 退出码/退出时间记录
+
+因此对 `conmon` 的字段建议优先从下面来源获取：
 
 | 字段 | 建议来源 |
 |---|---|
-| `CompressedDigest` / `UncompressedDigest` | 镜像 manifest / image config |
-| `Size` | manifest / image metadata |
-| `ContentPath` | containers/storage 或 image store 实际路径 |
-| `SnapshotKey` | 可换成 storage layer id，或保留空值 |
-| `SnapshotPath` | 实际 layer 挂载/缓存路径 |
-| `SnapshotExists` | 本地 layer 是否存在 |
-| `UsageSize` / `UsageInodes` | storage usage |
+| PID | CRI verbose info / runtime state / 进程树回溯 |
+| BinaryPath | `/proc/<pid>/exe` |
+| Cmdline | `/proc/<pid>/cmdline` |
+| Attach socket | `container-attach-socket-dir` / runtime state |
+| Log path | `log_dir` + container/pod 目录布局 |
+| Exit file / exit metadata | CRI state / runtime state / `conmon` 维护的退出记录 |
 
-如果这些语义与现有 `ImageLayer` 模型差异过大，建议在真正写 `CRI-O` 代码前先评估是否需要抽象层重命名，而不是在实现里硬套 containerd 概念。
+文档中建议把这一层直接写为 **Conmon / Monitor**，不要再叫 Shim。
 
-### 8.10 `ListPods()` / `GetContainerProcesses()` / `GetContainerTop()` / `GetContainerMounts()` 在 `CRI-O` 中的建议实现
+### 8.11 `ListPods()` / `GetContainerProcesses()` / `GetContainerTop()` / `GetContainerMounts()`
 
 #### `ListPods()`
 
 - 优先走 `ListPodSandbox`
-- 用 sandbox metadata 作为 Pod 主信息来源
-- 再把 `ListContainers` 结果按 sandbox/container labels 关联起来
-
-这样会比单纯按容器 label 分组更贴近 `CRI-O` / CRI 原生语义。
+- 以 sandbox metadata 为 Pod 主信息
+- 容器与 sandbox 的归属关系也优先按 CRI 建模
 
 #### `GetContainerProcesses()`
 
-- 与 containerd 相同，优先从 `/proc/<pid>/root/proc` 读取容器内进程
-- 如果容器 procfs 不可读，则回退为主进程本身
+- 与当前实现一样，优先从 `/proc/<pid>/root/proc` 取容器内进程
+- 不能读取时回退为主进程观测
 
 #### `GetContainerTop()`
 
-- 继续复用 `ProcessCollector`
-- CPU/Memory limit 来自 cgroup
-- 网络统计来自 `/proc/<host-pid>/net/dev`
+- 复用 `ProcessCollector`
+- CPU / memory 仍来自 cgroup
+- 网络仍来自 `/proc/<host-pid>/net/dev`
 
 #### `GetContainerMounts()`
 
-建议沿用当前 `mergeMountSources()` 的总体思路，但把输入换成 `CRI-O` 版本：
+- 以 CRI mounts 为主
+- 再叠加 `default_mounts_file`
+- 最后补 live mountinfo
 
-1. CRI config mounts
-2. CRI status mounts
-3. runtime default mounts（来自 `default_mounts_file` 和 CRI-O 自动插入挂载）
-4. live mountinfo residuals
+这部分建议继续保持当前 UI 使用的 `MountOrigin` / `MountState` 语义，不需要因为运行时变化而改 UI。
 
-最终仍输出统一的：
+### 8.12 `CRI-O` 实现最值得优先落地的字段
 
-- `Origin`
-- `State`
-- `Note`
+按实现收益排序，建议优先做下面 3 组：
 
-这样 UI 层基本不需要改。
-
-### 8.11 `CRI-O` 实现最值得优先落地的字段
-
-如果按“最小可用”原则推进，建议优先实现这些字段，因为它们最容易从 CRI 和宿主机观测层稳定拿到：
-
-1. **容器基础字段**
+1. **CRI 强字段**
    - `ID`
    - `Name`
    - `Image`
    - `ImageID`
    - `Status`
    - `CreatedAt`
-   - `PodName` / `PodNamespace` / `PodUID`
-
-2. **详情页最重要字段**
-   - `PID`
    - `StartedAt`
-   - `ExitedAt`
-   - `ExitCode`
    - `RestartCount`
+   - `ExitCode`
+
+2. **主机观测强字段**
+   - `PID`
    - `CGroupPath`
    - `Mounts`
+   - `WritableLayerPath`
    - `IPAddress`
    - `PodNetwork`
 
-3. **最后再做“路径类增强字段”**
-   - `RuntimeProfile`
-   - `WritableLayerPath`
-   - `ImageConfig`
-   - `ImageLayers`
+3. **`CRI-O` 专属增强字段**
+   - `ConmonPID`
+   - `StorageDriver`
+   - `ContainerLayerID`
+   - `ManifestDigest`
+   - `ConfigDigest`
 
-这样做的好处是：即使 `CRI-O` 的存储路径、bundle 路径还没完全摸清，UI 也能先稳定工作。
+这样可以先交付稳定的通用视图，再逐步补 `CRI-O` 特色信息。
 
-### 8.12 `CRI-O` 实现前建议先确认的 5 个问题
+### 8.13 `CRI-O` 实现前建议先确认的 6 个问题
 
-在真正动手写 `pkg/runtime/crio` 前，建议先确认下面 5 件事：
+1. **是否允许扩展 `pkg/models`**
+   - 如果允许，建议新增 `Conmon` / `Storage` / `CRI-O profile` 字段
+   - 如果不允许，需明确哪些字段只做兼容映射
 
-1. **是否只依赖 CRI socket**
-   - 还是允许同时读取 `crio.conf` / `storage.conf`
+2. **镜像信息以 CRI 为主还是以 `go.podman.io/image/v5` 为主**
+   - 建议：列表用 CRI，细节用 image 库
 
-2. **`PID` 是否能稳定从 verbose status/info 读取**
-   - 如果不能，是否需要额外通过 `conmon` / cgroup / pidfile 推导
+3. **layer/rw layer 信息以 `go.podman.io/storage` 为主是否可接受**
+   - 建议：是
 
-3. **镜像层语义是否要继续复用 `ImageLayer`**
-   - 还是要为 CRI-O / containers-storage 建立更贴切的字段解释
+4. **`SnapshotKey` / `Snapshotter` / `Shim` 这些字段是否要继续保留**
+   - 建议：文档上弱化；模型上视兼容需求决定
 
-4. **runtime default mounts 的解释口径**
-   - 来自 `default_mounts_file`
-   - 还是来自 CRI-O 自动注入的所有支持性挂载
+5. **`conmon` 元数据希望展示到什么粒度**
+   - 只要 PID
+   - 还是还要 attach socket、日志路径、命令行
 
-5. **`RuntimeProfile.Shim` 是否继续沿用命名**
-   - 在 `CRI-O` 下它更接近 `conmon`，但 UI 若已依赖该结构，也可以保留字段名、只改变解释
+6. **默认挂载的口径**
+   - 只记录 `default_mounts_file`
+   - 还是把 `CRI-O` 自动注入的支持性挂载也统一解释成 runtime defaults
 
-把这 5 个问题先讲清楚，再落代码，会显著减少后续返工。
+把这些问题先定下来，后续实现 `pkg/runtime/crio` 时就不容易被 containerd 术语牵着走。
