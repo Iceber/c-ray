@@ -21,13 +21,13 @@ func main() {
 	// Test terminfo lookup
 	fmt.Println("\nTesting terminfo lookup...")
 	lookupDone := make(chan struct {
-		ti  tcell.Terminfo
+		ti  *terminfo.Terminfo
 		err error
 	})
 	go func() {
 		ti, err := tcell.LookupTerminfo(os.Getenv("TERM"))
 		lookupDone <- struct {
-			ti  tcell.Terminfo
+			ti  *terminfo.Terminfo
 			err error
 		}{ti, err}
 	}()

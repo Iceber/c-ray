@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/rivo/tview"
 )
@@ -33,20 +31,20 @@ type ProcessesView struct {
 	treeView    *ProcessTreeView
 	topView     *TopView
 
-	activeTab   ProcessTab
-	lastRefresh time.Time
-	mu          sync.Mutex
+	container runtime.Container
+	activeTab ProcessTab
+	mu        sync.Mutex
 }
 
 // NewProcessesView creates a combined process workspace.
-func NewProcessesView(app *tview.Application, rt runtime.Runtime, ctx context.Context) *ProcessesView {
+func NewProcessesView(app *tview.Application, ctx context.Context) *ProcessesView {
 	v := &ProcessesView{
 		Flex:        tview.NewFlex().SetDirection(tview.FlexRow),
 		app:         app,
 		ctx:         ctx,
 		summaryView: NewProcessSummaryView(app),
-		treeView:    NewProcessTreeView(app, rt, ctx),
-		topView:     NewTopView(app, rt, ctx),
+		treeView:    NewProcessTreeView(app),
+		topView:     NewTopView(app, ctx),
 		activeTab:   ProcessTabSummary,
 	}
 
@@ -64,25 +62,19 @@ func NewProcessesView(app *tview.Application, rt runtime.Runtime, ctx context.Co
 	return v
 }
 
-// SetContainer sets the container ID for process subviews.
-func (v *ProcessesView) SetContainer(containerID string) {
-	v.topView.SetContainer(containerID)
-	v.treeView.SetContainer(containerID)
+// SetContainer sets the container handle for process subviews.
+func (v *ProcessesView) SetContainer(c runtime.Container) {
 	v.mu.Lock()
-	v.lastRefresh = time.Time{}
+	v.container = c
 	v.mu.Unlock()
-}
-
-// SetDetail updates summary and tree context.
-func (v *ProcessesView) SetDetail(detail *models.ContainerDetail) {
-	v.summaryView.SetDetail(detail)
-	v.treeView.SetDetail(detail)
+	v.summaryView.SetContainer(c)
+	v.treeView.SetContainer(c)
+	v.topView.SetContainer(c)
 }
 
 // Refresh refreshes the active process sub-tab.
 func (v *ProcessesView) Refresh(ctx context.Context) error {
 	v.mu.Lock()
-	v.lastRefresh = time.Now()
 	activeTab := v.activeTab
 	v.mu.Unlock()
 
@@ -92,7 +84,7 @@ func (v *ProcessesView) Refresh(ctx context.Context) error {
 	case ProcessTabTop:
 		return v.topView.Refresh(ctx)
 	default:
-		v.summaryView.Refresh()
+		v.summaryView.Refresh(ctx)
 		return nil
 	}
 }
@@ -114,7 +106,6 @@ func (v *ProcessesView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
 	if event.Key() == tcell.KeyCtrlC {
 		return event
 	}
-
 	if event.Key() == tcell.KeyRune {
 		switch event.Rune() {
 		case 's', 'S':
@@ -166,7 +157,7 @@ func (v *ProcessesView) switchTab(tab ProcessTab) {
 	switch tab {
 	case ProcessTabSummary:
 		v.pages.SwitchToPage("summary")
-		v.summaryView.Refresh()
+		v.summaryView.Refresh(v.ctx)
 		v.app.SetFocus(v.summaryView.GetFocusPrimitive())
 	case ProcessTabTree:
 		v.pages.SwitchToPage("tree")
@@ -178,7 +169,6 @@ func (v *ProcessesView) switchTab(tab ProcessTab) {
 		go v.topView.Refresh(v.ctx)
 		v.app.SetFocus(v.topView.GetFocusPrimitive())
 	}
-
 	v.updateTabBar()
 }
 
@@ -191,7 +181,6 @@ func (v *ProcessesView) updateTabBar() {
 		{"Tree", "g"},
 		{"Top", "t"},
 	}
-
 	text := " "
 	for i, tab := range tabs {
 		if ProcessTab(i) == v.activeTab {

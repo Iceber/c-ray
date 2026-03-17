@@ -11,7 +11,7 @@ import (
 	"github.com/rivo/tview"
 )
 
-// TabIndex represents the active tab
+// TabIndex represents the active tab.
 type TabIndex int
 
 const (
@@ -20,88 +20,72 @@ const (
 	TabPods
 )
 
-// MainView is the top-level view containing tab navigation and list views
+// MainView is the top-level view containing tab navigation and list views.
 type MainView struct {
 	*tview.Flex
 
-	app    *tview.Application
-	rt     runtime.Runtime
-	ctx    context.Context
-	cancel context.CancelFunc
+	app *tview.Application
+	rt  runtime.Runtime
+	ctx context.Context
 
-	// Tab bar
-	tabBar *tview.TextView
-
-	// Content area (pages for tab panels)
+	tabBar  *tview.TextView
 	content *tview.Pages
 
-	// Sub-views
 	containerList *ContainerTreeView
 	imageList     *ImageListView
 	podList       *PodListView
 
-	// State
-	activeTab TabIndex
-	mu        sync.Mutex
-
-	// Refresh
+	activeTab       TabIndex
+	mu              sync.Mutex
 	refreshInterval time.Duration
 	refreshStop     chan struct{}
+	refreshCtx      context.Context
+	refreshCancel   context.CancelFunc
 
-	// Callbacks
-	onContainerSelect func(containerID string)
+	onContainerSelect func(c runtime.Container)
 }
 
-// NewMainView creates the main view with tab switching
+// NewMainView creates the main view with tab switching.
 func NewMainView(app *tview.Application, rt runtime.Runtime, ctx context.Context) *MainView {
 	childCtx, cancel := context.WithCancel(ctx)
-
 	v := &MainView{
 		Flex:            tview.NewFlex().SetDirection(tview.FlexRow),
 		app:             app,
 		rt:              rt,
 		ctx:             childCtx,
-		cancel:          cancel,
 		content:         tview.NewPages(),
 		activeTab:       TabContainers,
 		refreshInterval: 3 * time.Second,
 		refreshStop:     make(chan struct{}),
+		refreshCtx:      childCtx,
+		refreshCancel:   cancel,
 	}
 
-	// Create sub-views
 	v.containerList = NewContainerTreeView(app, rt)
 	v.imageList = NewImageListView(app, rt)
 	v.podList = NewPodListView(app, rt)
 
-	// Tab bar
-	v.tabBar = tview.NewTextView().
-		SetDynamicColors(true).
-		SetTextAlign(tview.AlignLeft)
+	v.tabBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
 	v.tabBar.SetBackgroundColor(tcell.ColorDarkSlateGray)
 
-	// Register tab pages
 	v.content.AddPage("containers", v.containerList, true, true)
 	v.content.AddPage("images", v.imageList, true, false)
 	v.content.AddPage("pods", v.podList, true, false)
 
-	// Layout: tabBar (1 row) + content (flex)
 	v.Flex.AddItem(v.tabBar, 1, 0, false)
 	v.Flex.AddItem(v.content, 0, 1, true)
-
 	v.updateTabBar()
-
 	return v
 }
 
-// SetContainerSelectFunc sets the callback when a container is selected
-func (v *MainView) SetContainerSelectFunc(handler func(containerID string)) {
+// SetContainerSelectFunc sets the callback when a container is selected.
+func (v *MainView) SetContainerSelectFunc(handler func(c runtime.Container)) {
 	v.onContainerSelect = handler
 	v.containerList.SetSelectedFunc(handler)
 }
 
-// HandleInput processes key events for tab switching and refresh
+// HandleInput processes key events for tab switching and refresh.
 func (v *MainView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
-	// Always allow Ctrl+C to propagate for global quit
 	if event.Key() == tcell.KeyCtrlC {
 		return event
 	}
@@ -119,20 +103,17 @@ func (v *MainView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
 		go v.refreshCurrentTab()
 		return nil
 	}
-
 	switch event.Key() {
 	case tcell.KeyTab:
-		v.nextTab()
+		v.switchTab((v.activeTab + 1) % 3)
 		return nil
 	case tcell.KeyBacktab:
-		v.prevTab()
+		v.switchTab((v.activeTab + 2) % 3)
 		return nil
 	}
-
 	return event
 }
 
-// switchTab switches to the given tab
 func (v *MainView) switchTab(tab TabIndex) {
 	v.mu.Lock()
 	v.activeTab = tab
@@ -141,27 +122,17 @@ func (v *MainView) switchTab(tab TabIndex) {
 	switch tab {
 	case TabContainers:
 		v.content.SwitchToPage("containers")
+		v.app.SetFocus(v.containerList.GetFocusPrimitive())
 	case TabImages:
 		v.content.SwitchToPage("images")
+		v.app.SetFocus(v.imageList.GetFocusPrimitive())
 	case TabPods:
 		v.content.SwitchToPage("pods")
+		v.app.SetFocus(v.podList.GetFocusPrimitive())
 	}
 	v.updateTabBar()
 }
 
-// nextTab cycles to the next tab
-func (v *MainView) nextTab() {
-	next := (v.activeTab + 1) % 3
-	v.switchTab(next)
-}
-
-// prevTab cycles to the previous tab
-func (v *MainView) prevTab() {
-	prev := (v.activeTab + 2) % 3
-	v.switchTab(prev)
-}
-
-// updateTabBar renders the tab bar with active tab highlighted
 func (v *MainView) updateTabBar() {
 	tabs := []struct {
 		label string
@@ -171,7 +142,6 @@ func (v *MainView) updateTabBar() {
 		{"Images", "2"},
 		{"Pods", "3"},
 	}
-
 	text := " "
 	for i, t := range tabs {
 		if TabIndex(i) == v.activeTab {
@@ -181,12 +151,15 @@ func (v *MainView) updateTabBar() {
 		}
 	}
 	text += "  [darkgray]Tab[white]:next  [darkgray]?[white]:help  [darkgray]q[white]:quit"
-
 	v.tabBar.SetText(text)
 }
 
-// RefreshAll loads data for all tabs (sync version for initial load)
+// RefreshAll loads data for the active tab.
 func (v *MainView) RefreshAll() {
+	v.refreshCurrentTab()
+}
+
+func (v *MainView) refreshCurrentTab() {
 	v.mu.Lock()
 	tab := v.activeTab
 	v.mu.Unlock()
@@ -199,37 +172,13 @@ func (v *MainView) RefreshAll() {
 	case TabPods:
 		v.podList.Refresh(v.ctx)
 	}
-	// Note: Don't call QueueUpdateDraw here - it blocks before Run() starts
 }
 
-// refreshCurrentTab refreshes only the active tab's data
-func (v *MainView) refreshCurrentTab() {
-	v.mu.Lock()
-	tab := v.activeTab
-	v.mu.Unlock()
-
-	var err error
-	switch tab {
-	case TabContainers:
-		err = v.containerList.Refresh(v.ctx)
-	case TabImages:
-		err = v.imageList.Refresh(v.ctx)
-	case TabPods:
-		err = v.podList.Refresh(v.ctx)
-	}
-
-	if err != nil {
-		// Views handle their own error display in status bars
-		return
-	}
-}
-
-// StartAutoRefresh starts a background goroutine to periodically refresh data
+// StartAutoRefresh starts periodic refresh.
 func (v *MainView) StartAutoRefresh() {
 	go func() {
 		ticker := time.NewTicker(v.refreshInterval)
 		defer ticker.Stop()
-
 		for {
 			select {
 			case <-ticker.C:
@@ -243,23 +192,23 @@ func (v *MainView) StartAutoRefresh() {
 	}()
 }
 
-// StopAutoRefresh stops the auto-refresh goroutine
+// StopAutoRefresh stops the auto-refresh goroutine.
 func (v *MainView) StopAutoRefresh() {
 	select {
 	case v.refreshStop <- struct{}{}:
 	default:
 	}
-	v.cancel()
+	v.refreshCancel()
 }
 
-// GetActiveTab returns the current active tab
-func (v *MainView) GetActiveTab() TabIndex {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	return v.activeTab
-}
-
-// GetFocusPrimitive returns the primitive that should receive focus
+// GetFocusPrimitive returns the inner widget that should receive keyboard focus.
 func (v *MainView) GetFocusPrimitive() tview.Primitive {
-	return v.containerList
+	switch v.activeTab {
+	case TabImages:
+		return v.imageList.GetFocusPrimitive()
+	case TabPods:
+		return v.podList.GetFocusPrimitive()
+	default:
+		return v.containerList.GetFocusPrimitive()
+	}
 }

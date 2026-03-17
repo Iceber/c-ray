@@ -12,7 +12,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/rivo/tview"
 )
@@ -22,7 +21,6 @@ type ImageLayersView struct {
 	*tview.Flex
 
 	app         *tview.Application
-	rt          runtime.Runtime
 	ctx         context.Context
 	header      *tview.TextView
 	body        *tview.Flex
@@ -32,24 +30,19 @@ type ImageLayersView struct {
 	browserTree *tview.TreeView
 	preview     *tview.TextView
 	statusBar   *tview.TextView
-	containerID string
-	detail      *models.ContainerDetail
-	runtimeInfo *models.ContainerDetail
-	layers      []*models.ImageLayer
-	configInfo  *models.ImageConfigInfo
+
+	container   runtime.Container
+	storage     *runtime.ContainerStorage
+	rwStats     *runtime.ContainerRWLayerStats
+	config      *runtime.ContainerConfig
+	runtime     *runtime.RuntimeProfile
+	imageConfig *runtime.ImageConfigInfo
 	lastError   error
 	browserOpen bool
 	browserRoot string
-	focusPane   imageLayersFocusPane
+	focusPane   int // 0=tree, 1=browser
 	mu          sync.Mutex
 }
-
-type imageLayersFocusPane int
-
-const (
-	imageLayersFocusTree imageLayersFocusPane = iota
-	imageLayersFocusBrowser
-)
 
 type layerBrowserEntry struct {
 	path   string
@@ -58,20 +51,15 @@ type layerBrowserEntry struct {
 }
 
 // NewImageLayersView creates a new Rootfs Layers view.
-func NewImageLayersView(app *tview.Application, rt runtime.Runtime, ctx context.Context) *ImageLayersView {
+func NewImageLayersView(app *tview.Application, ctx context.Context) *ImageLayersView {
 	v := &ImageLayersView{
 		Flex: tview.NewFlex().SetDirection(tview.FlexRow),
 		app:  app,
-		rt:   rt,
 		ctx:  ctx,
 	}
 
-	v.header = tview.NewTextView().
-		SetDynamicColors(true).
-		SetWrap(true)
-	v.header.SetBorder(true)
-	v.header.SetBorderColor(tcell.ColorDarkCyan)
-	v.header.SetTitle(" Rootfs Context ")
+	v.header = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
+	v.header.SetBorder(true).SetBorderColor(tcell.ColorDarkCyan).SetTitle(" Rootfs Context ")
 
 	v.tree = tview.NewTreeView()
 	v.tree.SetBorder(false)
@@ -84,12 +72,8 @@ func NewImageLayersView(app *tview.Application, rt runtime.Runtime, ctx context.
 		}
 	})
 
-	v.browserInfo = tview.NewTextView().
-		SetDynamicColors(true).
-		SetWrap(true)
-	v.browserInfo.SetBorder(true)
-	v.browserInfo.SetBorderColor(tcell.ColorDarkCyan)
-	v.browserInfo.SetTitle(" Layer Browser ")
+	v.browserInfo = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
+	v.browserInfo.SetBorder(true).SetBorderColor(tcell.ColorDarkCyan).SetTitle(" Layer Browser ")
 	v.browserInfo.SetText(" [gray]Select a layer and press i to inspect its snapshot path[-]")
 
 	v.browserTree = tview.NewTreeView()
@@ -97,19 +81,11 @@ func NewImageLayersView(app *tview.Application, rt runtime.Runtime, ctx context.
 	v.browserTree.SetGraphics(true)
 	v.browserTree.SetGraphicsColor(tcell.ColorDarkCyan)
 	v.browserTree.SetRoot(tview.NewTreeNode("[gray]No layer browser data[-]").SetSelectable(false))
-	v.browserTree.SetSelectedFunc(func(node *tview.TreeNode) {
-		v.toggleBrowserNode(node)
-	})
-	v.browserTree.SetChangedFunc(func(node *tview.TreeNode) {
-		v.renderPreview(node)
-	})
+	v.browserTree.SetSelectedFunc(func(node *tview.TreeNode) { v.toggleBrowserNode(node) })
+	v.browserTree.SetChangedFunc(func(node *tview.TreeNode) { v.renderPreview(node) })
 
-	v.preview = tview.NewTextView().
-		SetDynamicColors(true).
-		SetWrap(false)
-	v.preview.SetBorder(true)
-	v.preview.SetBorderColor(tcell.ColorDarkCyan)
-	v.preview.SetTitle(" Preview ")
+	v.preview = tview.NewTextView().SetDynamicColors(true).SetWrap(false)
+	v.preview.SetBorder(true).SetBorderColor(tcell.ColorDarkCyan).SetTitle(" Preview ")
 	v.preview.SetText(" [gray]No file selected[-]")
 
 	v.browser = tview.NewFlex().SetDirection(tview.FlexRow)
@@ -119,98 +95,74 @@ func NewImageLayersView(app *tview.Application, rt runtime.Runtime, ctx context.
 
 	v.body = tview.NewFlex().SetDirection(tview.FlexColumn)
 
-	v.statusBar = tview.NewTextView().
-		SetDynamicColors(true).
-		SetTextAlign(tview.AlignLeft)
+	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
 
 	v.Flex.AddItem(v.header, 4, 0, false)
 	v.Flex.AddItem(v.body, 0, 1, true)
 	v.Flex.AddItem(v.statusBar, 1, 0, false)
 	v.refreshBodyLayout()
-
 	v.render()
 	v.updateStatusBar()
 	return v
 }
 
-// SetContainer sets the active container.
-func (v *ImageLayersView) SetContainer(containerID string) {
+// SetContainer sets the container handle.
+func (v *ImageLayersView) SetContainer(c runtime.Container) {
 	v.mu.Lock()
-	v.containerID = containerID
-	v.layers = nil
-	v.configInfo = nil
-	v.runtimeInfo = nil
+	v.container = c
+	v.storage = nil
+	v.rwStats = nil
+	v.config = nil
+	v.runtime = nil
+	v.imageConfig = nil
 	v.lastError = nil
 	v.browserOpen = false
 	v.browserRoot = ""
-	v.focusPane = imageLayersFocusTree
+	v.focusPane = 0
 	v.mu.Unlock()
 	v.render()
 	v.updateStatusBar()
 }
 
-// SetDetail stores overview detail for image resolution.
-func (v *ImageLayersView) SetDetail(detail *models.ContainerDetail) {
-	v.mu.Lock()
-	v.detail = detail
-	v.mu.Unlock()
-	v.render()
-}
-
-// SetRuntimeInfo stores runtime context used by the header and RW layer.
-func (v *ImageLayersView) SetRuntimeInfo(detail *models.ContainerDetail) {
-	v.mu.Lock()
-	v.runtimeInfo = detail
-	v.mu.Unlock()
-	v.render()
-}
-
-// Refresh loads image layers and image config metadata.
+// Refresh loads storage and related data from the container handle.
 func (v *ImageLayersView) Refresh(ctx context.Context) error {
 	v.mu.Lock()
-	detail := v.detail
-	runtimeInfo := v.runtimeInfo
+	c := v.container
 	v.mu.Unlock()
 
-	if detail == nil {
+	if c == nil {
 		v.render()
 		return nil
 	}
 
-	imageRef := resolveLayerImageRef(detail)
-	if imageRef == "" {
-		v.mu.Lock()
-		v.lastError = fmt.Errorf("image reference is empty")
-		v.mu.Unlock()
-		v.render()
-		return nil
-	}
-
-	snapshotter := ""
-	rwSnapshotKey := ""
-	if runtimeInfo != nil {
-		snapshotter = runtimeInfo.Snapshotter
-		rwSnapshotKey = runtimeInfo.SnapshotKey
-	}
-
-	layers, err := v.rt.GetImageLayers(ctx, imageRef, snapshotter, rwSnapshotKey)
+	storage, err := c.Storage(ctx)
 	if err != nil {
 		v.mu.Lock()
 		v.lastError = err
-		v.layers = nil
-		v.configInfo = nil
+		v.storage = nil
 		v.mu.Unlock()
 		v.render()
-		v.updateStatusBar()
 		return err
 	}
-	configInfo, _ := v.rt.GetImageConfigInfo(ctx, imageRef)
+
+	config, _ := c.Config(ctx)
+	profile, _ := c.Runtime(ctx)
+	rwStats, _ := c.RWLayerStats(ctx)
+
+	var imgConfig *runtime.ImageConfigInfo
+	if img, err := c.Image(ctx); err == nil && img != nil {
+		imgConfig, _ = img.Config(ctx)
+	}
 
 	v.mu.Lock()
-	v.layers = layers
-	v.configInfo = configInfo
+	v.storage = storage
+	v.config = config
+	v.runtime = profile
+	v.rwStats = &rwStats
+	v.imageConfig = imgConfig
 	v.lastError = nil
 	v.mu.Unlock()
+
 	v.render()
 	v.updateStatusBar()
 	return nil
@@ -218,15 +170,12 @@ func (v *ImageLayersView) Refresh(ctx context.Context) error {
 
 // HandleInput processes tree interaction.
 func (v *ImageLayersView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
-	if event == nil {
-		return nil
-	}
-	if event.Key() == tcell.KeyCtrlC {
+	if event == nil || event.Key() == tcell.KeyCtrlC {
 		return event
 	}
 	switch event.Key() {
 	case tcell.KeyEnter:
-		if v.focusPane == imageLayersFocusBrowser {
+		if v.focusPane == 1 {
 			v.toggleBrowserNode(v.browserTree.GetCurrentNode())
 		} else if node := v.tree.GetCurrentNode(); node != nil {
 			node.SetExpanded(!node.IsExpanded())
@@ -242,18 +191,14 @@ func (v *ImageLayersView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
 		}
 		return nil
 	case 'e', 'E':
-		if v.focusPane == imageLayersFocusBrowser {
+		if v.focusPane == 1 {
 			v.toggleBrowserNode(v.browserTree.GetCurrentNode())
 		} else if node := v.tree.GetCurrentNode(); node != nil {
 			node.SetExpanded(!node.IsExpanded())
 		}
 		return nil
 	case 'a', 'A':
-		if v.focusPane == imageLayersFocusBrowser {
-			v.expandBrowserAll()
-		} else {
-			v.expandAll()
-		}
+		v.expandAll()
 		return nil
 	}
 	return event
@@ -261,7 +206,7 @@ func (v *ImageLayersView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
 
 // GetFocusPrimitive returns the tree focus target.
 func (v *ImageLayersView) GetFocusPrimitive() tview.Primitive {
-	if v.browserOpen && v.focusPane == imageLayersFocusBrowser {
+	if v.browserOpen && v.focusPane == 1 {
 		return v.browserTree
 	}
 	return v.tree
@@ -269,29 +214,25 @@ func (v *ImageLayersView) GetFocusPrimitive() tview.Primitive {
 
 func (v *ImageLayersView) render() {
 	v.mu.Lock()
-	detail := v.detail
-	runtimeInfo := v.runtimeInfo
-	layers := append([]*models.ImageLayer(nil), v.layers...)
-	configInfo := v.configInfo
+	storage := v.storage
+	config := v.config
+	runtime := v.runtime
+	rwStats := v.rwStats
+	imgConfig := v.imageConfig
 	lastError := v.lastError
 	v.mu.Unlock()
 
-	activeDetail := runtimeInfo
-	if activeDetail == nil {
-		activeDetail = detail
-	}
-
-	v.header.SetText(buildLayerHeader(activeDetail, configInfo))
+	v.header.SetText(buildLayerHeaderV1(config, runtime, imgConfig))
 
 	root := tview.NewTreeNode("[aqua::b]Rootfs Layers[-:-:-]").SetSelectable(false).SetExpanded(true)
 	if lastError != nil {
-		root.AddChild(tview.NewTreeNode("[red]Failed to load read-only layers: " + lastError.Error() + "[-]").SetSelectable(false))
+		root.AddChild(tview.NewTreeNode("[red]Failed to load layers: " + lastError.Error() + "[-]").SetSelectable(false))
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(root)
 		v.refreshBodyLayout()
 		return
 	}
-	if activeDetail == nil && len(layers) == 0 {
+	if storage == nil {
 		root.AddChild(tview.NewTreeNode("[gray]Refresh to resolve snapshotter, rootfs path and image layers[-]").SetSelectable(false))
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(root)
@@ -299,8 +240,8 @@ func (v *ImageLayersView) render() {
 		return
 	}
 
-	root.AddChild(buildRWLayerNode(activeDetail))
-	root.AddChild(buildReadOnlyLayersNode(layers))
+	root.AddChild(buildRWLayerNodeV1(config, rwStats, storage.RWLayerPath))
+	root.AddChild(buildReadOnlyLayersNodeV1(storage.ReadOnlyLayers))
 
 	v.tree.SetRoot(root)
 	v.tree.SetCurrentNode(root)
@@ -308,7 +249,11 @@ func (v *ImageLayersView) render() {
 }
 
 func (v *ImageLayersView) expandAll() {
-	root := v.tree.GetRoot()
+	target := v.tree
+	if v.focusPane == 1 {
+		target = v.browserTree
+	}
+	root := target.GetRoot()
 	if root == nil {
 		return
 	}
@@ -322,161 +267,15 @@ func (v *ImageLayersView) expandAll() {
 	}
 	walk(root)
 	root.SetExpanded(true)
-	v.tree.SetCurrentNode(root)
+	target.SetCurrentNode(root)
 }
 
 func (v *ImageLayersView) updateStatusBar() {
 	if v.browserOpen {
-		v.statusBar.SetText(" [white]Rootfs Layers:[-] browser open for selected layer  |  [yellow]i[white]:close browser  [yellow]e/Enter[white]:toggle dir  [yellow]a[white]:expand/collapse all")
+		v.statusBar.SetText(" [white]Rootfs Layers:[-] browser open  |  [yellow]i[white]:close browser  [yellow]e/Enter[white]:toggle  [yellow]a[white]:expand/collapse all")
 		return
 	}
-	v.statusBar.SetText(" [white]Rootfs Layers:[-] rw layer and read-only layers (top to base)  |  [yellow]i[white]:browse layer files  [yellow]e[white]:toggle  [yellow]a[white]:expand/collapse all")
-}
-
-func buildLayerHeader(detail *models.ContainerDetail, configInfo *models.ImageConfigInfo) string {
-	snapshotter := "-"
-	rootfsPath := "-"
-	readonly := "yes"
-
-	if detail != nil {
-		if strings.TrimSpace(detail.Snapshotter) != "" {
-			snapshotter = detail.Snapshotter
-		}
-		if detail.RuntimeProfile != nil && detail.RuntimeProfile.RootFS != nil {
-			rootfs := detail.RuntimeProfile.RootFS
-			switch {
-			case strings.TrimSpace(rootfs.MountRootFSPath) != "":
-				rootfsPath = rootfs.MountRootFSPath
-			case strings.TrimSpace(rootfs.BundleRootFSPath) != "":
-				rootfsPath = rootfs.BundleRootFSPath
-			}
-		}
-		if strings.TrimSpace(detail.SnapshotKey) != "" || strings.TrimSpace(detail.WritableLayerPath) != "" {
-			readonly = "no"
-		}
-	}
-	_ = configInfo
-
-	return fmt.Sprintf(
-		" [gray]Snapshotter:[-] [white]%s[-]\n [gray]Rootfs Directory:[-] [white]%s[-]\n [gray]Readonly:[-] [white]%s[-]",
-		snapshotter,
-		rootfsPath,
-		readonly,
-	)
-}
-
-func buildRWLayerNode(detail *models.ContainerDetail) *tview.TreeNode {
-	node := tview.NewTreeNode("[yellow::b]RW Layer[-:-:-]").SetSelectable(true).SetExpanded(true)
-	if detail == nil {
-		node.AddChild(tview.NewTreeNode("[gray]RW layer is unresolved[-]").SetSelectable(false))
-		return node
-	}
-	node.SetReference(detail)
-
-	rows := []string{}
-	if detail.SnapshotKey != "" {
-		rows = append(rows, "Snapshot Key: "+detail.SnapshotKey)
-	} else {
-		rows = append(rows, "Snapshot Key: unknown")
-	}
-	if detail.WritableLayerPath != "" {
-		rows = append(rows, "Path: "+detail.WritableLayerPath)
-	} else {
-		rows = append(rows, "Path: unknown")
-	}
-	if detail.RWLayerUsage > 0 || detail.RWLayerInodes > 0 {
-		rows = append(rows, fmt.Sprintf("Disk Usage: %s (%d inodes)", formatBytes(detail.RWLayerUsage), detail.RWLayerInodes))
-	} else {
-		rows = append(rows, "Disk Usage: unknown")
-	}
-	for _, row := range rows {
-		node.AddChild(tview.NewTreeNode("[gray]  " + row + "[-]").SetSelectable(false))
-	}
-	return node
-}
-
-func buildReadOnlyLayersNode(layers []*models.ImageLayer) *tview.TreeNode {
-	count := len(layers)
-	title := fmt.Sprintf("[aqua::b]Read-Only Layer (%d, top to base)[-:-:-]", count)
-	node := tview.NewTreeNode(title).SetSelectable(true).SetExpanded(true)
-	if count == 0 {
-		node.AddChild(tview.NewTreeNode("[gray]No read-only image layers resolved[-]").SetSelectable(false))
-		return node
-	}
-
-	sorted := append([]*models.ImageLayer(nil), layers...)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		return sorted[i].Index > sorted[j].Index
-	})
-
-	for _, layer := range sorted {
-		label := fmt.Sprintf("Layer %d: %s", layer.Index, shortenLayerID(layer.SnapshotKey, layer.UncompressedDigest, layer.CompressedDigest))
-		layerNode := tview.NewTreeNode(label).SetSelectable(true).SetExpanded(false).SetReference(layer)
-		layerNode.AddChild(tview.NewTreeNode("[gray]  Rootfs Diff ID: [white]" + fallbackLayerValue(layer.UncompressedDigest) + "[-]").SetSelectable(false))
-		layerNode.AddChild(tview.NewTreeNode("[gray]  Snapshot Key: [white]" + fallbackLayerValue(layer.SnapshotKey) + "[-]").SetSelectable(false))
-		layerNode.AddChild(tview.NewTreeNode("[gray]  Snapshot Path: [white]" + fallbackLayerValue(layer.SnapshotPath) + "[-]").SetSelectable(false))
-		layerNode.AddChild(tview.NewTreeNode("[gray]  Content Path: [white]" + fallbackLayerValue(layer.ContentPath) + "[-]").SetSelectable(false))
-		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("[gray]  Content Size: [white]%s[-]", formatLayerContentSize(layer))).SetSelectable(false))
-		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("[gray]  Disk Usage: [white]%s[-]", formatLayerUsage(layer))).SetSelectable(false))
-		node.AddChild(layerNode)
-	}
-	return node
-}
-
-func shortenLayerID(values ...string) string {
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		value = strings.TrimPrefix(value, "sha256:")
-		if len(value) > 12 {
-			return value[:12]
-		}
-		return value
-	}
-	return "unresolved"
-}
-
-func fallbackLayerValue(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return "unresolved"
-	}
-	return value
-}
-
-func formatLayerUsage(layer *models.ImageLayer) string {
-	if layer == nil {
-		return "unknown"
-	}
-	if layer.UsageSize > 0 || layer.UsageInodes > 0 {
-		return fmt.Sprintf("%s (%d inodes)", formatBytes(layer.UsageSize), layer.UsageInodes)
-	}
-	return "unknown"
-}
-
-func formatLayerContentSize(layer *models.ImageLayer) string {
-	if layer == nil || layer.Size <= 0 {
-		return "unknown"
-	}
-	compression := strings.TrimSpace(layer.CompressionType)
-	if compression == "" {
-		compression = "unknown"
-	}
-	return fmt.Sprintf("%s (%s)", formatBytes(layer.Size), compression)
-}
-
-func resolveLayerImageRef(detail *models.ContainerDetail) string {
-	if detail == nil {
-		return ""
-	}
-	for _, candidate := range []string{detail.Image, detail.ImageName, detail.ImageID} {
-		candidate = strings.TrimSpace(candidate)
-		if candidate != "" {
-			return candidate
-		}
-	}
-	return ""
+	v.statusBar.SetText(" [white]Rootfs Layers:[-] rw layer and read-only layers  |  [yellow]i[white]:browse layer  [yellow]e[white]:toggle  [yellow]a[white]:expand/collapse all")
 }
 
 func (v *ImageLayersView) refreshBodyLayout() {
@@ -487,37 +286,30 @@ func (v *ImageLayersView) refreshBodyLayout() {
 	}
 }
 
+// --- Browser ---
+
 func (v *ImageLayersView) openBrowserFromSelection() {
-	v.mu.Lock()
-	detail := v.detail
-	runtimeInfo := v.runtimeInfo
-	v.mu.Unlock()
-
-	activeDetail := runtimeInfo
-	if activeDetail == nil {
-		activeDetail = detail
-	}
-
-	path, title := selectedLayerBrowsePath(v.tree.GetCurrentNode(), activeDetail)
+	node := v.tree.GetCurrentNode()
+	path, title := selectedLayerPath(node, v.config, v.storage)
 	if strings.TrimSpace(path) == "" {
-		v.statusBar.SetText(" [white]Rootfs Layers:[-] select a concrete layer with a readable path before opening the browser")
+		v.statusBar.SetText(" [white]Rootfs Layers:[-] select a layer with a readable path before opening the browser")
 		return
 	}
 
 	info, err := os.Stat(path)
 	if err != nil {
-		v.statusBar.SetText(fmt.Sprintf(" [white]Rootfs Layers:[-] unable to inspect layer path: %v", err))
+		v.statusBar.SetText(fmt.Sprintf(" [white]Rootfs Layers:[-] unable to inspect: %v", err))
 		return
 	}
 
 	v.mu.Lock()
 	v.browserOpen = true
 	v.browserRoot = path
-	v.focusPane = imageLayersFocusBrowser
+	v.focusPane = 1
 	v.mu.Unlock()
 
 	v.browserInfo.SetText(fmt.Sprintf(" [gray]Layer:[-] [white]%s[-]\n [gray]Path:[-] [white]%s[-]", title, path))
-	v.initializeBrowserTree(path, info)
+	v.initBrowserTree(path, info)
 	v.refreshBodyLayout()
 	if v.app != nil {
 		v.app.SetFocus(v.browserTree)
@@ -529,7 +321,7 @@ func (v *ImageLayersView) closeBrowser() {
 	v.mu.Lock()
 	v.browserOpen = false
 	v.browserRoot = ""
-	v.focusPane = imageLayersFocusTree
+	v.focusPane = 0
 	v.mu.Unlock()
 	v.browserInfo.SetText(" [gray]Select a layer and press i to inspect its snapshot path[-]")
 	v.preview.SetText(" [gray]No file selected[-]")
@@ -541,11 +333,11 @@ func (v *ImageLayersView) closeBrowser() {
 	v.updateStatusBar()
 }
 
-func (v *ImageLayersView) initializeBrowserTree(path string, info os.FileInfo) {
+func (v *ImageLayersView) initBrowserTree(path string, info os.FileInfo) {
 	entry := &layerBrowserEntry{path: path, isDir: info.IsDir()}
-	rootText := path
-	if base := filepath.Base(path); base != "" && base != "." && base != string(filepath.Separator) {
-		rootText = base
+	rootText := filepath.Base(path)
+	if rootText == "" || rootText == "." {
+		rootText = path
 	}
 	root := tview.NewTreeNode(rootText).SetSelectable(true).SetExpanded(true).SetReference(entry)
 	if entry.isDir {
@@ -574,23 +366,12 @@ func (v *ImageLayersView) loadBrowserChildren(node *tview.TreeNode, entry *layer
 	if node == nil || entry == nil || !entry.isDir || entry.loaded {
 		return
 	}
-	children, err := buildBrowserChildren(entry.path)
 	node.ClearChildren()
+	entries, err := os.ReadDir(entry.path)
 	if err != nil {
-		node.AddChild(tview.NewTreeNode("[red]Unable to read directory: " + err.Error() + "[-]").SetSelectable(false))
+		node.AddChild(tview.NewTreeNode("[red]" + err.Error() + "[-]").SetSelectable(false))
 		entry.loaded = true
 		return
-	}
-	for _, child := range children {
-		node.AddChild(child)
-	}
-	entry.loaded = true
-}
-
-func buildBrowserChildren(path string) ([]*tview.TreeNode, error) {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return nil, err
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
 		if entries[i].IsDir() != entries[j].IsDir() {
@@ -598,24 +379,17 @@ func buildBrowserChildren(path string) ([]*tview.TreeNode, error) {
 		}
 		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
 	})
-	children := make([]*tview.TreeNode, 0, len(entries))
-	for _, item := range entries {
-		itemPath := filepath.Join(path, item.Name())
-		label := item.Name()
-		ref := &layerBrowserEntry{path: itemPath, isDir: item.IsDir()}
-		if item.IsDir() {
-			label += "/"
+	for _, de := range entries {
+		childPath := filepath.Join(entry.path, de.Name())
+		childEntry := &layerBrowserEntry{path: childPath, isDir: de.IsDir()}
+		name := de.Name()
+		if de.IsDir() {
+			name += "/"
 		}
-		node := tview.NewTreeNode(label).SetSelectable(true).SetReference(ref)
-		if item.IsDir() {
-			node.AddChild(tview.NewTreeNode("[gray]loading[-]").SetSelectable(false))
-		}
-		children = append(children, node)
+		childNode := tview.NewTreeNode(name).SetSelectable(true).SetExpanded(false).SetReference(childEntry)
+		node.AddChild(childNode)
 	}
-	if len(children) == 0 {
-		children = append(children, tview.NewTreeNode("[gray]Empty directory[-]").SetSelectable(false))
-	}
-	return children, nil
+	entry.loaded = true
 }
 
 func (v *ImageLayersView) renderPreview(node *tview.TreeNode) {
@@ -624,127 +398,186 @@ func (v *ImageLayersView) renderPreview(node *tview.TreeNode) {
 		return
 	}
 	entry, _ := node.GetReference().(*layerBrowserEntry)
-	if entry == nil {
-		v.preview.SetText(" [gray]Select a file or directory to preview[-]")
+	if entry == nil || entry.isDir {
+		v.preview.SetText(" [gray]Select a file to preview[-]")
 		return
 	}
-	text, title := describeBrowserEntry(entry)
-	v.preview.SetTitle(title)
-	v.preview.SetText(text)
-	if entry.isDir {
-		v.loadBrowserChildren(node, entry)
+
+	fi, err := os.Stat(entry.path)
+	if err != nil {
+		v.preview.SetText(fmt.Sprintf(" [red]%v[-]", err))
+		return
 	}
+	if fi.Size() > 512*1024 {
+		v.preview.SetText(fmt.Sprintf(" [gray]File too large to preview (%s)[-]", formatBytes(fi.Size())))
+		return
+	}
+
+	f, err := os.Open(entry.path)
+	if err != nil {
+		v.preview.SetText(fmt.Sprintf(" [red]%v[-]", err))
+		return
+	}
+	defer f.Close()
+
+	buf := make([]byte, 4096)
+	n, err := f.Read(buf)
+	if err != nil && err != io.EOF {
+		v.preview.SetText(fmt.Sprintf(" [red]%v[-]", err))
+		return
+	}
+	content := string(buf[:n])
+	if !utf8.ValidString(content) {
+		v.preview.SetText(fmt.Sprintf(" [gray]Binary file (%s)[-]", formatBytes(fi.Size())))
+		return
+	}
+	v.preview.SetText(content)
 }
 
-func describeBrowserEntry(entry *layerBrowserEntry) (string, string) {
-	if entry == nil {
-		return " [gray]No file selected[-]", " Preview "
+// --- Builder helpers ---
+
+func buildLayerHeaderV1(config *runtime.ContainerConfig, runtime *runtime.RuntimeProfile, _ *runtime.ImageConfigInfo) string {
+	snapshotter := "-"
+	rootfsPath := "-"
+	readonly := "yes"
+
+	if config != nil {
+		if config.Snapshotter != "" {
+			snapshotter = config.Snapshotter
+		}
+		if config.SnapshotKey != "" || config.WritableLayerPath != "" {
+			readonly = "no"
+		}
 	}
-	info, err := os.Stat(entry.path)
-	if err != nil {
-		return fmt.Sprintf(" [red]Unable to stat path:[-] %v", err), " Preview "
-	}
-	if info.IsDir() {
-		entries, err := os.ReadDir(entry.path)
-		if err != nil {
-			return fmt.Sprintf(" [red]Unable to read directory:[-] %v", err), " Preview "
-		}
-		lines := []string{
-			fmt.Sprintf(" [gray]Directory:[-] [white]%s[-]", entry.path),
-			fmt.Sprintf(" [gray]Entries:[-] [white]%d[-]", len(entries)),
-		}
-		limit := len(entries)
-		if limit > 24 {
-			limit = 24
-		}
-		for _, child := range entries[:limit] {
-			name := child.Name()
-			if child.IsDir() {
-				name += "/"
-			}
-			lines = append(lines, "  "+name)
-		}
-		if len(entries) > limit {
-			lines = append(lines, fmt.Sprintf("  ... %d more", len(entries)-limit))
-		}
-		return strings.Join(lines, "\n"), " Directory Preview "
+	if runtime != nil && runtime.RootFSPath != "" {
+		rootfsPath = runtime.RootFSPath
 	}
 
-	file, err := os.Open(entry.path)
-	if err != nil {
-		return fmt.Sprintf(" [red]Unable to open file:[-] %v", err), " File Preview "
-	}
-	defer file.Close()
-
-	chunk, err := io.ReadAll(io.LimitReader(file, 16384))
-	if err != nil {
-		return fmt.Sprintf(" [red]Unable to read file:[-] %v", err), " File Preview "
-	}
-	lines := []string{
-		fmt.Sprintf(" [gray]File:[-] [white]%s[-]", entry.path),
-		fmt.Sprintf(" [gray]Size:[-] [white]%s[-]", formatBytes(info.Size())),
-	}
-	if looksBinary(chunk) {
-		lines = append(lines, " [gray]Preview:[-] binary or non-UTF8 content")
-		return strings.Join(lines, "\n"), " File Preview "
-	}
-	lines = append(lines, "", string(chunk))
-	if info.Size() > int64(len(chunk)) {
-		lines = append(lines, "", fmt.Sprintf("[gray]... truncated, showing first %d bytes[-]", len(chunk)))
-	}
-	return strings.Join(lines, "\n"), " File Preview "
+	return fmt.Sprintf(
+		" [gray]Snapshotter:[-] [white]%s[-]\n [gray]Rootfs Directory:[-] [white]%s[-]\n [gray]Readonly:[-] [white]%s[-]",
+		snapshotter, rootfsPath, readonly,
+	)
 }
 
-func looksBinary(data []byte) bool {
-	if len(data) == 0 {
-		return false
-	}
-	if !utf8.Valid(data) {
-		return true
-	}
-	for _, b := range data {
-		if b == 0 {
-			return true
+func buildRWLayerNodeV1(config *runtime.ContainerConfig, rwStats *runtime.ContainerRWLayerStats, rwLayerPath string) *tview.TreeNode {
+	node := tview.NewTreeNode("[yellow::b]RW Layer[-:-:-]").SetSelectable(true).SetExpanded(true)
+
+	snapshotKey := "unknown"
+	path := fallbackValue(rwLayerPath, "unknown")
+	if config != nil {
+		if config.SnapshotKey != "" {
+			snapshotKey = config.SnapshotKey
+		}
+		if config.WritableLayerPath != "" {
+			path = config.WritableLayerPath
 		}
 	}
-	return false
+
+	rows := []string{
+		"Snapshot Key: " + snapshotKey,
+		"Path: " + path,
+	}
+	if rwStats != nil && (rwStats.RWLayerUsage > 0 || rwStats.RWLayerInodes > 0) {
+		rows = append(rows, fmt.Sprintf("Disk Usage: %s (%d inodes)", formatBytes(rwStats.RWLayerUsage), rwStats.RWLayerInodes))
+	} else {
+		rows = append(rows, "Disk Usage: unknown")
+	}
+
+	for _, row := range rows {
+		node.AddChild(tview.NewTreeNode("[gray]  " + row + "[-]").SetSelectable(false))
+	}
+
+	// Store path for browser.
+	if path != "unknown" {
+		node.SetReference(&layerBrowserEntry{path: path, isDir: true})
+	}
+	return node
 }
 
-func selectedLayerBrowsePath(node *tview.TreeNode, activeDetail *models.ContainerDetail) (string, string) {
+func buildReadOnlyLayersNodeV1(layers []*runtime.ImageLayer) *tview.TreeNode {
+	count := len(layers)
+	node := tview.NewTreeNode(fmt.Sprintf("[aqua::b]Read-Only Layer (%d, top to base)[-:-:-]", count)).
+		SetSelectable(true).SetExpanded(true)
+
+	if count == 0 {
+		node.AddChild(tview.NewTreeNode("[gray]No read-only image layers resolved[-]").SetSelectable(false))
+		return node
+	}
+
+	sorted := make([]*runtime.ImageLayer, len(layers))
+	copy(sorted, layers)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Index > sorted[j].Index })
+
+	for _, layer := range sorted {
+		label := fmt.Sprintf("Layer %d: %s", layer.Index, shortenLayerIDV1(layer.SnapshotKey, layer.UncompressedDigest, layer.CompressedDigest))
+		layerNode := tview.NewTreeNode(label).SetSelectable(true).SetExpanded(false)
+		layerNode.AddChild(tview.NewTreeNode("[gray]  Rootfs Diff ID: [white]" + fallbackLayerField(layer.UncompressedDigest) + "[-]").SetSelectable(false))
+		layerNode.AddChild(tview.NewTreeNode("[gray]  Snapshot Key: [white]" + fallbackLayerField(layer.SnapshotKey) + "[-]").SetSelectable(false))
+		layerNode.AddChild(tview.NewTreeNode("[gray]  Snapshot Path: [white]" + fallbackLayerField(layer.Path) + "[-]").SetSelectable(false))
+		layerNode.AddChild(tview.NewTreeNode("[gray]  Content Path: [white]" + fallbackLayerField(layer.ContentPath) + "[-]").SetSelectable(false))
+		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("[gray]  Content Size: [white]%s[-]", formatLayerSize(layer))).SetSelectable(false))
+		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("[gray]  Disk Usage: [white]%s[-]", formatLayerDiskUsage(layer))).SetSelectable(false))
+		if layer.Path != "" {
+			layerNode.SetReference(&layerBrowserEntry{path: layer.Path, isDir: true})
+		}
+		node.AddChild(layerNode)
+	}
+	return node
+}
+
+func shortenLayerIDV1(values ...string) string {
+	for _, val := range values {
+		val = strings.TrimSpace(val)
+		if val == "" {
+			continue
+		}
+		val = strings.TrimPrefix(val, "sha256:")
+		if len(val) > 12 {
+			return val[:12]
+		}
+		return val
+	}
+	return "unresolved"
+}
+
+func fallbackLayerField(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unresolved"
+	}
+	return value
+}
+
+func formatLayerSize(layer *runtime.ImageLayer) string {
+	if layer == nil || layer.Size <= 0 {
+		return "unknown"
+	}
+	compression := strings.TrimSpace(layer.CompressionType)
+	if compression == "" {
+		compression = "unknown"
+	}
+	return fmt.Sprintf("%s (%s)", formatBytes(layer.Size), compression)
+}
+
+func formatLayerDiskUsage(layer *runtime.ImageLayer) string {
+	if layer == nil || (layer.UsageSize <= 0 && layer.UsageInodes <= 0) {
+		return "unknown"
+	}
+	return fmt.Sprintf("%s (%d inodes)", formatBytes(layer.UsageSize), layer.UsageInodes)
+}
+
+func selectedLayerPath(node *tview.TreeNode, config *runtime.ContainerConfig, storage *runtime.ContainerStorage) (string, string) {
 	if node == nil {
 		return "", ""
 	}
-	switch ref := node.GetReference().(type) {
-	case *models.ImageLayer:
-		return strings.TrimSpace(ref.SnapshotPath), node.GetText()
-	case *models.ContainerDetail:
-		if ref != nil {
-			return strings.TrimSpace(ref.WritableLayerPath), "RW Layer"
-		}
+	if entry, ok := node.GetReference().(*layerBrowserEntry); ok && entry != nil && entry.path != "" {
+		return entry.path, node.GetText()
 	}
-	if activeDetail != nil && node.GetText() == "[yellow::b]RW Layer[-:-:-]" {
-		return strings.TrimSpace(activeDetail.WritableLayerPath), "RW Layer"
+	// Fallback: try RW layer path from config.
+	if config != nil && config.WritableLayerPath != "" {
+		return config.WritableLayerPath, "RW Layer"
+	}
+	if storage != nil && storage.RWLayerPath != "" {
+		return storage.RWLayerPath, "RW Layer"
 	}
 	return "", ""
-}
-
-func (v *ImageLayersView) expandBrowserAll() {
-	root := v.browserTree.GetRoot()
-	if root == nil {
-		return
-	}
-	var walk func(node *tview.TreeNode)
-	walk = func(node *tview.TreeNode) {
-		entry, _ := node.GetReference().(*layerBrowserEntry)
-		if entry != nil && entry.isDir {
-			v.loadBrowserChildren(node, entry)
-			node.SetExpanded(true)
-		}
-		for _, child := range node.GetChildren() {
-			walk(child)
-		}
-	}
-	walk(root)
-	v.browserTree.SetCurrentNode(root)
-	v.renderPreview(root)
 }

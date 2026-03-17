@@ -10,26 +10,22 @@ import (
 	"github.com/rivo/tview"
 )
 
-// App represents the main TUI application
+// App represents the main TUI application backed by a runtime.
 type App struct {
 	tviewApp *tview.Application
 	pages    *tview.Pages
 	runtime  runtime.Runtime
 	ctx      context.Context
 	cancel   context.CancelFunc
+	nav      *Navigator
 
-	// Navigation
-	nav *Navigator
-
-	// Views
 	mainView   *views.MainView
 	detailView *views.ContainerDetailView
 }
 
-// NewApp creates a new TUI application
+// NewApp creates a new TUI application.
 func NewApp(rt runtime.Runtime) *App {
 	ctx, cancel := context.WithCancel(context.Background())
-
 	app := &App{
 		tviewApp: tview.NewApplication(),
 		pages:    tview.NewPages(),
@@ -37,34 +33,24 @@ func NewApp(rt runtime.Runtime) *App {
 		ctx:      ctx,
 		cancel:   cancel,
 	}
-
 	views.TrackApplicationLifecycle(app.tviewApp)
-
 	app.nav = NewNavigator(app.tviewApp, app.pages)
 	app.setupUI()
 	app.setupKeybindings()
-
 	return app
 }
 
-// setupUI initializes the UI components
 func (a *App) setupUI() {
-	// Set the root primitive
 	a.tviewApp.SetRoot(a.pages, true)
 
-	// Create the main list view with tab switching
 	a.mainView = views.NewMainView(a.tviewApp, a.runtime, a.ctx)
+	a.detailView = views.NewContainerDetailView(a.tviewApp, a.ctx)
 
-	// Create the container detail view
-	a.detailView = views.NewContainerDetailView(a.tviewApp, a.runtime, a.ctx)
-
-	// Set container selection handler - navigate to detail page
-	a.mainView.SetContainerSelectFunc(func(containerID string) {
-		a.detailView.SetContainer(containerID)
+	a.mainView.SetContainerSelectFunc(func(c runtime.Container) {
+		a.detailView.SetContainer(c)
 		a.nav.NavigateToAndFocus(PageContainerDetail, a.detailView.GetFocusPrimitive())
 	})
 
-	// Set back handler on detail view
 	a.detailView.SetBackFunc(func() {
 		a.nav.Back()
 	})
@@ -72,47 +58,34 @@ func (a *App) setupUI() {
 	a.pages.AddPage(string(PageMain), a.mainView, true, true)
 	a.pages.AddPage(string(PageContainerDetail), a.detailView, true, false)
 
-	// Register focus primitives for each page
 	a.nav.RegisterFocus(PageMain, a.mainView.GetFocusPrimitive())
 	a.nav.RegisterFocus(PageContainerDetail, a.detailView)
-
 	a.nav.NavigateTo(PageMain)
 }
 
-// setupKeybindings sets up global keybindings
 func (a *App) setupKeybindings() {
 	a.tviewApp.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		// Global quit keys - check first before anything else
-		switch event.Key() {
-		case tcell.KeyCtrlC:
+		if event.Key() == tcell.KeyCtrlC {
 			a.Stop()
 			return nil
 		}
-
-		// Help popup
 		if event.Rune() == '?' {
 			a.showHelp()
 			return nil
 		}
 
-		// Check current page for context-aware keybindings
-		currentPage := a.nav.CurrentPage()
-
-		switch currentPage {
+		switch a.nav.CurrentPage() {
 		case PageMain:
-			// Delegate to main view for tab switching and refresh
 			if event.Rune() == 'q' || event.Rune() == 'Q' {
 				a.Stop()
 				return nil
 			}
 			return a.mainView.HandleInput(event)
 		case PageContainerDetail:
-			// Check for global quit first
 			if event.Rune() == 'Q' {
 				a.Stop()
 				return nil
 			}
-			// Delegate to detail view for tab switching and navigation
 			return a.detailView.HandleInput(event)
 		default:
 			if event.Rune() == 'q' || event.Rune() == 'Q' {
@@ -120,14 +93,12 @@ func (a *App) setupKeybindings() {
 				return nil
 			}
 		}
-
 		return event
 	})
 }
 
-// showHelp displays a help popup with keybinding information
 func (a *App) showHelp() {
-	helpText := `[aqua::b]c-ray - Keybindings[-:-:-]
+	helpText := `[aqua::b]c-ray v1 - Keybindings[-:-:-]
 
 [yellow::b]Global[-:-:-]
   [yellow]?[-]           Show this help
@@ -144,25 +115,25 @@ func (a *App) showHelp() {
 
 [yellow::b]Detail View[-:-:-]
   [yellow]Esc/q[-]       Back to list
-	[yellow]1-5[-]         Switch page (Summary/Processes/Filesystem/Runtime/Network)
-	[yellow]Tab[-]         Next page
-	[yellow]Shift+Tab[-]   Previous page
+  [yellow]1-5[-]         Switch page (Summary/Processes/Filesystem/Runtime/Network)
+  [yellow]Tab[-]         Next page
+  [yellow]Shift+Tab[-]   Previous page
   [yellow]r[-]           Refresh data
 
 [yellow::b]Processes Workspace[-:-:-]
-	[yellow]s[-]           Switch to summary mode
-	[yellow]g[-]           Switch to tree mode
-	[yellow]t[-]           Switch to top mode
-	[yellow][ / ][-]       Cycle process sub-tabs
+  [yellow]s[-]           Switch to summary mode
+  [yellow]g[-]           Switch to tree mode
+  [yellow]t[-]           Switch to top mode
+  [yellow][ / ][-]       Cycle process sub-tabs
   [yellow]c[-]           Sort by CPU
   [yellow]m[-]           Sort by Memory
   [yellow]p[-]           Sort by PID
   [yellow]i[-]           Sort by I/O
 
 [yellow::b]Filesystem Workspace[-:-:-]
-	[yellow]l[-]           Switch to Rootfs Layers
-	[yellow]m[-]           Switch to Mounts
-	[yellow]i[-]           Toggle layer file browser in Rootfs Layers
+  [yellow]l[-]           Switch to Rootfs Layers
+  [yellow]m[-]           Switch to Mounts
+  [yellow]i[-]           Toggle layer file browser in Rootfs Layers
 
 [yellow::b]Tree Views[-:-:-]
   [yellow]e[-]           Toggle expand/collapse
@@ -177,31 +148,20 @@ func (a *App) showHelp() {
 			a.pages.RemovePage("help")
 		})
 	modal.SetBackgroundColor(tcell.ColorDarkSlateGray)
-
 	a.pages.AddPage("help", modal, true, true)
 }
 
-// Run starts the application
+// Run starts the application.
 func (a *App) Run() error {
-	// Connect to runtime
 	if err := a.runtime.Connect(a.ctx); err != nil {
 		return fmt.Errorf("failed to connect to runtime: %w", err)
 	}
-
-	// Start auto-refresh (for background updates after initial load)
 	a.mainView.StartAutoRefresh()
-
-	// Schedule initial data load after TUI starts to avoid blocking
-	// This ensures the UI is visible immediately even if data loading is slow
-	go func() {
-		a.mainView.RefreshAll()
-	}()
-
-	// Run the TUI application (blocking)
+	go a.mainView.RefreshAll()
 	return a.tviewApp.Run()
 }
 
-// Stop stops the application
+// Stop stops the application.
 func (a *App) Stop() {
 	if a.mainView != nil {
 		a.mainView.StopAutoRefresh()
@@ -213,24 +173,4 @@ func (a *App) Stop() {
 	a.runtime.Close()
 	views.UntrackApplicationLifecycle(a.tviewApp)
 	a.tviewApp.Stop()
-}
-
-// GetContext returns the application context
-func (a *App) GetContext() context.Context {
-	return a.ctx
-}
-
-// GetRuntime returns the runtime instance
-func (a *App) GetRuntime() runtime.Runtime {
-	return a.runtime
-}
-
-// GetPages returns the pages container
-func (a *App) GetPages() *tview.Pages {
-	return a.pages
-}
-
-// Refresh forces a UI refresh
-func (a *App) Refresh() {
-	a.tviewApp.Draw()
 }

@@ -1,17 +1,17 @@
 package views
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/icebergu/c-ray/pkg/models"
+	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/rivo/tview"
 )
 
-type detailSection struct {
+type summarySection struct {
 	Title    string
 	Summary  string
 	Expanded bool
@@ -25,9 +25,8 @@ type DetailSummaryView struct {
 	app       *tview.Application
 	tree      *tview.TreeView
 	statusBar *tview.TextView
-
-	detail *models.ContainerDetail
-	mu     sync.Mutex
+	container runtime.Container
+	mu        sync.Mutex
 }
 
 // NewDetailSummaryView creates a new detail summary view.
@@ -56,12 +55,35 @@ func NewDetailSummaryView(app *tview.Application) *DetailSummaryView {
 	return v
 }
 
-// SetDetail updates the rendered container detail.
-func (v *DetailSummaryView) SetDetail(detail *models.ContainerDetail) {
+// SetContainer sets the container handle.
+func (v *DetailSummaryView) SetContainer(c runtime.Container) {
 	v.mu.Lock()
-	v.detail = detail
+	v.container = c
 	v.mu.Unlock()
-	v.render()
+}
+
+// Refresh loads summary data from the container handle.
+func (v *DetailSummaryView) Refresh(ctx context.Context) {
+	v.mu.Lock()
+	c := v.container
+	v.mu.Unlock()
+
+	if c == nil {
+		v.renderEmpty()
+		return
+	}
+
+	info, _ := c.Info(ctx)
+	state, _ := c.State(ctx)
+	config, _ := c.Config(ctx)
+	profile, _ := c.Runtime(ctx)
+
+	var imageConfig *runtime.ImageConfigInfo
+	if img, err := c.Image(ctx); err == nil && img != nil {
+		imageConfig, _ = img.Config(ctx)
+	}
+
+	v.render(info, state, config, profile, imageConfig)
 }
 
 // GetFocusPrimitive returns the focusable primitive.
@@ -87,25 +109,29 @@ func (v *DetailSummaryView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
-func (v *DetailSummaryView) render() {
-	v.mu.Lock()
-	detail := v.detail
-	v.mu.Unlock()
+func (v *DetailSummaryView) toggleCurrentNode() {
+	if node := v.tree.GetCurrentNode(); node != nil && len(node.GetChildren()) > 0 {
+		node.SetExpanded(!node.IsExpanded())
+	}
+}
+
+func (v *DetailSummaryView) renderEmpty() {
+	queueUpdateDraw(v.app, func() {
+		root := tview.NewTreeNode("[gray]Loading container summary...[-]").SetSelectable(false)
+		v.tree.SetRoot(root)
+		v.tree.SetCurrentNode(root)
+	})
+}
+
+func (v *DetailSummaryView) render(info *runtime.ContainerInfo, state *runtime.ContainerState, config *runtime.ContainerConfig, runtime *runtime.RuntimeProfile, imageConfig *runtime.ImageConfigInfo) {
+	sections := buildSummarySections(info, state, config, runtime, imageConfig)
 
 	queueUpdateDraw(v.app, func() {
-		if detail == nil {
-			root := tview.NewTreeNode("[gray]Loading container summary...[-]").SetSelectable(false)
-			v.tree.SetRoot(root)
-			v.tree.SetCurrentNode(root)
-			return
-		}
-
 		root := tview.NewTreeNode("[aqua::b]Container Summary[-:-:-]").SetSelectable(false).SetExpanded(true)
-		for _, section := range buildDetailSections(detail) {
-			node := tview.NewTreeNode(summarySectionLabel(section.Title, section.Summary)).
-				SetSelectable(true).
-				SetExpanded(section.Expanded)
-			for _, row := range section.Rows {
+		for _, s := range sections {
+			node := tview.NewTreeNode(sectionLabel(s.Title, s.Summary)).
+				SetSelectable(true).SetExpanded(s.Expanded)
+			for _, row := range s.Rows {
 				node.AddChild(tview.NewTreeNode("[gray]" + row + "[-]").SetSelectable(false))
 			}
 			root.AddChild(node)
@@ -119,166 +145,163 @@ func (v *DetailSummaryView) render() {
 	})
 }
 
-func (v *DetailSummaryView) toggleCurrentNode() {
-	if node := v.tree.GetCurrentNode(); node != nil && len(node.GetChildren()) > 0 {
-		node.SetExpanded(!node.IsExpanded())
-	}
-}
-
-func buildDetailSections(detail *models.ContainerDetail) []detailSection {
-	sections := []detailSection{
-		{
-			Title:    "Status",
-			Summary:  string(detail.Status),
-			Expanded: true,
-			Rows:     buildStatusRows(detail),
-		},
-	}
-
-	if detail.PodNamespace != "" || detail.PodName != "" || detail.PodUID != "" {
-		sections = append(sections, detailSection{
-			Title:    "Pod",
-			Summary:  fmt.Sprintf("%s/%s", fallbackValue(detail.PodNamespace, "?"), fallbackValue(detail.PodName, "?")),
-			Expanded: true,
-			Rows: []string{
-				fmt.Sprintf("Namespace: %s", fallbackValue(detail.PodNamespace, "unknown")),
-				fmt.Sprintf("Name: %s", fallbackValue(detail.PodName, "unknown")),
-				fmt.Sprintf("UID: %s", fallbackValue(detail.PodUID, "unknown")),
-			},
-		})
-	}
-
-	sandboxID := detailSandboxID(detail)
-	sections = append(sections,
-		detailSection{
-			Title:    "Sandbox",
-			Summary:  shortID(sandboxID),
-			Expanded: false,
-			Rows: []string{
-				fmt.Sprintf("Sandbox ID: %s", fallbackValue(sandboxID, "unknown")),
-			},
-		},
-		detailSection{
-			Title:    "Image",
-			Summary:  fallbackValue(detail.ImageName, fallbackValue(detail.Image, "unknown")),
-			Expanded: true,
-			Rows:     buildImageRows(detail),
-		},
-		detailSection{
-			Title:    "Snapshotter",
-			Summary:  snapshotterSummary(detail),
-			Expanded: false,
-			Rows: []string{
-				fmt.Sprintf("Key: %s", fallbackValue(detail.SnapshotKey, "unknown")),
-				fmt.Sprintf("Snapshotter: %s", fallbackValue(detail.Snapshotter, "unknown")),
-			},
-		},
-	)
-
-	return sections
-}
-
-func buildStatusRows(detail *models.ContainerDetail) []string {
-	rows := []string{
-		fmt.Sprintf("Created At: %s", formatSummaryTime(detail.CreatedAt)),
-		fmt.Sprintf("Started At: %s", formatSummaryTime(detail.StartedAt)),
-	}
-	if detail.PID > 0 {
-		rows = append(rows, fmt.Sprintf("PID: %d", detail.PID))
-	}
-	if detail.ShimPID > 0 {
-		rows = append(rows, fmt.Sprintf("Shim PID: %d", detail.ShimPID))
-	}
-	if detail.Status == models.ContainerStatusStopped {
-		exitedAt := "unknown"
-		if !detail.ExitedAt.IsZero() {
-			exitedAt = formatSummaryTime(detail.ExitedAt)
-		}
-		exitCode := "unknown"
-		if detail.ExitCode != nil {
-			exitCode = fmt.Sprintf("%d", *detail.ExitCode)
-		}
-		exitReason := fallbackValue(detail.ExitReason, "unknown")
-		rows = append(rows,
-			fmt.Sprintf("Exited At: %s", exitedAt),
-			fmt.Sprintf("Exit Code: %s", exitCode),
-			fmt.Sprintf("Exit Reason: %s", exitReason),
-		)
-	}
-	restartCount := "unknown"
-	if detail.RestartCount != nil {
-		restartCount = fmt.Sprintf("%d", *detail.RestartCount)
-	}
-	rows = append(rows, fmt.Sprintf("Restart Count: %s", restartCount))
-	return rows
-}
-
-func summarySectionLabel(title string, summary string) string {
+func sectionLabel(title, summary string) string {
 	if summary == "" {
 		return fmt.Sprintf("[white::b]%s[-:-:-]", title)
 	}
 	return fmt.Sprintf("[white::b]%s[-:-:-] [gray]%s[-]", title, truncateForCard(summary, 52))
 }
 
-func detailSandboxID(detail *models.ContainerDetail) string {
-	if detail.PodNetwork != nil && detail.PodNetwork.SandboxID != "" {
-		return detail.PodNetwork.SandboxID
+func buildSummarySections(info *runtime.ContainerInfo, state *runtime.ContainerState, config *runtime.ContainerConfig, runtime *runtime.RuntimeProfile, imageConfig *runtime.ImageConfigInfo) []summarySection {
+	sections := []summarySection{
+		buildStatusSection(info, state),
 	}
-	if detail.RuntimeProfile != nil && detail.RuntimeProfile.OCI != nil {
-		return detail.RuntimeProfile.OCI.SandboxID
+
+	if info != nil && (info.PodNamespace != "" || info.PodName != "" || info.PodUID != "") {
+		sections = append(sections, summarySection{
+			Title:    "Pod",
+			Summary:  fmt.Sprintf("%s/%s", fallbackValue(info.PodNamespace, "?"), fallbackValue(info.PodName, "?")),
+			Expanded: true,
+			Rows: []string{
+				"Namespace: " + fallbackValue(info.PodNamespace, "unknown"),
+				"Name: " + fallbackValue(info.PodName, "unknown"),
+				"UID: " + fallbackValue(info.PodUID, "unknown"),
+			},
+		})
 	}
-	return ""
+
+	sandboxID := resolveSandboxID(runtime)
+	sections = append(sections, summarySection{
+		Title:    "Sandbox",
+		Summary:  shortID(sandboxID),
+		Expanded: false,
+		Rows:     []string{"Sandbox ID: " + fallbackValue(sandboxID, "unknown")},
+	})
+
+	sections = append(sections, buildImageSection(info, config, imageConfig))
+	sections = append(sections, buildSnapshotterSection(config))
+
+	return sections
 }
 
-func snapshotterSummary(detail *models.ContainerDetail) string {
-	if detail.Snapshotter == "" && detail.SnapshotKey == "" {
-		return "unknown"
+func buildStatusSection(info *runtime.ContainerInfo, state *runtime.ContainerState) summarySection {
+	status := "unknown"
+	if state != nil {
+		status = string(state.Status)
+	} else if info != nil {
+		status = string(info.Status)
 	}
-	if detail.Snapshotter == "" {
-		return detail.SnapshotKey
+
+	rows := []string{}
+	if info != nil {
+		rows = append(rows, "Created At: "+formatSummaryTime(info.CreatedAt))
 	}
-	if detail.SnapshotKey == "" {
-		return detail.Snapshotter
+	if state != nil {
+		rows = append(rows, "Started At: "+formatSummaryTime(state.StartedAt))
+		if state.PID > 0 {
+			rows = append(rows, fmt.Sprintf("PID: %d", state.PID))
+		}
+		if state.PPID > 0 {
+			rows = append(rows, fmt.Sprintf("Shim PID: %d", state.PPID))
+		}
+		if state.Status == runtime.ContainerStatusStopped {
+			rows = append(rows, "Exited At: "+formatSummaryTime(state.ExitedAt))
+			exitCode := "unknown"
+			if state.ExitCode != nil {
+				exitCode = fmt.Sprintf("%d", *state.ExitCode)
+			}
+			rows = append(rows, "Exit Code: "+exitCode)
+			rows = append(rows, "Exit Reason: "+fallbackValue(state.ExitReason, "unknown"))
+		}
+		restartCount := "unknown"
+		if state.RestartCount != nil {
+			restartCount = fmt.Sprintf("%d", *state.RestartCount)
+		}
+		rows = append(rows, "Restart Count: "+restartCount)
 	}
-	return detail.Snapshotter + "/" + detail.SnapshotKey
+
+	return summarySection{Title: "Status", Summary: status, Expanded: true, Rows: rows}
 }
 
-func formatSummaryTime(ts time.Time) string {
-	if ts.IsZero() {
-		return "unknown"
+func buildImageSection(info *runtime.ContainerInfo, config *runtime.ContainerConfig, imageConfig *runtime.ImageConfigInfo) summarySection {
+	imageName := "unknown"
+	if config != nil && config.ImageName != "" {
+		imageName = config.ImageName
+	} else if info != nil && info.Image != "" {
+		imageName = info.Image
 	}
-	return ts.Format("2006-01-02 15:04:05")
-}
 
-func buildImageRows(detail *models.ContainerDetail) []string {
-	imageID := detail.ImageID
-	if imageID == "" {
-		imageID = detail.Image
+	imageID := "unknown"
+	if info != nil && info.Image != "" {
+		imageID = info.Image
 	}
 
 	mediaType := "unknown"
 	configPath := "unknown"
-	if detail.ImageConfig != nil {
-		if detail.ImageConfig.TargetKind != "" || detail.ImageConfig.Schema != "" {
-			mediaType = strings.TrimSpace(detail.ImageConfig.TargetKind + " / " + detail.ImageConfig.Schema)
+	if imageConfig != nil {
+		if imageConfig.TargetKind != "" || imageConfig.Schema != "" {
+			mediaType = strings.TrimSpace(imageConfig.TargetKind + " / " + imageConfig.Schema)
 			mediaType = strings.Trim(mediaType, " /")
 		}
-		if detail.ImageConfig.ContentPath != "" {
-			configPath = detail.ImageConfig.ContentPath
+		if imageConfig.ContentPath != "" {
+			configPath = imageConfig.ContentPath
 		}
 	}
 
 	rows := []string{
-		fmt.Sprintf("Name: %s", fallbackValue(detail.ImageName, "unknown")),
-		fmt.Sprintf("ID: %s", fallbackValue(imageID, "unknown")),
-		fmt.Sprintf("Media Type: %s", mediaType),
-		fmt.Sprintf("Config Path: %s", configPath),
+		"Name: " + imageName,
+		"ID: " + imageID,
+		"Media Type: " + mediaType,
+		"Config Path: " + configPath,
 		"Manifest: Reserved for future manifest view",
 	}
 
-	if detail.ImageConfig != nil && detail.ImageConfig.TargetMediaType != "" {
-		rows = append(rows, fmt.Sprintf("Raw Media Type: %s", detail.ImageConfig.TargetMediaType))
+	if imageConfig != nil && imageConfig.TargetMediaType != "" {
+		rows = append(rows, "Raw Media Type: "+imageConfig.TargetMediaType)
 	}
 
-	return rows
+	return summarySection{
+		Title:    "Image",
+		Summary:  fallbackValue(imageName, "unknown"),
+		Expanded: true,
+		Rows:     rows,
+	}
+}
+
+func buildSnapshotterSection(config *runtime.ContainerConfig) summarySection {
+	summary := "unknown"
+	snapshotter := "unknown"
+	key := "unknown"
+	if config != nil {
+		if config.Snapshotter != "" {
+			snapshotter = config.Snapshotter
+		}
+		if config.SnapshotKey != "" {
+			key = config.SnapshotKey
+		}
+		if config.Snapshotter != "" && config.SnapshotKey != "" {
+			summary = config.Snapshotter + "/" + config.SnapshotKey
+		} else if config.Snapshotter != "" {
+			summary = config.Snapshotter
+		} else if config.SnapshotKey != "" {
+			summary = config.SnapshotKey
+		}
+	}
+
+	return summarySection{
+		Title:    "Snapshotter",
+		Summary:  summary,
+		Expanded: false,
+		Rows: []string{
+			"Key: " + key,
+			"Snapshotter: " + snapshotter,
+		},
+	}
+}
+
+func resolveSandboxID(runtime *runtime.RuntimeProfile) string {
+	if runtime != nil && runtime.OCI != nil && runtime.OCI.SandboxID != "" {
+		return runtime.OCI.SandboxID
+	}
+	return ""
 }

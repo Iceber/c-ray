@@ -1,12 +1,13 @@
 package views
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/icebergu/c-ray/pkg/models"
+	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/rivo/tview"
 )
 
@@ -17,9 +18,8 @@ type ProcessSummaryView struct {
 	app       *tview.Application
 	tree      *tview.TreeView
 	statusBar *tview.TextView
-
-	detail *models.ContainerDetail
-	mu     sync.Mutex
+	container runtime.Container
+	mu        sync.Mutex
 }
 
 // NewProcessSummaryView creates a new process summary view.
@@ -48,17 +48,25 @@ func NewProcessSummaryView(app *tview.Application) *ProcessSummaryView {
 	return v
 }
 
-// SetDetail updates the process summary source.
-func (v *ProcessSummaryView) SetDetail(detail *models.ContainerDetail) {
+// SetContainer sets the container handle.
+func (v *ProcessSummaryView) SetContainer(c runtime.Container) {
 	v.mu.Lock()
-	v.detail = detail
+	v.container = c
 	v.mu.Unlock()
-	v.render()
 }
 
-// Refresh re-renders current data.
-func (v *ProcessSummaryView) Refresh() {
-	v.render()
+// Refresh loads data from the container handle and re-renders.
+func (v *ProcessSummaryView) Refresh(ctx context.Context) {
+	v.mu.Lock()
+	c := v.container
+	v.mu.Unlock()
+
+	if c == nil {
+		return
+	}
+
+	config, _ := c.Config(ctx)
+	v.render(config)
 }
 
 // GetFocusPrimitive returns the focus primitive.
@@ -84,13 +92,17 @@ func (v *ProcessSummaryView) HandleInput(event *tcell.EventKey) *tcell.EventKey 
 	return event
 }
 
-func (v *ProcessSummaryView) render() {
-	v.mu.Lock()
-	detail := v.detail
-	v.mu.Unlock()
+func (v *ProcessSummaryView) toggleCurrentNode() {
+	if node := v.tree.GetCurrentNode(); node != nil && len(node.GetChildren()) > 0 {
+		node.SetExpanded(!node.IsExpanded())
+	}
+}
+
+func (v *ProcessSummaryView) render(config *runtime.ContainerConfig) {
+	sections := buildProcessSections(config)
 
 	queueUpdateDraw(v.app, func() {
-		if detail == nil {
+		if config == nil {
 			root := tview.NewTreeNode("[gray]Waiting for process summary data...[-]").SetSelectable(false)
 			v.tree.SetRoot(root)
 			v.tree.SetCurrentNode(root)
@@ -98,16 +110,14 @@ func (v *ProcessSummaryView) render() {
 		}
 
 		root := tview.NewTreeNode("[aqua::b]Process Summary[-:-:-]").SetSelectable(false).SetExpanded(true)
-		for _, section := range buildProcessSummarySections(detail) {
-			node := tview.NewTreeNode(summarySectionLabel(section.Title, section.Summary)).
-				SetSelectable(true).
-				SetExpanded(section.Expanded)
-			for _, row := range section.Rows {
+		for _, s := range sections {
+			node := tview.NewTreeNode(sectionLabel(s.Title, s.Summary)).
+				SetSelectable(true).SetExpanded(s.Expanded)
+			for _, row := range s.Rows {
 				node.AddChild(tview.NewTreeNode("[gray]" + row + "[-]").SetSelectable(false))
 			}
 			root.AddChild(node)
 		}
-
 		v.tree.SetRoot(root)
 		if len(root.GetChildren()) > 0 {
 			v.tree.SetCurrentNode(root.GetChildren()[0])
@@ -117,149 +127,92 @@ func (v *ProcessSummaryView) render() {
 	})
 }
 
-func (v *ProcessSummaryView) toggleCurrentNode() {
-	if node := v.tree.GetCurrentNode(); node != nil && len(node.GetChildren()) > 0 {
-		node.SetExpanded(!node.IsExpanded())
+func buildProcessSections(config *runtime.ContainerConfig) []summarySection {
+	if config == nil {
+		return nil
+	}
+	return []summarySection{
+		buildEnvironmentSection(config),
+		buildCGroupSection(config),
+		buildPIDNamespaceSection(config),
 	}
 }
 
-func buildProcessSummarySections(detail *models.ContainerDetail) []detailSection {
-	return []detailSection{
-		{
-			Title:    "Environment",
-			Summary:  environmentSummary(detail),
-			Expanded: true,
-			Rows:     buildEnvironmentRows(detail),
-		},
-		{
-			Title:    "CGroup",
-			Summary:  cgroupSummary(detail),
-			Expanded: true,
-			Rows: []string{
-				fmt.Sprintf("Version: %s", cgroupVersionLabel(detail)),
-				fmt.Sprintf("Path: %s", cgroupPathLabel(detail)),
-				fmt.Sprintf("Mount Path: %s", cgroupMountPathLabel(detail)),
-			},
-		},
-		{
-			Title:    "PID Namespace",
-			Summary:  pidNamespaceSummary(detail),
-			Expanded: true,
-			Rows:     buildPIDNamespaceRows(detail),
-		},
+func buildEnvironmentSection(config *runtime.ContainerConfig) summarySection {
+	summary := "unknown vars"
+	if len(config.Environment) > 0 {
+		summary = fmt.Sprintf("%d vars", len(config.Environment))
 	}
-}
 
-func cgroupSummary(detail *models.ContainerDetail) string {
-	if detail.CGroupVersion > 0 {
-		return fmt.Sprintf("v%d", detail.CGroupVersion)
-	}
-	return "unknown"
-}
-
-func cgroupVersionLabel(detail *models.ContainerDetail) string {
-	if detail.CGroupVersion <= 0 {
-		return "unknown"
-	}
-	return fmt.Sprintf("v%d", detail.CGroupVersion)
-}
-
-func cgroupPathLabel(detail *models.ContainerDetail) string {
-	if detail.CGroupPath != "" {
-		return detail.CGroupPath
-	}
-	if detail.RuntimeProfile != nil && detail.RuntimeProfile.CGroup != nil && detail.RuntimeProfile.CGroup.RelativePath != "" {
-		return detail.RuntimeProfile.CGroup.RelativePath
-	}
-	return "unknown"
-}
-
-func cgroupMountPathLabel(detail *models.ContainerDetail) string {
-	if detail.RuntimeProfile != nil && detail.RuntimeProfile.CGroup != nil && detail.RuntimeProfile.CGroup.AbsolutePath != "" {
-		return detail.RuntimeProfile.CGroup.AbsolutePath
-	}
-	return "unknown"
-}
-
-func pidNamespaceSummary(detail *models.ContainerDetail) string {
-	shared, _, present := resolvedSharedPID(detail)
-	if shared != nil {
-		if *shared {
-			return "shared"
-		}
-		return "private"
-	}
-	if present {
-		return "private"
-	}
-	return "unknown"
-}
-
-func buildPIDNamespaceRows(detail *models.ContainerDetail) []string {
-	rows := []string{"Shared PID: unknown"}
-	shared, _, _ := resolvedSharedPID(detail)
-	if shared != nil {
-		if *shared {
-			rows[0] = "Shared PID: true"
-		} else {
-			rows[0] = "Shared PID: false"
-		}
-	}
-	if detail.ProcessCount > 0 {
-		rows = append(rows, fmt.Sprintf("Observed Processes: %d", detail.ProcessCount))
-	}
-	return rows
-}
-
-func resolvedSharedPID(detail *models.ContainerDetail) (*bool, string, bool) {
-	if detail == nil {
-		return nil, "", false
-	}
-	path, present := pidNamespacePath(detail)
-	if detail.SharedPID != nil {
-		return detail.SharedPID, path, present
-	}
-	if !present {
-		return nil, "", false
-	}
-	shared := strings.TrimSpace(path) != ""
-	return &shared, path, true
-}
-
-func pidNamespacePath(detail *models.ContainerDetail) (string, bool) {
-	if detail == nil || detail.Namespaces == nil {
-		return "", false
-	}
-	path, ok := detail.Namespaces["pid"]
-	return path, ok
-}
-
-func environmentSummary(detail *models.ContainerDetail) string {
-	if len(detail.Environment) > 0 {
-		return fmt.Sprintf("%d vars", len(detail.Environment))
-	}
-	return "unknown vars"
-}
-
-func buildEnvironmentRows(detail *models.ContainerDetail) []string {
 	rows := []string{}
-	if len(detail.Environment) == 0 {
-		return []string{"Count: unknown", "Environment variables unavailable"}
+	if len(config.Environment) == 0 {
+		rows = append(rows, "Count: unknown", "Environment variables unavailable")
+	} else {
+		limit := len(config.Environment)
+		if limit > 12 {
+			limit = 12
+		}
+		for _, env := range config.Environment[:limit] {
+			prefix := "-"
+			if env.IsKubernetes {
+				prefix = "◇"
+			}
+			rows = append(rows, fmt.Sprintf("%s %s: %s", prefix, env.Key, env.Value))
+		}
+		if len(config.Environment) > limit {
+			rows = append(rows, fmt.Sprintf("... %d more", len(config.Environment)-limit))
+		}
 	}
 
-	limit := len(detail.Environment)
-	if limit > 12 {
-		limit = 12
+	return summarySection{Title: "Environment", Summary: summary, Expanded: true, Rows: rows}
+}
+
+func buildCGroupSection(config *runtime.ContainerConfig) summarySection {
+	summary := "unknown"
+	if config.CGroupVersion > 0 {
+		summary = fmt.Sprintf("v%d", config.CGroupVersion)
 	}
-	for _, env := range detail.Environment[:limit] {
-		prefix := "-"
-		if env.IsKubernetes {
-			prefix = "◇"
+
+	versionLabel := "unknown"
+	if config.CGroupVersion > 0 {
+		versionLabel = fmt.Sprintf("v%d", config.CGroupVersion)
+	}
+	pathLabel := fallbackValue(config.CGroupPath, "unknown")
+	mountLabel := fallbackValue(config.CGroupMountedPath, "unknown")
+
+	return summarySection{
+		Title:    "CGroup",
+		Summary:  summary,
+		Expanded: true,
+		Rows: []string{
+			"Version: " + versionLabel,
+			"Path: " + pathLabel,
+			"Mount Path: " + mountLabel,
+		},
+	}
+}
+
+func buildPIDNamespaceSection(config *runtime.ContainerConfig) summarySection {
+	summary := "unknown"
+	sharedPID := "unknown"
+
+	if config.Namespaces != nil {
+		pidPath, ok := config.Namespaces["pid"]
+		if ok {
+			if strings.TrimSpace(pidPath) != "" {
+				summary = "shared"
+				sharedPID = "true"
+			} else {
+				summary = "private"
+				sharedPID = "false"
+			}
 		}
-		rows = append(rows, fmt.Sprintf("%s %s: %s", prefix, env.Key, env.Value))
 	}
-	if len(detail.Environment) > limit {
-		rows = append(rows, fmt.Sprintf("... %d more", len(detail.Environment)-limit))
+
+	return summarySection{
+		Title:    "PID Namespace",
+		Summary:  summary,
+		Expanded: true,
+		Rows:     []string{"Shared PID: " + sharedPID},
 	}
-	return rows
 }

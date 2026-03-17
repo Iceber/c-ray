@@ -9,13 +9,12 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/rivo/tview"
 )
 
-// SortField represents the field to sort by in top view
+// SortField represents the field to sort by in top view.
 type SortField int
 
 const (
@@ -25,23 +24,23 @@ const (
 	SortByIO
 )
 
-// TopView displays top-like process information for a container
+// TopView displays top-like process information for a container.
 type TopView struct {
 	*tview.Flex
 
 	app *tview.Application
-	rt  runtime.Runtime
 	ctx context.Context
 
 	table     *components.Table
 	netBar    *tview.TextView
 	statusBar *tview.TextView
 
-	containerID string
-	topData     *models.ProcessTop
-	sortField   SortField
+	container runtime.Container
+	flatProcs []*runtime.ProcessStats
+	networkIO []*runtime.NetworkStats
+	sortField SortField
+	procCount int
 
-	// Auto-refresh
 	refreshInterval time.Duration
 	refreshStop     chan struct{}
 	refreshRunning  bool
@@ -62,87 +61,99 @@ var topColumns = []components.Column{
 	{Title: "COMMAND", Width: 0},
 }
 
-// NewTopView creates a new top view
-func NewTopView(app *tview.Application, rt runtime.Runtime, ctx context.Context) *TopView {
+// NewTopView creates a new top view.
+func NewTopView(app *tview.Application, ctx context.Context) *TopView {
 	v := &TopView{
 		Flex:            tview.NewFlex().SetDirection(tview.FlexRow),
 		app:             app,
-		rt:              rt,
 		ctx:             ctx,
 		sortField:       SortByCPU,
 		refreshInterval: 2 * time.Second,
 	}
 
-	v.netBar = tview.NewTextView().
-		SetDynamicColors(true).
-		SetTextAlign(tview.AlignLeft)
+	v.netBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
 	v.netBar.SetBackgroundColor(tcell.ColorDarkSlateGray)
+	v.netBar.SetText(" [gray]Network: waiting for data...[-]")
 
 	v.table = components.NewTable(topColumns)
-	v.statusBar = tview.NewTextView().
-		SetDynamicColors(true).
-		SetTextAlign(tview.AlignLeft)
+	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
 
 	v.Flex.AddItem(v.netBar, 1, 0, false)
 	v.Flex.AddItem(v.table, 0, 1, true)
 	v.Flex.AddItem(v.statusBar, 1, 0, false)
-
-	v.updateNetBar()
 	v.updateStatusBar()
 	return v
 }
 
-// SetContainer sets the container ID to monitor
-func (v *TopView) SetContainer(containerID string) {
+// SetContainer sets the container handle to monitor.
+func (v *TopView) SetContainer(c runtime.Container) {
 	v.mu.Lock()
-	v.containerID = containerID
+	v.container = c
+	v.flatProcs = nil
+	v.networkIO = nil
+	v.procCount = 0
 	v.mu.Unlock()
 }
 
-// Refresh loads and displays process top data
+// Refresh loads and displays process top data.
 func (v *TopView) Refresh(ctx context.Context) error {
 	v.mu.Lock()
-	id := v.containerID
+	c := v.container
 	v.mu.Unlock()
 
-	if id == "" {
+	if c == nil {
 		return nil
 	}
 
-	top, err := v.rt.GetContainerTop(ctx, id)
+	stats, err := c.ProcessStats(ctx)
 	if err != nil {
 		return err
 	}
 
+	// Flatten the stats tree.
+	var flat []*runtime.ProcessStats
+	if stats != nil {
+		flat = flattenProcessStats(stats)
+	}
+
+	// Get network data for the bar.
+	var netIO []*runtime.NetworkStats
+	if netState, err := c.Network(ctx); err == nil && netState != nil && netState.PodNetwork != nil {
+		netIO = netState.PodNetwork.ObservedInterfaces
+	}
+
 	v.mu.Lock()
-	v.topData = top
+	v.flatProcs = flat
+	v.networkIO = netIO
+	v.procCount = len(flat)
 	v.mu.Unlock()
 
 	v.render()
 	return nil
 }
 
-// render updates the table with current process data
+// flattenProcessStats recursively collects all ProcessStats into a flat slice.
+func flattenProcessStats(root *runtime.ProcessStats) []*runtime.ProcessStats {
+	var result []*runtime.ProcessStats
+	result = append(result, root)
+	for _, child := range root.Children {
+		result = append(result, flattenProcessStats(child)...)
+	}
+	return result
+}
+
 func (v *TopView) render() {
 	v.mu.Lock()
-	if v.topData == nil {
-		v.mu.Unlock()
-		return
-	}
-	procs := make([]*models.Process, len(v.topData.Processes))
-	copy(procs, v.topData.Processes)
-	netIO := v.topData.NetworkIO
-	cpuCores := v.topData.CPUCores
-	memLimit := v.topData.MemoryLimit
+	procs := make([]*runtime.ProcessStats, len(v.flatProcs))
+	copy(procs, v.flatProcs)
+	netIO := v.networkIO
 	sf := v.sortField
 	v.mu.Unlock()
 
-	// Sort processes
-	sortProcesses(procs, sf)
+	sortProcessStats(procs, sf)
 
 	queueUpdateDraw(v.app, func() {
 		v.table.ClearData()
-
 		for _, p := range procs {
 			cmd := p.Command
 			if len(p.Args) > 0 {
@@ -151,19 +162,12 @@ func (v *TopView) render() {
 			if len(cmd) > 60 {
 				cmd = cmd[:57] + "..."
 			}
-
-			// Format CPU% with limit context
-			cpuStr := fmt.Sprintf("%.1f", p.CPUPercent)
-
-			// Format MEM% with limit context
-			memStr := fmt.Sprintf("%.1f", p.MemoryPercent)
-
 			v.table.AddRow(
 				fmt.Sprintf("%d", p.PID),
 				fmt.Sprintf("%d", p.PPID),
 				p.State,
-				cpuStr,
-				memStr,
+				fmt.Sprintf("%.1f", p.CPUPercent),
+				fmt.Sprintf("%.1f", p.MemoryPercent),
 				formatBytes(int64(p.MemoryRSS)),
 				formatRate(p.ReadBytesPerSec),
 				formatRate(p.WriteBytesPerSec),
@@ -172,14 +176,12 @@ func (v *TopView) render() {
 				cmd,
 			)
 		}
-
-		v.updateNetBarData(netIO, cpuCores, memLimit)
+		v.updateNetBar(netIO)
 		v.updateStatusBar()
 	})
 }
 
-// sortProcesses sorts processes by the given field
-func sortProcesses(procs []*models.Process, field SortField) {
+func sortProcessStats(procs []*runtime.ProcessStats, field SortField) {
 	sort.Slice(procs, func(i, j int) bool {
 		switch field {
 		case SortByCPU:
@@ -198,9 +200,8 @@ func sortProcesses(procs []*models.Process, field SortField) {
 	})
 }
 
-// HandleInput processes key events for the top view
+// HandleInput processes key events for the top view.
 func (v *TopView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
-	// Always allow Ctrl+C to propagate for global quit
 	if event.Key() == tcell.KeyCtrlC {
 		return event
 	}
@@ -221,7 +222,6 @@ func (v *TopView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
-// setSortField changes the sort field and re-renders
 func (v *TopView) setSortField(field SortField) {
 	v.mu.Lock()
 	v.sortField = field
@@ -229,8 +229,7 @@ func (v *TopView) setSortField(field SortField) {
 	v.render()
 }
 
-// StartAutoRefresh starts periodic refresh. It is idempotent —
-// calling it while a refresh loop is already running is a no-op.
+// StartAutoRefresh starts periodic refresh.
 func (v *TopView) StartAutoRefresh() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -263,8 +262,7 @@ func (v *TopView) StartAutoRefresh() {
 	}()
 }
 
-// StopAutoRefresh stops the auto-refresh loop. It is idempotent —
-// calling it when refresh is not running is a no-op.
+// StopAutoRefresh stops the auto-refresh loop.
 func (v *TopView) StopAutoRefresh() {
 	v.mu.Lock()
 	if v.refreshRunning && v.refreshStop != nil {
@@ -275,53 +273,13 @@ func (v *TopView) StopAutoRefresh() {
 	v.mu.Unlock()
 }
 
-// GetFocusPrimitive returns the focusable primitive (table)
+// GetFocusPrimitive returns the focusable primitive.
 func (v *TopView) GetFocusPrimitive() tview.Primitive {
 	return v.table
 }
 
-// SnapshotData returns a thread-safe snapshot of the current top data and process count.
-// This method is designed to be called from other views without breaking encapsulation.
-func (v *TopView) SnapshotData() (*models.ProcessTop, int) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	if v.topData == nil {
-		return nil, 0
-	}
-
-	// Create a shallow copy of topData with copied slices
-	snapshot := &models.ProcessTop{
-		Processes:   make([]*models.Process, len(v.topData.Processes)),
-		NetworkIO:   make([]*models.NetworkStats, len(v.topData.NetworkIO)),
-		Timestamp:   v.topData.Timestamp,
-		CPUCores:    v.topData.CPUCores,
-		MemoryLimit: v.topData.MemoryLimit,
-	}
-	copy(snapshot.Processes, v.topData.Processes)
-	copy(snapshot.NetworkIO, v.topData.NetworkIO)
-
-	return snapshot, len(snapshot.Processes)
-}
-
-// updateNetBar initializes the network bar with placeholder text
-func (v *TopView) updateNetBar() {
-	v.netBar.SetText(" [gray]Network: waiting for data...[-]")
-}
-
-// updateNetBarData renders the network bar with live data
-func (v *TopView) updateNetBarData(netIO []*models.NetworkStats, cpuCores float64, memLimit int64) {
+func (v *TopView) updateNetBar(netIO []*runtime.NetworkStats) {
 	var parts []string
-
-	// Show limits
-	if cpuCores > 0 {
-		parts = append(parts, fmt.Sprintf("[gray]CPU Limit:[aqua]%.2f cores[-]", cpuCores))
-	}
-	if memLimit > 0 {
-		parts = append(parts, fmt.Sprintf("[gray]Mem Limit:[aqua]%s[-]", formatBytes(memLimit)))
-	}
-
-	// Show per-interface network IO
 	for _, ns := range netIO {
 		parts = append(parts, fmt.Sprintf(
 			"[gray]%s [green]↓[white]%s[gray](%s) [red]↑[white]%s[gray](%s)[-]",
@@ -330,23 +288,17 @@ func (v *TopView) updateNetBarData(netIO []*models.NetworkStats, cpuCores float6
 			formatRate(ns.TxBytesPerSec), formatBytes(int64(ns.TxBytes)),
 		))
 	}
-
 	if len(parts) == 0 {
 		v.netBar.SetText(" [gray]Network: no active interfaces[-]")
 		return
 	}
-
 	v.netBar.SetText(" " + strings.Join(parts, "  "))
 }
 
-// updateStatusBar renders the status bar
 func (v *TopView) updateStatusBar() {
 	v.mu.Lock()
 	sf := v.sortField
-	count := 0
-	if v.topData != nil {
-		count = len(v.topData.Processes)
-	}
+	count := v.procCount
 	v.mu.Unlock()
 
 	sortLabel := "CPU"
@@ -358,31 +310,8 @@ func (v *TopView) updateStatusBar() {
 	case SortByIO:
 		sortLabel = "I/O"
 	}
-
 	v.statusBar.SetText(fmt.Sprintf(
 		" [white]Top: [green]%d[white]  |  [aqua]hotspot sort[-]: %s  |  [yellow]c[white]:cpu [yellow]m[white]:mem [yellow]p[white]:pid [yellow]i[white]:io",
 		count, sortLabel,
 	))
-}
-
-// formatRate formats a bytes/sec value as a human-readable rate string
-func formatRate(bytesPerSec float64) string {
-	if bytesPerSec < 1 {
-		return "0 B/s"
-	}
-	const (
-		KB = 1024.0
-		MB = KB * 1024
-		GB = MB * 1024
-	)
-	switch {
-	case bytesPerSec >= GB:
-		return fmt.Sprintf("%.1f G/s", bytesPerSec/GB)
-	case bytesPerSec >= MB:
-		return fmt.Sprintf("%.1f M/s", bytesPerSec/MB)
-	case bytesPerSec >= KB:
-		return fmt.Sprintf("%.1f K/s", bytesPerSec/KB)
-	default:
-		return fmt.Sprintf("%.0f B/s", bytesPerSec)
-	}
 }

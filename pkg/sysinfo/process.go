@@ -144,8 +144,8 @@ func (c *ProcessCollector) CollectContainerProcesses(containerPID uint32) ([]*mo
 
 // CollectProcessTop collects top-like process information with CPU%, IO rate,
 // memory percent, and container-level network IO.
-func (c *ProcessCollector) CollectProcessTop(containerPID uint32, cgroupPath string) (*models.ProcessTop, error) {
-	processes, err := c.CollectContainerProcesses(containerPID)
+func (c *ProcessCollector) CollectProcessTop(containerPID uint32, cgroupPath string, targetPIDs ...int) (*models.ProcessTop, error) {
+	processes, err := c.collectTopProcesses(containerPID, targetPIDs...)
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +176,22 @@ func (c *ProcessCollector) CollectProcessTop(containerPID uint32, cgroupPath str
 	}
 
 	return top, nil
+}
+
+func (c *ProcessCollector) collectTopProcesses(containerPID uint32, targetPIDs ...int) ([]*models.Process, error) {
+	if len(targetPIDs) == 0 || targetPIDs[0] <= 0 {
+		return c.CollectContainerProcesses(containerPID)
+	}
+
+	containerProcRoot := fmt.Sprintf("/proc/%d/root/proc", containerPID)
+	containerProcReader := NewProcReaderWithRoot(containerProcRoot)
+
+	process, err := containerProcReader.ReadProcess(targetPIDs[0])
+	if err != nil {
+		return nil, err
+	}
+
+	return []*models.Process{process}, nil
 }
 
 // BuildProcessTree builds a process tree from a list of processes

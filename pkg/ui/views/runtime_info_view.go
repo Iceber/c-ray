@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/rivo/tview"
 )
@@ -17,19 +16,18 @@ import (
 type RuntimeInfoView struct {
 	*tview.Flex
 
-	rt          runtime.Runtime
-	tree        *tview.TreeView
-	statusBar   *tview.TextView
-	containerID string
-	detail      *models.ContainerDetail
-	mu          sync.Mutex
+	app       *tview.Application
+	tree      *tview.TreeView
+	statusBar *tview.TextView
+	container runtime.Container
+	mu        sync.Mutex
 }
 
 // NewRuntimeInfoView creates a new runtime info view.
-func NewRuntimeInfoView(rt runtime.Runtime) *RuntimeInfoView {
+func NewRuntimeInfoView(app *tview.Application) *RuntimeInfoView {
 	v := &RuntimeInfoView{
 		Flex: tview.NewFlex().SetDirection(tview.FlexRow),
-		rt:   rt,
+		app:  app,
 	}
 
 	v.tree = tview.NewTreeView()
@@ -43,9 +41,7 @@ func NewRuntimeInfoView(rt runtime.Runtime) *RuntimeInfoView {
 		}
 	})
 
-	v.statusBar = tview.NewTextView().
-		SetDynamicColors(true).
-		SetTextAlign(tview.AlignLeft)
+	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
 
 	v.Flex.AddItem(v.tree, 0, 1, true)
 	v.Flex.AddItem(v.statusBar, 1, 0, false)
@@ -53,45 +49,42 @@ func NewRuntimeInfoView(rt runtime.Runtime) *RuntimeInfoView {
 	return v
 }
 
-// SetContainer sets the active container.
-func (v *RuntimeInfoView) SetContainer(containerID string) {
+// SetContainer sets the container handle.
+func (v *RuntimeInfoView) SetContainer(c runtime.Container) {
 	v.mu.Lock()
-	v.containerID = containerID
-	v.detail = nil
+	v.container = c
 	v.mu.Unlock()
-	v.render()
+	v.renderEmpty()
 	v.updateStatusBar()
 }
 
-// Refresh loads runtime metadata.
+// Refresh loads runtime metadata from the container handle.
 func (v *RuntimeInfoView) Refresh(ctx context.Context) error {
 	v.mu.Lock()
-	containerID := v.containerID
+	c := v.container
 	v.mu.Unlock()
-	if strings.TrimSpace(containerID) == "" {
-		v.render()
+
+	if c == nil {
+		v.renderEmpty()
 		return nil
 	}
 
-	detail, err := v.rt.GetContainerRuntimeInfo(ctx, containerID)
+	profile, err := c.Runtime(ctx)
 	if err != nil {
 		return err
 	}
 
-	v.mu.Lock()
-	v.detail = detail
-	v.mu.Unlock()
-	v.render()
+	config, _ := c.Config(ctx)
+	state, _ := c.State(ctx)
+
+	v.render(profile, config, state)
 	v.updateStatusBar()
 	return nil
 }
 
 // HandleInput processes tree interaction.
 func (v *RuntimeInfoView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
-	if event == nil {
-		return nil
-	}
-	if event.Key() == tcell.KeyCtrlC {
+	if event == nil || event.Key() == tcell.KeyCtrlC {
 		return event
 	}
 	switch event.Key() {
@@ -119,22 +112,26 @@ func (v *RuntimeInfoView) GetFocusPrimitive() tview.Primitive {
 	return v.tree
 }
 
-func (v *RuntimeInfoView) render() {
-	v.mu.Lock()
-	detail := v.detail
-	v.mu.Unlock()
-
+func (v *RuntimeInfoView) renderEmpty() {
 	root := tview.NewTreeNode("[aqua::b]Runtime[-:-:-]").SetSelectable(false).SetExpanded(true)
-	if detail == nil {
-		root.AddChild(tview.NewTreeNode("[gray]Refresh to resolve shim, OCI runtime and namespace metadata[-]").SetSelectable(false))
+	root.AddChild(tview.NewTreeNode("[gray]Refresh to resolve shim, OCI runtime and namespace metadata[-]").SetSelectable(false))
+	v.tree.SetRoot(root)
+	v.tree.SetCurrentNode(root)
+}
+
+func (v *RuntimeInfoView) render(runtime *runtime.RuntimeProfile, config *runtime.ContainerConfig, state *runtime.ContainerState) {
+	root := tview.NewTreeNode("[aqua::b]Runtime[-:-:-]").SetSelectable(false).SetExpanded(true)
+
+	if runtime == nil {
+		root.AddChild(tview.NewTreeNode("[gray]Runtime metadata unresolved[-]").SetSelectable(false))
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(root)
 		return
 	}
 
-	root.AddChild(buildRuntimeShimNode(detail))
-	root.AddChild(buildRuntimeOCINode(detail))
-	root.AddChild(buildRuntimeNamespaceNode(detail))
+	root.AddChild(buildShimNodeV1(runtime, state))
+	root.AddChild(buildOCINodeV1(runtime))
+	root.AddChild(buildNamespaceNodeV1(config))
 
 	v.tree.SetRoot(root)
 	v.tree.SetCurrentNode(root)
@@ -162,17 +159,21 @@ func (v *RuntimeInfoView) updateStatusBar() {
 	v.statusBar.SetText(" [white]Runtime:[-] shim, OCI runtime and namespace anchors  |  [yellow]e[white]:toggle  [yellow]a[white]:expand/collapse all")
 }
 
-func buildRuntimeShimNode(detail *models.ContainerDetail) *tview.TreeNode {
+func buildShimNodeV1(runtime *runtime.RuntimeProfile, state *runtime.ContainerState) *tview.TreeNode {
 	node := tview.NewTreeNode("[yellow::b]Shim[-:-:-]").SetSelectable(true).SetExpanded(true)
-	shim := (*models.ShimInfo)(nil)
-	if detail.RuntimeProfile != nil {
-		shim = detail.RuntimeProfile.Shim
+
+	rows := []string{}
+	if state != nil {
+		if state.PID > 0 {
+			rows = append(rows, fmt.Sprintf("Task PID: %d", state.PID))
+		}
+		if state.PPID > 0 {
+			rows = append(rows, fmt.Sprintf("Shim PID: %d", state.PPID))
+		}
 	}
-	rows := []string{
-		fmt.Sprintf("Task PID: %d", detail.PID),
-		fmt.Sprintf("Shim PID: %d", detail.ShimPID),
-	}
-	if shim != nil {
+
+	if runtime.Shim != nil {
+		shim := runtime.Shim
 		if shim.BinaryPath != "" {
 			rows = append(rows, "Binary: "+shim.BinaryPath)
 		}
@@ -186,35 +187,55 @@ func buildRuntimeShimNode(detail *models.ContainerDetail) *tview.TreeNode {
 			rows = append(rows, "Sandbox Bundle: "+shim.SandboxBundleDir)
 		}
 	}
+
+	if runtime.Conmon != nil {
+		conmon := runtime.Conmon
+		if conmon.PID > 0 {
+			rows = append(rows, fmt.Sprintf("Conmon PID: %d", conmon.PID))
+		}
+		if conmon.BinaryPath != "" {
+			rows = append(rows, "Conmon Binary: "+conmon.BinaryPath)
+		}
+		if len(conmon.Cmdline) > 0 {
+			rows = append(rows, "Conmon Command: "+strings.Join(conmon.Cmdline, " "))
+		}
+		if conmon.LogPath != "" {
+			rows = append(rows, "Log Path: "+conmon.LogPath)
+		}
+	}
+
+	if len(rows) == 0 {
+		rows = append(rows, "Shim metadata unresolved")
+	}
 	for _, row := range rows {
 		node.AddChild(tview.NewTreeNode("[gray]  " + row + "[-]").SetSelectable(false))
 	}
 	return node
 }
 
-func buildRuntimeOCINode(detail *models.ContainerDetail) *tview.TreeNode {
+func buildOCINodeV1(runtime *runtime.RuntimeProfile) *tview.TreeNode {
 	node := tview.NewTreeNode("[aqua::b]OCI Runtime[-:-:-]").SetSelectable(true).SetExpanded(true)
-	oci := (*models.OCIInfo)(nil)
-	if detail.RuntimeProfile != nil {
-		oci = detail.RuntimeProfile.OCI
+	oci := runtime.OCI
+	if oci == nil {
+		node.AddChild(tview.NewTreeNode("[gray]  OCI runtime metadata unresolved[-]").SetSelectable(false))
+		return node
 	}
+
 	rows := []string{}
-	if oci != nil {
-		if oci.RuntimeName != "" {
-			rows = append(rows, "Runtime Name: "+oci.RuntimeName)
-		}
-		if oci.RuntimeBinary != "" {
-			rows = append(rows, "Runtime Binary: "+oci.RuntimeBinary)
-		}
-		if oci.BundleDir != "" {
-			rows = append(rows, "Bundle Dir: "+oci.BundleDir)
-		}
-		if oci.StateDir != "" {
-			rows = append(rows, "State Dir: "+oci.StateDir)
-		}
-		if oci.ConfigPath != "" {
-			rows = append(rows, "Config Path: "+oci.ConfigPath)
-		}
+	if oci.RuntimeName != "" {
+		rows = append(rows, "Runtime Name: "+oci.RuntimeName)
+	}
+	if oci.RuntimeBinary != "" {
+		rows = append(rows, "Runtime Binary: "+oci.RuntimeBinary)
+	}
+	if oci.BundleDir != "" {
+		rows = append(rows, "Bundle Dir: "+oci.BundleDir)
+	}
+	if oci.StateDir != "" {
+		rows = append(rows, "State Dir: "+oci.StateDir)
+	}
+	if oci.ConfigPath != "" {
+		rows = append(rows, "Config Path: "+oci.ConfigPath)
 	}
 	if len(rows) == 0 {
 		rows = append(rows, "OCI runtime metadata unresolved")
@@ -225,20 +246,20 @@ func buildRuntimeOCINode(detail *models.ContainerDetail) *tview.TreeNode {
 	return node
 }
 
-func buildRuntimeNamespaceNode(detail *models.ContainerDetail) *tview.TreeNode {
+func buildNamespaceNodeV1(config *runtime.ContainerConfig) *tview.TreeNode {
 	node := tview.NewTreeNode("[aqua::b]Namespace[-:-:-]").SetSelectable(true).SetExpanded(true)
-	if len(detail.Namespaces) == 0 {
+	if config == nil || len(config.Namespaces) == 0 {
 		node.AddChild(tview.NewTreeNode("[gray]  Namespace metadata unresolved[-]").SetSelectable(false))
 		return node
 	}
 
-	keys := make([]string, 0, len(detail.Namespaces))
-	for key := range detail.Namespaces {
-		keys = append(keys, key)
+	keys := make([]string, 0, len(config.Namespaces))
+	for k := range config.Namespaces {
+		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	for _, key := range keys {
-		node.AddChild(tview.NewTreeNode(fmt.Sprintf("[gray]  %s: [white]%s[-]", key, detail.Namespaces[key])).SetSelectable(false))
+	for _, k := range keys {
+		node.AddChild(tview.NewTreeNode(fmt.Sprintf("[gray]  %s: [white]%s[-]", k, config.Namespaces[k])).SetSelectable(false))
 	}
 	return node
 }

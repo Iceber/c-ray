@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/rivo/tview"
 )
@@ -18,24 +17,20 @@ type MountsView struct {
 	*tview.Flex
 
 	app         *tview.Application
-	rt          runtime.Runtime
-	ctx         context.Context
 	tree        *tview.TreeView
 	detailView  *tview.TextView
 	statusBar   *tview.TextView
-	containerID string
-	mounts      []*models.Mount
-	runtimeInfo *models.ContainerDetail
+	container   runtime.Container
+	mounts      []*runtime.Mount
+	runtimePath string // rootfs path for the root mount display
 	mu          sync.Mutex
 }
 
 // NewMountsView creates a new Mounts view.
-func NewMountsView(app *tview.Application, rt runtime.Runtime, ctx context.Context) *MountsView {
+func NewMountsView(app *tview.Application) *MountsView {
 	v := &MountsView{
 		Flex: tview.NewFlex().SetDirection(tview.FlexRow),
 		app:  app,
-		rt:   rt,
-		ctx:  ctx,
 	}
 
 	v.tree = tview.NewTreeView()
@@ -53,63 +48,54 @@ func NewMountsView(app *tview.Application, rt runtime.Runtime, ctx context.Conte
 		v.renderSelectionDetail(node)
 	})
 
-	v.detailView = tview.NewTextView().
-		SetDynamicColors(true).
-		SetWrap(true)
-	v.detailView.SetBorder(true)
-	v.detailView.SetBorderColor(tcell.ColorDarkCyan)
-	v.detailView.SetTitle(" Mount Detail ")
+	v.detailView = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
+	v.detailView.SetBorder(true).SetBorderColor(tcell.ColorDarkCyan).SetTitle(" Mount Detail ")
 
-	v.statusBar = tview.NewTextView().
-		SetDynamicColors(true).
-		SetTextAlign(tview.AlignLeft)
+	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
 
 	v.Flex.AddItem(v.tree, 0, 1, true)
 	v.Flex.AddItem(v.detailView, 6, 0, false)
 	v.Flex.AddItem(v.statusBar, 1, 0, false)
-
-	v.render()
 	v.updateStatusBar()
 	return v
 }
 
-// SetContainer sets the active container.
-func (v *MountsView) SetContainer(containerID string) {
+// SetContainer sets the container handle.
+func (v *MountsView) SetContainer(c runtime.Container) {
 	v.mu.Lock()
-	v.containerID = containerID
+	v.container = c
 	v.mounts = nil
-	v.runtimeInfo = nil
+	v.runtimePath = ""
 	v.mu.Unlock()
 	v.render()
 	v.updateStatusBar()
 }
 
-// SetRuntimeInfo stores runtime context.
-func (v *MountsView) SetRuntimeInfo(detail *models.ContainerDetail) {
-	v.mu.Lock()
-	v.runtimeInfo = detail
-	v.mu.Unlock()
-	v.render()
-}
-
-// Refresh loads the mount list.
+// Refresh loads the mount list from the container handle.
 func (v *MountsView) Refresh(ctx context.Context) error {
 	v.mu.Lock()
-	containerID := v.containerID
+	c := v.container
 	v.mu.Unlock()
 
-	if strings.TrimSpace(containerID) == "" {
+	if c == nil {
 		v.render()
 		return nil
 	}
 
-	mounts, err := v.rt.GetContainerMounts(ctx, containerID)
+	mounts, err := c.Mounts(ctx)
 	if err != nil {
 		return err
 	}
 
+	// Get rootfs path for root mount display.
+	runtimePath := ""
+	if rt, err := c.Runtime(ctx); err == nil && rt != nil && rt.RootFSPath != "" {
+		runtimePath = rt.RootFSPath
+	}
+
 	v.mu.Lock()
 	v.mounts = mounts
+	v.runtimePath = runtimePath
 	v.mu.Unlock()
 	v.render()
 	v.updateStatusBar()
@@ -118,10 +104,7 @@ func (v *MountsView) Refresh(ctx context.Context) error {
 
 // HandleInput processes tree interaction.
 func (v *MountsView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
-	if event == nil {
-		return nil
-	}
-	if event.Key() == tcell.KeyCtrlC {
+	if event == nil || event.Key() == tcell.KeyCtrlC {
 		return event
 	}
 	switch event.Key() {
@@ -153,26 +136,27 @@ func (v *MountsView) GetFocusPrimitive() tview.Primitive {
 
 func (v *MountsView) render() {
 	v.mu.Lock()
-	mounts := append([]*models.Mount(nil), v.mounts...)
-	runtimeInfo := v.runtimeInfo
+	mounts := make([]*runtime.Mount, len(v.mounts))
+	copy(mounts, v.mounts)
+	runtimePath := v.runtimePath
 	v.mu.Unlock()
 
 	root := tview.NewTreeNode("[aqua::b]Mounts[-:-:-]").SetSelectable(false).SetExpanded(true)
 	if len(mounts) == 0 {
-		root.AddChild(tview.NewTreeNode("[gray]Refresh to resolve rootfs, CRI mounts, runtime defaults and live residual mounts[-]").SetSelectable(false))
+		root.AddChild(tview.NewTreeNode("[gray]Refresh to resolve mounts[-]").SetSelectable(false))
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(root)
 		v.renderSelectionDetail(root)
 		return
 	}
 
-	rootMount, criMounts, runtimeMounts, otherMounts := splitMountGroups(mounts)
+	rootMount, criMounts, runtimeMounts, otherMounts := splitMounts(mounts)
 	if rootMount != nil {
-		root.AddChild(buildMountNode(rootMount, runtimeInfo))
+		root.AddChild(buildMountNodeV1(rootMount, runtimePath))
 	}
-	root.AddChild(buildMountGroupNode("CRI Mounts", criMounts, true, runtimeInfo))
-	root.AddChild(buildMountGroupNode("Runtime Mounts", runtimeMounts, false, runtimeInfo))
-	root.AddChild(buildMountGroupNode("Kernel / Other", otherMounts, false, runtimeInfo))
+	root.AddChild(buildMountGroupNodeV1("CRI Mounts", criMounts, true, runtimePath))
+	root.AddChild(buildMountGroupNodeV1("Runtime Mounts", runtimeMounts, false, runtimePath))
+	root.AddChild(buildMountGroupNodeV1("Kernel / Other", otherMounts, false, runtimePath))
 
 	v.tree.SetRoot(root)
 	current := root
@@ -185,23 +169,27 @@ func (v *MountsView) render() {
 
 func (v *MountsView) renderSelectionDetail(node *tview.TreeNode) {
 	if node == nil {
-		v.detailView.SetText(" [gray]Select a mount entry to inspect its source and mount command[-]")
+		v.detailView.SetText(" [gray]Select a mount entry to inspect[-]")
 		return
 	}
-	mount, _ := node.GetReference().(*models.Mount)
+	mount, _ := node.GetReference().(*runtime.Mount)
 	if mount == nil {
-		v.detailView.SetText(" [gray]Select a concrete mount entry to open details below[-]")
+		v.detailView.SetText(" [gray]Select a concrete mount entry[-]")
 		return
 	}
 
+	v.mu.Lock()
+	runtimePath := v.runtimePath
+	v.mu.Unlock()
+
 	v.detailView.SetText(fmt.Sprintf(
 		" [gray]Target:[-] [white]%s[-]\n [gray]Source:[-] [white]%s[-]\n [gray]Type:[-] [white]%s[-]   [gray]Origin:[-] [white]%s[-]   [gray]State:[-] [white]%s[-]\n [gray]Command:[-] [white]%s[-]",
-		fallbackMountValue(mount.Destination),
-		fallbackMountValue(displayMountSource(mount, v.runtimeInfo)),
-		fallbackMountValue(mount.Type),
-		fallbackMountValue(mountOriginLabel(mount.Origin)),
-		fallbackMountValue(mountStateLabel(mount.State)),
-		buildMountCommand(mount, v.runtimeInfo),
+		fallbackMountField(mount.Destination),
+		fallbackMountField(displaySource(mount, runtimePath)),
+		fallbackMountField(mount.Type),
+		fallbackMountField(mountOriginStr(mount.Origin)),
+		fallbackMountField(mountStateStr(mount.State)),
+		buildMountCmd(mount, runtimePath),
 	))
 }
 
@@ -225,148 +213,120 @@ func (v *MountsView) expandAll() {
 }
 
 func (v *MountsView) updateStatusBar() {
-	v.statusBar.SetText(" [white]Mounts:[-] rootfs, CRI mounts, runtime defaults and live extras  |  [yellow]e[white]:toggle  [yellow]a[white]:expand/collapse all")
+	v.statusBar.SetText(" [white]Mounts:[-] rootfs, CRI, runtime defaults and live extras  |  [yellow]e[white]:toggle  [yellow]a[white]:expand/collapse all")
 }
 
-func splitMountGroups(mounts []*models.Mount) (*models.Mount, []*models.Mount, []*models.Mount, []*models.Mount) {
-	var rootMount *models.Mount
-	criMounts := []*models.Mount{}
-	runtimeMounts := []*models.Mount{}
-	otherMounts := []*models.Mount{}
+// --- Helpers ---
 
-	for _, mount := range mounts {
-		if mount == nil {
+func splitMounts(mounts []*runtime.Mount) (*runtime.Mount, []*runtime.Mount, []*runtime.Mount, []*runtime.Mount) {
+	var rootMount *runtime.Mount
+	var criMounts, runtimeMounts, other []*runtime.Mount
+	for _, m := range mounts {
+		if m == nil {
 			continue
 		}
-		if mount.Destination == "/" && rootMount == nil {
-			rootMount = mount
+		if m.Destination == "/" && rootMount == nil {
+			rootMount = m
 			continue
 		}
-		switch mount.Origin {
-		case models.MountOriginCRI:
-			criMounts = append(criMounts, mount)
-		case models.MountOriginRuntimeDefault:
-			runtimeMounts = append(runtimeMounts, mount)
+		switch m.Origin {
+		case runtime.MountOriginCRI:
+			criMounts = append(criMounts, m)
+		case runtime.MountOriginRuntimeDefault:
+			runtimeMounts = append(runtimeMounts, m)
 		default:
-			otherMounts = append(otherMounts, mount)
+			other = append(other, m)
 		}
 	}
-
-	sortMountGroup(criMounts)
-	sortMountGroup(runtimeMounts)
-	sortMountGroup(otherMounts)
-	return rootMount, criMounts, runtimeMounts, otherMounts
+	sortMounts(criMounts)
+	sortMounts(runtimeMounts)
+	sortMounts(other)
+	return rootMount, criMounts, runtimeMounts, other
 }
 
-func sortMountGroup(mounts []*models.Mount) {
+func sortMounts(mounts []*runtime.Mount) {
 	sort.SliceStable(mounts, func(i, j int) bool {
-		left := mountSortKey(mounts[i])
-		right := mountSortKey(mounts[j])
-		return left < right
+		return mountSortKey(mounts[i]) < mountSortKey(mounts[j])
 	})
 }
 
-func mountSortKey(mount *models.Mount) string {
-	if mount == nil {
+func mountSortKey(m *runtime.Mount) string {
+	if m == nil {
 		return ""
 	}
 	prefix := "1"
-	if strings.HasPrefix(mount.Destination, "/etc") {
+	if strings.HasPrefix(m.Destination, "/etc") {
 		prefix = "0"
 	}
-	return prefix + ":" + mount.Destination + ":" + preferredMountSource(mount)
+	return prefix + ":" + m.Destination + ":" + preferredSource(m)
 }
 
-func buildMountGroupNode(title string, mounts []*models.Mount, expanded bool, detail *models.ContainerDetail) *tview.TreeNode {
+func buildMountGroupNodeV1(title string, mounts []*runtime.Mount, expanded bool, runtimePath string) *tview.TreeNode {
 	label := fmt.Sprintf("[aqua::b]%s (%d)[-:-:-]", title, len(mounts))
 	node := tview.NewTreeNode(label).SetSelectable(true).SetExpanded(expanded)
 	if len(mounts) == 0 {
 		node.AddChild(tview.NewTreeNode("[gray]No entries[-]").SetSelectable(false))
 		return node
 	}
-	for _, mount := range mounts {
-		node.AddChild(buildMountNode(mount, detail))
+	for _, m := range mounts {
+		node.AddChild(buildMountNodeV1(m, runtimePath))
 	}
 	return node
 }
 
-func buildMountNode(mount *models.Mount, detail *models.ContainerDetail) *tview.TreeNode {
-	target := cropMountColumn(fallbackMountValue(mount.Destination), 28)
-	source := cropMountColumn(fallbackMountValue(displayMountSource(mount, detail)), 44)
+func buildMountNodeV1(m *runtime.Mount, runtimePath string) *tview.TreeNode {
+	target := cropColumn(fallbackMountField(m.Destination), 28)
+	source := cropColumn(fallbackMountField(displaySource(m, runtimePath)), 44)
 	label := fmt.Sprintf("%-28s  %s", target, source)
-	node := tview.NewTreeNode(label).SetReference(mount).SetSelectable(true).SetExpanded(false)
-	node.AddChild(tview.NewTreeNode("[gray]  Type: [white]" + fallbackMountValue(mount.Type) + "[-]").SetSelectable(false))
-	node.AddChild(tview.NewTreeNode("[gray]  Source: [white]" + fallbackMountValue(displayMountSource(mount, detail)) + "[-]").SetSelectable(false))
-	if mount.HostPath != "" {
-		node.AddChild(tview.NewTreeNode("[gray]  Host Path: [white]" + mount.HostPath + "[-]").SetSelectable(false))
+	node := tview.NewTreeNode(label).SetReference(m).SetSelectable(true).SetExpanded(false)
+	node.AddChild(tview.NewTreeNode("[gray]  Type: [white]" + fallbackMountField(m.Type) + "[-]").SetSelectable(false))
+	node.AddChild(tview.NewTreeNode("[gray]  Source: [white]" + fallbackMountField(displaySource(m, runtimePath)) + "[-]").SetSelectable(false))
+	if m.HostPath != "" {
+		node.AddChild(tview.NewTreeNode("[gray]  Host Path: [white]" + m.HostPath + "[-]").SetSelectable(false))
 	}
-	if mount.LiveSource != "" && mount.LiveSource != mount.Source {
-		node.AddChild(tview.NewTreeNode("[gray]  Live Source: [white]" + mount.LiveSource + "[-]").SetSelectable(false))
+	if m.LiveSource != "" && m.LiveSource != m.Source {
+		node.AddChild(tview.NewTreeNode("[gray]  Live Source: [white]" + m.LiveSource + "[-]").SetSelectable(false))
 	}
-	node.AddChild(tview.NewTreeNode("[gray]  Options: [white]" + joinMountOptions(mount.Options) + "[-]").SetSelectable(false))
-	node.AddChild(tview.NewTreeNode("[gray]  Origin: [white]" + mountOriginLabel(mount.Origin) + "[-]").SetSelectable(false))
-	node.AddChild(tview.NewTreeNode("[gray]  State: [white]" + mountStateLabel(mount.State) + "[-]").SetSelectable(false))
-	if mount.Note != "" {
-		node.AddChild(tview.NewTreeNode("[gray]  Note: [white]" + mount.Note + "[-]").SetSelectable(false))
+	node.AddChild(tview.NewTreeNode("[gray]  Options: [white]" + joinOpts(m.Options) + "[-]").SetSelectable(false))
+	node.AddChild(tview.NewTreeNode("[gray]  Origin: [white]" + mountOriginStr(m.Origin) + "[-]").SetSelectable(false))
+	node.AddChild(tview.NewTreeNode("[gray]  State: [white]" + mountStateStr(m.State) + "[-]").SetSelectable(false))
+	if m.Note != "" {
+		node.AddChild(tview.NewTreeNode("[gray]  Note: [white]" + m.Note + "[-]").SetSelectable(false))
 	}
 	return node
 }
 
-func preferredMountSource(mount *models.Mount) string {
-	if mount == nil {
+func preferredSource(m *runtime.Mount) string {
+	if m == nil {
 		return ""
 	}
-	if strings.TrimSpace(mount.HostPath) != "" {
-		return mount.HostPath
+	if strings.TrimSpace(m.HostPath) != "" {
+		return m.HostPath
 	}
-	if strings.TrimSpace(mount.LiveSource) != "" {
-		return mount.LiveSource
+	if strings.TrimSpace(m.LiveSource) != "" {
+		return m.LiveSource
 	}
-	return mount.Source
+	return m.Source
 }
 
-func displayMountSource(mount *models.Mount, detail *models.ContainerDetail) string {
-	if mount == nil {
+func displaySource(m *runtime.Mount, runtimePath string) string {
+	if m == nil {
 		return ""
 	}
-	if mount.Destination == "/" {
-		if rootfsPath := resolveRootfsMountPath(detail); strings.TrimSpace(rootfsPath) != "" {
-			return rootfsPath
-		}
+	if m.Destination == "/" && strings.TrimSpace(runtimePath) != "" {
+		return runtimePath
 	}
-	return preferredMountSource(mount)
+	return preferredSource(m)
 }
 
-func resolveRootfsMountPath(detail *models.ContainerDetail) string {
-	if detail == nil {
-		return ""
-	}
-	if detail.RuntimeProfile != nil && detail.RuntimeProfile.RootFS != nil {
-		rootfs := detail.RuntimeProfile.RootFS
-		switch {
-		case strings.TrimSpace(rootfs.MountRootFSPath) != "":
-			return rootfs.MountRootFSPath
-		case strings.TrimSpace(rootfs.BundleRootFSPath) != "":
-			return rootfs.BundleRootFSPath
-		}
-	}
-	if strings.TrimSpace(detail.WritableLayerPath) != "" {
-		return detail.WritableLayerPath
-	}
-	if strings.TrimSpace(detail.ReadOnlyLayerPath) != "" {
-		return detail.ReadOnlyLayerPath
-	}
-	return ""
-}
-
-func fallbackMountValue(value string) string {
+func fallbackMountField(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return "-"
 	}
 	return value
 }
 
-func cropMountColumn(value string, width int) string {
+func cropColumn(value string, width int) string {
 	if len(value) <= width {
 		return value
 	}
@@ -376,50 +336,50 @@ func cropMountColumn(value string, width int) string {
 	return value[:width-3] + "..."
 }
 
-func joinMountOptions(options []string) string {
-	if len(options) == 0 {
+func joinOpts(opts []string) string {
+	if len(opts) == 0 {
 		return "-"
 	}
-	return strings.Join(options, ",")
+	return strings.Join(opts, ",")
 }
 
-func mountOriginLabel(origin models.MountOrigin) string {
+func mountOriginStr(origin runtime.MountOrigin) string {
 	switch origin {
-	case models.MountOriginCRI:
+	case runtime.MountOriginCRI:
 		return "CRI"
-	case models.MountOriginRuntimeDefault:
+	case runtime.MountOriginRuntimeDefault:
 		return "runtime-default"
-	case models.MountOriginLiveExtra:
+	case runtime.MountOriginLiveExtra:
 		return "kernel/live-extra"
 	default:
 		return string(origin)
 	}
 }
 
-func mountStateLabel(state models.MountState) string {
+func mountStateStr(state runtime.MountState) string {
 	switch state {
-	case models.MountStateDeclaredLive:
+	case runtime.MountStateDeclaredLive:
 		return "declared + live"
-	case models.MountStateDeclaredOnly:
+	case runtime.MountStateDeclaredOnly:
 		return "declared only"
-	case models.MountStateLiveOnly:
+	case runtime.MountStateLiveOnly:
 		return "live only"
 	default:
 		return string(state)
 	}
 }
 
-func buildMountCommand(mount *models.Mount, detail *models.ContainerDetail) string {
-	if mount == nil {
+func buildMountCmd(m *runtime.Mount, runtimePath string) string {
+	if m == nil {
 		return "-"
 	}
 	args := []string{"mount"}
-	if mount.Type != "" {
-		args = append(args, "-t", mount.Type)
+	if m.Type != "" {
+		args = append(args, "-t", m.Type)
 	}
-	if len(mount.Options) > 0 {
-		args = append(args, "-o", strings.Join(mount.Options, ","))
+	if len(m.Options) > 0 {
+		args = append(args, "-o", strings.Join(m.Options, ","))
 	}
-	args = append(args, fallbackMountValue(displayMountSource(mount, detail)), fallbackMountValue(mount.Destination))
+	args = append(args, fallbackMountField(displaySource(m, runtimePath)), fallbackMountField(m.Destination))
 	return strings.Join(args, " ")
 }

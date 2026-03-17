@@ -1,57 +1,96 @@
 package runtime
 
-import (
-	"context"
+import "context"
 
-	"github.com/icebergu/c-ray/pkg/models"
-)
-
-// Runtime defines the interface for container runtime operations
-// This abstraction allows supporting multiple runtimes (containerd, cri-o, docker)
+// ObjectRuntime is the decoupled runtime surface for future call sites.
+//
+// Instead of repeatedly passing container or image IDs back into one large
+// service, callers first resolve stable resource handles and then invoke
+// resource-scoped methods on those handles. This shape allows implementations
+// to cache immutable metadata such as OCI spec, environment, image references,
+// namespace maps, snapshotter identity, or image config behind each handle,
+// while keeping live data retrieval explicit on methods like RuntimeInfo,
+// Processes, Top, and Mounts.
 type Runtime interface {
-	// Connect establishes connection to the runtime
 	Connect(ctx context.Context) error
-
-	// Close closes the connection to the runtime
 	Close() error
 
-	// ListContainers returns all containers
-	ListContainers(ctx context.Context) ([]*models.Container, error)
+	ContainerRuntime
+	ImageRuntime
+	PodRuntime
+}
 
-	// GetContainer returns a specific container by ID
-	GetContainer(ctx context.Context, id string) (*models.Container, error)
+// ContainerRuntime resolves container handles.
+type ContainerRuntime interface {
+	ListContainers(ctx context.Context) ([]Container, error)
+	GetContainer(ctx context.Context, id string) (Container, error)
+}
 
-	// GetContainerDetail returns overview information for the container detail page
-	GetContainerDetail(ctx context.Context, id string) (*models.ContainerDetail, error)
+// ImageRuntime resolves image handles.
+type ImageRuntime interface {
+	ListImages(ctx context.Context) ([]Image, error)
+	GetImage(ctx context.Context, ref string) (Image, error)
+}
 
-	// GetContainerRuntimeInfo returns runtime-specific detail for on-demand subviews
-	GetContainerRuntimeInfo(ctx context.Context, id string) (*models.ContainerDetail, error)
+// PodRuntime resolves pod handles.
+type PodRuntime interface {
+	ListPods(ctx context.Context) ([]Pod, error)
+}
 
-	// ListImages returns all images
-	ListImages(ctx context.Context) ([]*models.Image, error)
+// Container is a resource handle bound to one container identity.
+//
+// Metadata and State are intentionally split so implementations can cache
+// immutable or rarely-changing metadata while keeping live process- and
+// runtime-state retrieval explicit.
+type Container interface {
+	ID() string
 
-	// GetImage returns a specific image by name or digest
-	GetImage(ctx context.Context, ref string) (*models.Image, error)
+	CRIInfo()
+	OCISepc()
 
-	// GetImageLayers returns detailed layer information for an image (from top to base)
-	// snapshotter is the name of the snapshotter to check for layer existence (e.g., "overlayfs", "native")
-	// rwSnapshotKey is optional; if provided, layer paths are resolved from the RW layer's mount info
-	GetImageLayers(ctx context.Context, imageID string, snapshotter string, rwSnapshotKey string) ([]*models.ImageLayer, error)
+	Info(ctx context.Context) (*ContainerInfo, error)
+	Config(ctx context.Context) (*ContainerConfig, error)
 
-	// GetImageConfigInfo returns metadata about the image config
-	GetImageConfigInfo(ctx context.Context, imageID string) (*models.ImageConfigInfo, error)
+	Network(ctx context.Context) (*ContainerNetworkState, error)
+	Storage(ctx context.Context) (*ContainerStorage, error)
 
-	// ListPods returns all pods (extracted from container labels)
-	ListPods(ctx context.Context) ([]*models.Pod, error)
+	Mounts(ctx context.Context) ([]*Mount, error)
+	Runtime(ctx context.Context) (*RuntimeProfile, error)
 
-	// GetContainerProcesses returns process information for a container
-	GetContainerProcesses(ctx context.Context, id string) ([]*models.Process, error)
+	State(ctx context.Context) (*ContainerState, error)
 
-	// GetContainerTop returns top-like process information
-	GetContainerTop(ctx context.Context, id string) (*models.ProcessTop, error)
+	RWLayerStats(ctx context.Context) (ContainerRWLayerStats, error)
 
-	// GetContainerMounts returns mount information for a container
-	GetContainerMounts(ctx context.Context, id string) ([]*models.Mount, error)
+	Processes(ctx context.Context) ([]*Process, error)
+	ProcessStats(ctx context.Context) (*ProcessStats, error)
+	GetProcessStats(ctx context.Context, pid string) (*ProcessStats, error)
+
+	Image(ctx context.Context) (Image, error)
+}
+
+// Image is a resource handle bound to one image reference or digest.
+type Image interface {
+	Ref() string
+	Info(ctx context.Context) (*ImageInfo, error)
+	Config(ctx context.Context) (*ImageConfigInfo, error)
+	Layers(ctx context.Context, query LayerQuery) ([]*ImageLayer, error)
+}
+
+// Pod is a resource handle bound to one pod identity.
+type Pod interface {
+	UID() string
+	Info(ctx context.Context) (*PodInfo, error)
+	Containers(ctx context.Context) ([]Container, error)
+}
+
+// LayerQuery controls how image layer paths are resolved.
+type LayerQuery struct {
+	// Snapshotter selects the snapshotter to inspect, for example overlayfs.
+	Snapshotter string
+
+	// RWSnapshotKey optionally lets the implementation resolve layer paths from
+	// the container's writable layer mount context.
+	RWSnapshotKey string
 }
 
 // Config contains runtime configuration
@@ -64,4 +103,12 @@ type Config struct {
 
 	// Timeout for operations
 	Timeout int // seconds
+
+	// StorageRoot is the graph root for containers/storage (CRI-O).
+	// Default: /var/lib/containers/storage
+	StorageRoot string
+
+	// StorageRunRoot is the run root for containers/storage (CRI-O).
+	// Default: /run/containers/storage
+	StorageRunRoot string
 }

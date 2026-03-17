@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/rivo/tview"
 )
@@ -27,11 +26,11 @@ type ContainerDetailView struct {
 	*tview.Flex
 
 	app *tview.Application
-	rt  runtime.Runtime
 	ctx context.Context
 
-	containerID string
-	detail      *models.ContainerDetail
+	container   runtime.Container
+	info        *runtime.ContainerInfo
+	state       *runtime.ContainerState
 	refreshedAt time.Time
 
 	headerLine1 *tview.TextView
@@ -52,15 +51,13 @@ type ContainerDetailView struct {
 }
 
 // NewContainerDetailView creates a new container detail view.
-func NewContainerDetailView(app *tview.Application, rt runtime.Runtime, ctx context.Context) *ContainerDetailView {
+func NewContainerDetailView(app *tview.Application, ctx context.Context) *ContainerDetailView {
 	v := &ContainerDetailView{
 		Flex:      tview.NewFlex().SetDirection(tview.FlexRow),
 		app:       app,
-		rt:        rt,
 		ctx:       ctx,
 		activeTab: DetailTabSummary,
 	}
-
 	v.setupLayout()
 	return v
 }
@@ -78,10 +75,10 @@ func (v *ContainerDetailView) setupLayout() {
 	v.tabBar.SetBackgroundColor(tcell.ColorDarkSlateGray)
 
 	v.summaryView = NewDetailSummaryView(v.app)
-	v.processesView = NewProcessesView(v.app, v.rt, v.ctx)
-	v.filesystemView = NewStorageView(v.app, v.rt, v.ctx)
-	v.runtimeView = NewRuntimeInfoView(v.rt)
-	v.networkView = NewNetworkInfoView(v.rt)
+	v.processesView = NewProcessesView(v.app, v.ctx)
+	v.filesystemView = NewStorageView(v.app, v.ctx)
+	v.runtimeView = NewRuntimeInfoView(v.app)
+	v.networkView = NewNetworkInfoView(v.app)
 
 	v.content = tview.NewPages()
 	v.content.AddPage("summary", v.summaryView, true, true)
@@ -102,19 +99,18 @@ func (v *ContainerDetailView) setupLayout() {
 	v.updateStatusBar()
 }
 
-// SetContainer sets the container to display and loads its details.
-func (v *ContainerDetailView) SetContainer(containerID string) {
-	v.containerID = containerID
-	v.detail = nil
+// SetContainer sets the container handle to display and loads initial data.
+func (v *ContainerDetailView) SetContainer(c runtime.Container) {
+	v.container = c
+	v.info = nil
+	v.state = nil
 	v.refreshedAt = time.Time{}
 
-	v.summaryView.SetDetail(nil)
-	v.processesView.SetContainer(containerID)
-	v.processesView.SetDetail(nil)
-	v.filesystemView.SetContainer(containerID)
-	v.filesystemView.SetDetail(nil)
-	v.runtimeView.SetContainer(containerID)
-	v.networkView.SetContainer(containerID)
+	v.summaryView.SetContainer(c)
+	v.processesView.SetContainer(c)
+	v.filesystemView.SetContainer(c)
+	v.runtimeView.SetContainer(c)
+	v.networkView.SetContainer(c)
 
 	queueUpdateDraw(v.app, func() {
 		v.renderHeader()
@@ -150,91 +146,74 @@ func (v *ContainerDetailView) GetFocusPrimitive() tview.Primitive {
 	}
 }
 
-// Refresh loads and displays container detail data.
+// Refresh loads header data and refreshes the active tab.
 func (v *ContainerDetailView) Refresh() {
-	if v.containerID == "" {
+	if v.container == nil {
 		return
 	}
 
-	detail, err := v.rt.GetContainerDetail(v.ctx, v.containerID)
+	info, err := v.container.Info(v.ctx)
 	if err != nil {
 		queueUpdateDraw(v.app, func() {
-			v.headerLine1.SetText(fmt.Sprintf(" [red]Failed to load container detail: %v[-]", err))
+			v.headerLine1.SetText(fmt.Sprintf(" [red]Failed to load container: %v[-]", err))
 			v.headerLine2.SetText(" ")
 			v.contextLine.SetText(" ")
 		})
 		return
 	}
 
-	v.enrichDetail(detail)
+	state, _ := v.container.State(v.ctx)
 
-	v.detail = detail
+	v.info = info
+	v.state = state
 	v.refreshedAt = time.Now()
-	v.summaryView.SetDetail(detail)
-	v.processesView.SetDetail(detail)
-	v.filesystemView.SetDetail(detail)
 
 	queueUpdateDraw(v.app, func() {
 		v.renderHeader()
 		v.updateStatusBar()
 	})
+
+	v.refreshActiveTab()
 }
 
-func (v *ContainerDetailView) enrichDetail(detail *models.ContainerDetail) {
-	if detail == nil {
-		return
-	}
-
-	if runtimeDetail, err := v.rt.GetContainerRuntimeInfo(v.ctx, v.containerID); err == nil && runtimeDetail != nil {
-		mergeRuntimeDetail(detail, runtimeDetail)
-	}
-
-	imageRef := detail.Image
-	if imageRef == "" {
-		imageRef = detail.ImageName
-	}
-	if imageRef == "" {
-		return
-	}
-
-	if image, err := v.rt.GetImage(v.ctx, imageRef); err == nil && image != nil {
-		if detail.ImageName == "" {
-			detail.ImageName = image.Name
-		}
-		if detail.ImageID == "" {
-			detail.ImageID = image.Digest
-		}
-	}
-
-	if configInfo, err := v.rt.GetImageConfigInfo(v.ctx, imageRef); err == nil && configInfo != nil {
-		detail.ImageConfig = configInfo
+func (v *ContainerDetailView) refreshActiveTab() {
+	switch v.activeTab {
+	case DetailTabSummary:
+		v.summaryView.Refresh(v.ctx)
+	case DetailTabProcesses:
+		v.processesView.Refresh(v.ctx)
+	case DetailTabFilesystem:
+		v.filesystemView.Refresh(v.ctx)
+	case DetailTabRuntime:
+		v.runtimeView.Refresh(v.ctx)
+	case DetailTabNetwork:
+		v.networkView.Refresh(v.ctx)
 	}
 }
 
 func (v *ContainerDetailView) renderHeader() {
-	if v.detail == nil {
+	if v.info == nil {
 		v.headerLine1.SetText(" [gray]Loading container detail...[-]")
 		v.headerLine2.SetText(" ")
 		v.contextLine.SetText(" ")
 		return
 	}
 
-	name := v.detail.Name
+	name := v.info.Name
 	if name == "" {
-		name = shortID(v.detail.ID)
+		name = shortID(v.info.ID)
 	}
 
 	v.headerLine1.SetText(fmt.Sprintf(
 		" [white::b]%s[-:-:-] [gray](%s)[-]   %s   [gray]Created[-] %s",
-		name,
-		shortID(v.detail.ID),
-		detailRuntimeHeadline(v.detail),
-		detailTimeLabel(v.detail.CreatedAt),
+		name, shortID(v.info.ID), detailStateHeadline(v.info, v.state),
+		detailTimeLabel(v.info.CreatedAt),
 	))
-	v.headerLine2.SetText(" " + detailSecondaryHeadline(v.detail))
+	v.headerLine2.SetText(" " + detailSecondaryLine(v.state))
 
-	if v.detail.PodNamespace != "" || v.detail.PodName != "" {
-		v.contextLine.SetText(fmt.Sprintf(" [gray]Pod[-] [white]%s/%s[-]", fallbackValue(v.detail.PodNamespace, "?"), fallbackValue(v.detail.PodName, "?")))
+	if v.info.PodNamespace != "" || v.info.PodName != "" {
+		v.contextLine.SetText(fmt.Sprintf(" [gray]Pod[-] [white]%s/%s[-]",
+			fallbackValue(v.info.PodNamespace, "?"), fallbackValue(v.info.PodName, "?")))
 	} else {
 		v.contextLine.SetText(" ")
 	}
@@ -242,10 +221,7 @@ func (v *ContainerDetailView) renderHeader() {
 
 // HandleInput processes key events for the detail view.
 func (v *ContainerDetailView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
-	if event.Key() == tcell.KeyCtrlC {
-		return event
-	}
-	if event.Rune() == 'Q' {
+	if event.Key() == tcell.KeyCtrlC || event.Rune() == 'Q' {
 		return event
 	}
 
@@ -273,15 +249,6 @@ func (v *ContainerDetailView) HandleInput(event *tcell.EventKey) *tcell.EventKey
 		return nil
 	case 'r', 'R':
 		go v.Refresh()
-		if v.activeTab == DetailTabProcesses {
-			go v.processesView.Refresh(v.ctx)
-		} else if v.activeTab == DetailTabFilesystem {
-			go v.filesystemView.Refresh(v.ctx)
-		} else if v.activeTab == DetailTabRuntime {
-			go v.runtimeView.Refresh(v.ctx)
-		} else if v.activeTab == DetailTabNetwork {
-			go v.networkView.Refresh(v.ctx)
-		}
 		return nil
 	case '1':
 		v.switchTab(DetailTabSummary)
@@ -300,6 +267,7 @@ func (v *ContainerDetailView) HandleInput(event *tcell.EventKey) *tcell.EventKey
 		return nil
 	}
 
+	// Delegate to active tab.
 	switch v.activeTab {
 	case DetailTabProcesses:
 		return v.processesView.HandleInput(event)
@@ -323,6 +291,7 @@ func (v *ContainerDetailView) switchTab(tab DetailTab) {
 	switch tab {
 	case DetailTabSummary:
 		v.content.SwitchToPage("summary")
+		go v.summaryView.Refresh(v.ctx)
 		v.app.SetFocus(v.summaryView.GetFocusPrimitive())
 	case DetailTabProcesses:
 		v.content.SwitchToPage("processes")
@@ -358,7 +327,6 @@ func (v *ContainerDetailView) updateTabBar() {
 		{"Runtime", "4"},
 		{"Network", "5"},
 	}
-
 	text := " "
 	for i, tab := range tabs {
 		if DetailTab(i) == v.activeTab {
@@ -372,33 +340,48 @@ func (v *ContainerDetailView) updateTabBar() {
 
 func (v *ContainerDetailView) updateStatusBar() {
 	text := " [yellow]Esc/q[white]:back  [yellow]1-5[white]:pages  [yellow]Tab[white]:next page  [yellow]r[white]:refresh"
-	if v.activeTab == DetailTabProcesses {
-		text += "  [yellow]s/g/t[white]:process tabs  [yellow][/[white]]:cycle"
-	} else if v.activeTab == DetailTabFilesystem {
+	switch v.activeTab {
+	case DetailTabProcesses:
+		text += "  [yellow]s/g/t[white]:process tabs  [yellow][/][white]:cycle"
+	case DetailTabFilesystem:
 		text += "  [yellow]m/l[white]:filesystem tabs"
-	} else if v.activeTab == DetailTabRuntime || v.activeTab == DetailTabNetwork {
+	case DetailTabRuntime, DetailTabNetwork:
 		text += "  [yellow]e[white]:toggle  [yellow]a[white]:expand/collapse"
 	}
 	v.statusBar.SetText(text)
 }
 
-func detailRuntimeHeadline(detail *models.ContainerDetail) string {
-	switch detail.Status {
-	case models.ContainerStatusRunning:
-		if detail.PID > 0 {
-			return fmt.Sprintf("[green]PID %d[-]", detail.PID)
+// --- Header helpers ---
+
+func detailStateHeadline(info *runtime.ContainerInfo, state *runtime.ContainerState) string {
+	status := info.Status
+	if state != nil {
+		status = state.Status
+	}
+	switch status {
+	case runtime.ContainerStatusRunning:
+		pid := info.PID
+		if state != nil && state.PID > 0 {
+			pid = state.PID
+		}
+		if pid > 0 {
+			return fmt.Sprintf("[green]PID %d[-]", pid)
 		}
 		return "[green]Running[-]"
-	case models.ContainerStatusStopped:
-		if detail.ExitCode != nil {
-			return fmt.Sprintf("[red]Exit %d[-]", *detail.ExitCode)
+	case runtime.ContainerStatusStopped:
+		if state != nil && state.ExitCode != nil {
+			return fmt.Sprintf("[red]Exit %d[-]", *state.ExitCode)
 		}
 		return "[red]Exit unknown[-]"
-	case models.ContainerStatusCreated:
+	case runtime.ContainerStatusCreated:
 		return "[darkcyan]Created[-]"
-	case models.ContainerStatusPaused:
-		if detail.PID > 0 {
-			return fmt.Sprintf("[yellow]Paused PID %d[-]", detail.PID)
+	case runtime.ContainerStatusPaused:
+		pid := info.PID
+		if state != nil && state.PID > 0 {
+			pid = state.PID
+		}
+		if pid > 0 {
+			return fmt.Sprintf("[yellow]Paused PID %d[-]", pid)
 		}
 		return "[yellow]Paused[-]"
 	default:
@@ -406,27 +389,30 @@ func detailRuntimeHeadline(detail *models.ContainerDetail) string {
 	}
 }
 
-func detailSecondaryHeadline(detail *models.ContainerDetail) string {
-	switch detail.Status {
-	case models.ContainerStatusRunning:
-		if !detail.StartedAt.IsZero() {
-			return fmt.Sprintf("Started %s", detailTimeLabel(detail.StartedAt))
+func detailSecondaryLine(state *runtime.ContainerState) string {
+	if state == nil {
+		return "State unknown"
+	}
+	switch state.Status {
+	case runtime.ContainerStatusRunning:
+		if !state.StartedAt.IsZero() {
+			return fmt.Sprintf("Started %s", detailTimeLabel(state.StartedAt))
 		}
 		return "Started unknown"
-	case models.ContainerStatusStopped:
+	case runtime.ContainerStatusStopped:
 		exited := "Exited time unknown"
-		if !detail.ExitedAt.IsZero() {
-			exited = fmt.Sprintf("Exited %s", detailTimeLabel(detail.ExitedAt))
+		if !state.ExitedAt.IsZero() {
+			exited = fmt.Sprintf("Exited %s", detailTimeLabel(state.ExitedAt))
 		}
-		if detail.ExitReason != "" {
-			return exited + "  Reason " + detail.ExitReason
+		if state.ExitReason != "" {
+			return exited + "  Reason " + state.ExitReason
 		}
 		return exited + "  Reason unknown"
-	case models.ContainerStatusCreated:
+	case runtime.ContainerStatusCreated:
 		return "Not started"
-	case models.ContainerStatusPaused:
-		if !detail.StartedAt.IsZero() {
-			return fmt.Sprintf("Paused after start %s", detailTimeLabel(detail.StartedAt))
+	case runtime.ContainerStatusPaused:
+		if !state.StartedAt.IsZero() {
+			return fmt.Sprintf("Paused after start %s", detailTimeLabel(state.StartedAt))
 		}
 		return "Paused"
 	default:
@@ -439,142 +425,4 @@ func detailTimeLabel(ts time.Time) string {
 		return "unknown"
 	}
 	return fmt.Sprintf("%s ago", formatAge(ts))
-}
-
-func fallbackValue(value string, fallback string) string {
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
-func shortID(value string) string {
-	if value == "" {
-		return "unknown"
-	}
-	if len(value) <= 12 {
-		return value
-	}
-	return value[:12]
-}
-
-func truncateForCard(value string, width int) string {
-	if len(value) <= width {
-		return value
-	}
-	if width <= 3 {
-		return value[:width]
-	}
-	return value[:width-3] + "..."
-}
-
-func mergeRuntimeDetail(base *models.ContainerDetail, runtimeDetail *models.ContainerDetail) {
-	if base == nil || runtimeDetail == nil {
-		return
-	}
-
-	if base.ImageName == "" {
-		base.ImageName = runtimeDetail.ImageName
-	}
-	if base.ImageID == "" {
-		base.ImageID = runtimeDetail.ImageID
-	}
-	if base.ImageConfig == nil {
-		base.ImageConfig = runtimeDetail.ImageConfig
-	}
-	if base.SnapshotKey == "" {
-		base.SnapshotKey = runtimeDetail.SnapshotKey
-	}
-	if base.Snapshotter == "" {
-		base.Snapshotter = runtimeDetail.Snapshotter
-	}
-	if base.CGroupPath == "" {
-		base.CGroupPath = runtimeDetail.CGroupPath
-	}
-	if base.CGroupVersion == 0 {
-		base.CGroupVersion = runtimeDetail.CGroupVersion
-	}
-	if base.CGroupLimits == nil {
-		base.CGroupLimits = runtimeDetail.CGroupLimits
-	}
-	if base.RuntimeProfile == nil {
-		base.RuntimeProfile = runtimeDetail.RuntimeProfile
-	}
-	if base.PodNetwork == nil {
-		base.PodNetwork = runtimeDetail.PodNetwork
-	}
-	if base.Namespaces == nil {
-		base.Namespaces = runtimeDetail.Namespaces
-	}
-	if base.Mounts == nil {
-		base.Mounts = runtimeDetail.Mounts
-		base.MountCount = runtimeDetail.MountCount
-	}
-	if base.ProcessCount == 0 {
-		base.ProcessCount = runtimeDetail.ProcessCount
-	}
-	if len(base.Environment) == 0 {
-		base.Environment = runtimeDetail.Environment
-	}
-	if base.SharedPID == nil {
-		base.SharedPID = runtimeDetail.SharedPID
-	}
-	if base.RestartCount == nil {
-		base.RestartCount = runtimeDetail.RestartCount
-	}
-	if base.ExitedAt.IsZero() {
-		base.ExitedAt = runtimeDetail.ExitedAt
-	}
-	if base.ExitCode == nil {
-		base.ExitCode = runtimeDetail.ExitCode
-	}
-	if base.ExitReason == "" {
-		base.ExitReason = runtimeDetail.ExitReason
-	}
-	if base.ShimPID == 0 {
-		base.ShimPID = runtimeDetail.ShimPID
-	}
-	if base.OCIBundlePath == "" {
-		base.OCIBundlePath = runtimeDetail.OCIBundlePath
-	}
-	if base.OCIRuntimeDir == "" {
-		base.OCIRuntimeDir = runtimeDetail.OCIRuntimeDir
-	}
-	if base.WritableLayerPath == "" {
-		base.WritableLayerPath = runtimeDetail.WritableLayerPath
-	}
-	if base.ReadOnlyLayerPath == "" {
-		base.ReadOnlyLayerPath = runtimeDetail.ReadOnlyLayerPath
-	}
-	if base.RWLayerUsage == 0 {
-		base.RWLayerUsage = runtimeDetail.RWLayerUsage
-	}
-	if base.RWLayerInodes == 0 {
-		base.RWLayerInodes = runtimeDetail.RWLayerInodes
-	}
-	if base.IPAddress == "" {
-		base.IPAddress = runtimeDetail.IPAddress
-	}
-	if len(base.PortMappings) == 0 {
-		base.PortMappings = runtimeDetail.PortMappings
-	}
-}
-
-// formatBytes formats bytes into a human-readable string.
-func formatBytes(b int64) string {
-	const (
-		KB = 1024
-		MB = KB * 1024
-		GB = MB * 1024
-	)
-	switch {
-	case b >= GB:
-		return fmt.Sprintf("%.2f GiB", float64(b)/float64(GB))
-	case b >= MB:
-		return fmt.Sprintf("%.2f MiB", float64(b)/float64(MB))
-	case b >= KB:
-		return fmt.Sprintf("%.2f KiB", float64(b)/float64(KB))
-	default:
-		return fmt.Sprintf("%d B", b)
-	}
 }

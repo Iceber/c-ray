@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/rivo/tview"
 )
@@ -23,35 +22,29 @@ const (
 type StorageView struct {
 	*tview.Flex
 
-	app         *tview.Application
-	rt          runtime.Runtime
-	ctx         context.Context
-	tabBar      *tview.TextView
-	pages       *tview.Pages
-	layersView  *ImageLayersView
-	mountsView  *MountsView
-	activeMode  StorageMode
-	containerID string
-	detail      *models.ContainerDetail
-	runtimeInfo *models.ContainerDetail
-	mu          sync.Mutex
+	app        *tview.Application
+	ctx        context.Context
+	tabBar     *tview.TextView
+	pages      *tview.Pages
+	layersView *ImageLayersView
+	mountsView *MountsView
+	activeMode StorageMode
+	container  runtime.Container
+	mu         sync.Mutex
 }
 
 // NewStorageView creates the Filesystem workspace.
-func NewStorageView(app *tview.Application, rt runtime.Runtime, ctx context.Context) *StorageView {
+func NewStorageView(app *tview.Application, ctx context.Context) *StorageView {
 	v := &StorageView{
 		Flex:       tview.NewFlex().SetDirection(tview.FlexRow),
 		app:        app,
-		rt:         rt,
 		ctx:        ctx,
-		layersView: NewImageLayersView(app, rt, ctx),
-		mountsView: NewMountsView(app, rt, ctx),
+		layersView: NewImageLayersView(app, ctx),
+		mountsView: NewMountsView(app),
 		activeMode: StorageModeLayers,
 	}
 
-	v.tabBar = tview.NewTextView().
-		SetDynamicColors(true).
-		SetTextAlign(tview.AlignLeft)
+	v.tabBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
 	v.tabBar.SetBackgroundColor(tcell.ColorDarkSlateGray)
 
 	v.pages = tview.NewPages()
@@ -61,56 +54,20 @@ func NewStorageView(app *tview.Application, rt runtime.Runtime, ctx context.Cont
 	v.Flex.AddItem(v.tabBar, 1, 0, false)
 	v.Flex.AddItem(v.pages, 0, 1, true)
 	v.updateTabBar()
-
 	return v
 }
 
 // SetContainer updates the active container.
-func (v *StorageView) SetContainer(containerID string) {
+func (v *StorageView) SetContainer(c runtime.Container) {
 	v.mu.Lock()
-	v.containerID = containerID
-	v.runtimeInfo = nil
-	v.detail = nil
+	v.container = c
 	v.mu.Unlock()
-
-	v.layersView.SetContainer(containerID)
-	v.mountsView.SetContainer(containerID)
+	v.layersView.SetContainer(c)
+	v.mountsView.SetContainer(c)
 }
 
-// SetDetail updates the overview detail used by subviews.
-func (v *StorageView) SetDetail(detail *models.ContainerDetail) {
-	v.mu.Lock()
-	v.detail = detail
-	activeMode := v.activeMode
-	v.mu.Unlock()
-	v.layersView.SetDetail(detail)
-	if detail != nil && activeMode == StorageModeLayers {
-		go v.layersView.Refresh(v.ctx)
-	}
-}
-
-// Refresh refreshes runtime context and the active filesystem subview.
+// Refresh refreshes the active filesystem subview.
 func (v *StorageView) Refresh(ctx context.Context) error {
-	v.mu.Lock()
-	containerID := v.containerID
-	detail := v.detail
-	v.mu.Unlock()
-
-	if containerID != "" {
-		runtimeInfo, err := v.rt.GetContainerRuntimeInfo(ctx, containerID)
-		if err == nil {
-			v.mu.Lock()
-			v.runtimeInfo = runtimeInfo
-			v.mu.Unlock()
-			v.layersView.SetRuntimeInfo(runtimeInfo)
-			v.mountsView.SetRuntimeInfo(runtimeInfo)
-		}
-	}
-
-	if detail != nil {
-		v.layersView.SetDetail(detail)
-	}
-
 	if v.activeMode == StorageModeMounts {
 		return v.mountsView.Refresh(ctx)
 	}
@@ -119,13 +76,9 @@ func (v *StorageView) Refresh(ctx context.Context) error {
 
 // HandleInput switches between filesystem subviews and delegates input.
 func (v *StorageView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
-	if event == nil {
-		return nil
-	}
-	if event.Key() == tcell.KeyCtrlC {
+	if event == nil || event.Key() == tcell.KeyCtrlC {
 		return event
 	}
-
 	switch event.Rune() {
 	case 'l', 'L':
 		v.switchMode(StorageModeLayers)
@@ -134,7 +87,6 @@ func (v *StorageView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
 		v.switchMode(StorageModeMounts)
 		return nil
 	}
-
 	if v.activeMode == StorageModeMounts {
 		return v.mountsView.HandleInput(event)
 	}
@@ -154,21 +106,19 @@ func (v *StorageView) switchMode(mode StorageMode) {
 		return
 	}
 	v.activeMode = mode
-	if mode == StorageModeMounts {
+	switch mode {
+	case StorageModeMounts:
 		v.pages.SwitchToPage("mounts")
-		v.updateTabBar()
 		if v.app != nil {
 			v.app.SetFocus(v.mountsView.GetFocusPrimitive())
 		}
-		go v.Refresh(v.ctx)
-		return
+	default:
+		v.pages.SwitchToPage("layers")
+		if v.app != nil {
+			v.app.SetFocus(v.layersView.GetFocusPrimitive())
+		}
 	}
-
-	v.pages.SwitchToPage("layers")
 	v.updateTabBar()
-	if v.app != nil {
-		v.app.SetFocus(v.layersView.GetFocusPrimitive())
-	}
 	go v.Refresh(v.ctx)
 }
 
@@ -181,13 +131,12 @@ func (v *StorageView) updateTabBar() {
 		{StorageModeLayers, "Rootfs Layers", "l"},
 		{StorageModeMounts, "Mounts", "m"},
 	}
-
 	text := " [white]Filesystem:[-] "
-	for _, mode := range modes {
-		if mode.mode == v.activeMode {
-			text += fmt.Sprintf("[black:aqua] %s(%s) [-:-] ", mode.label, mode.key)
+	for _, m := range modes {
+		if m.mode == v.activeMode {
+			text += fmt.Sprintf("[black:aqua] %s(%s) [-:-] ", m.label, m.key)
 		} else {
-			text += fmt.Sprintf("[white:darkslategray] %s(%s) [-:-] ", mode.label, mode.key)
+			text += fmt.Sprintf("[white:darkslategray] %s(%s) [-:-] ", m.label, m.key)
 		}
 	}
 	v.tabBar.SetText(text)
