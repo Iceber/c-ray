@@ -3,6 +3,7 @@ package containerd
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -375,11 +376,9 @@ func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile,
 		}
 	}
 
-	// RootFS path from live mounts.
-	if pid > 0 && h.rt.mountReader != nil {
-		if rootFS := h.rt.resolveRootFSPath(pid); rootFS != "" {
-			profile.RootFSPath = rootFS
-		}
+	// RootFS path from OCI spec root.
+	if h.spec != nil && h.spec.Root != nil && h.spec.Root.Path != "" {
+		profile.RootFSPath = resolveSpecRootPath(h.spec.Root.Path, bundleDir)
 	}
 
 	return profile, nil
@@ -690,6 +689,15 @@ func resolveRuntimeBinary(runtimeInfo containers.RuntimeInfo) string {
 
 func isRuncRuntime(name string) bool {
 	return strings.Contains(name, ".runc.") || strings.HasSuffix(name, "runc")
+}
+
+// resolveSpecRootPath resolves the OCI spec root.path. Per OCI spec, if
+// the path is relative it is resolved relative to the bundle directory.
+func resolveSpecRootPath(rootPath, bundleDir string) string {
+	if filepath.IsAbs(rootPath) {
+		return rootPath
+	}
+	return filepath.Join(bundleDir, rootPath)
 }
 
 func existingPath(path string) string {

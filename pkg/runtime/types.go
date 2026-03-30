@@ -95,6 +95,13 @@ type EnvVar struct {
 	IsKubernetes bool
 }
 
+// IDMapEntry is a runtime-neutral view of one user namespace mapping entry.
+type IDMapEntry struct {
+	ContainerID int
+	HostID      int
+	Size        int
+}
+
 type Process struct {
 	PID     int
 	PPID    int

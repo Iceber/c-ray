@@ -509,12 +509,18 @@ func buildReadOnlyLayersNodeV1(layers []*runtime.ImageLayer) *tview.TreeNode {
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Index > sorted[j].Index })
 
 	for _, layer := range sorted {
-		label := fmt.Sprintf("Layer %d: %s", layer.Index, shortenLayerIDV1(layer.SnapshotKey, layer.UncompressedDigest, layer.CompressedDigest))
+		snapshotKey := ""
+		contentPath := ""
+		if layer.Containerd != nil {
+			snapshotKey = layer.Containerd.SnapshotKey
+			contentPath = layer.Containerd.ContentPath
+		}
+		label := fmt.Sprintf("Layer %d: %s", layer.Index, shortenLayerIDV1(snapshotKey, layer.UncompressedDigest, layer.CompressedDigest))
 		layerNode := tview.NewTreeNode(label).SetSelectable(true).SetExpanded(false)
 		layerNode.AddChild(tview.NewTreeNode("[gray]  Rootfs Diff ID: [white]" + fallbackLayerField(layer.UncompressedDigest) + "[-]").SetSelectable(false))
-		layerNode.AddChild(tview.NewTreeNode("[gray]  Snapshot Key: [white]" + fallbackLayerField(layer.SnapshotKey) + "[-]").SetSelectable(false))
+		layerNode.AddChild(tview.NewTreeNode("[gray]  Snapshot Key: [white]" + fallbackLayerField(snapshotKey) + "[-]").SetSelectable(false))
 		layerNode.AddChild(tview.NewTreeNode("[gray]  Snapshot Path: [white]" + fallbackLayerField(layer.Path) + "[-]").SetSelectable(false))
-		layerNode.AddChild(tview.NewTreeNode("[gray]  Content Path: [white]" + fallbackLayerField(layer.ContentPath) + "[-]").SetSelectable(false))
+		layerNode.AddChild(tview.NewTreeNode("[gray]  Content Path: [white]" + fallbackLayerField(contentPath) + "[-]").SetSelectable(false))
 		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("[gray]  Content Size: [white]%s[-]", formatLayerSize(layer))).SetSelectable(false))
 		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("[gray]  Disk Usage: [white]%s[-]", formatLayerDiskUsage(layer))).SetSelectable(false))
 		if layer.Path != "" {

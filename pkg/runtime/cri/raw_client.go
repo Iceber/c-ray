@@ -40,6 +40,7 @@ type ContainerEnv struct {
 
 // ContainerStatusInfo captures CRI container status fields needed by the TUI.
 type ContainerStatusInfo struct {
+	Status       string
 	StartedAt    time.Time
 	FinishedAt   time.Time
 	ExitCode     *int32
@@ -110,8 +111,6 @@ type PodSandboxNetwork struct {
 	Hostname          string
 	DNS               *DNSConfig
 	PortMappings      []*PortMapping
-	RuntimeHandler    string
-	RuntimeType       string
 	StatusSource      string
 	ConfigSource      string
 	NamespaceSource   string
@@ -136,12 +135,17 @@ type containerInfo struct {
 type podSandboxInfo struct {
 	Config      *runtimeapi.PodSandboxConfig `json:"config"`
 	RuntimeSpec *runtimespec.Spec            `json:"runtimeSpec"`
-	Metadata    *podSandboxMetadata          `json:"sandboxMetadata"`
+	Metadata    *podSandboxMetadataWrapper   `json:"sandboxMetadata"`
 	CNIResult   *cniResultPayload            `json:"cniResult"`
 	RuntimeType string                       `json:"runtimeType"`
 }
 
-type podSandboxMetadata struct {
+type podSandboxMetadataWrapper struct {
+	Metadata *podSandboxMetadataInner `json:"Metadata"`
+	Version  string                   `json:"Version"`
+}
+
+type podSandboxMetadataInner struct {
 	NetNSPath      string
 	IP             string
 	AdditionalIPs  []string
@@ -177,6 +181,26 @@ type cniDNSPayload struct {
 	Domain      string   `json:"domain,omitempty"`
 	Search      []string `json:"search,omitempty"`
 	Options     []string `json:"options,omitempty"`
+}
+
+// CRI-O returns CNI results in standard CNI spec format (lowercase, arrays).
+type crioCNIResultPayload struct {
+	Interfaces []crioCNIInterface `json:"interfaces"`
+	IPs        []crioCNIIP        `json:"ips"`
+	Routes     []cniRoutePayload  `json:"routes"`
+	DNS        cniDNSPayload      `json:"dns"`
+}
+
+type crioCNIInterface struct {
+	Name    string `json:"name"`
+	Mac     string `json:"mac"`
+	Sandbox string `json:"sandbox"`
+}
+
+type crioCNIIP struct {
+	Address   string `json:"address"`
+	Gateway   string `json:"gateway"`
+	Interface *int   `json:"interface"`
 }
 
 // InspectContainerMounts fetches CRI config.mounts and status.mounts for a container.
@@ -290,6 +314,10 @@ func (c *Client) InspectPodSandboxNetwork(ctx context.Context, sandboxID string)
 	return decodePodSandboxNetwork(resp), nil
 }
 
+// decodePodSandboxNetwork is a unified decoder that handles both CRI-O and
+// containerd info formats:
+//   - containerd populates config, sandboxMetadata, cniResult, runtimeType
+//   - CRI-O only populates runtimeSpec (no config/sandboxMetadata/cniResult)
 func decodePodSandboxNetwork(resp *runtimeapi.PodSandboxStatusResponse) *PodSandboxNetwork {
 	result := &PodSandboxNetwork{}
 	if resp == nil {
@@ -301,7 +329,6 @@ func decodePodSandboxNetwork(resp *runtimeapi.PodSandboxStatusResponse) *PodSand
 	if status != nil {
 		result.SandboxID = status.GetId()
 		result.SandboxState = status.GetState().String()
-		result.RuntimeHandler = status.GetRuntimeHandler()
 		result.StatusSource = "cri-status"
 
 		if network := status.GetNetwork(); network != nil {
@@ -330,12 +357,12 @@ func decodePodSandboxNetwork(resp *runtimeapi.PodSandboxStatusResponse) *PodSand
 		return result
 	}
 
+	// containerd populates config with PodSandboxConfig.
 	if info.Config != nil {
 		result.Hostname = info.Config.GetHostname()
 		result.PortMappings = copyProtoPortMappings(info.Config.GetPortMappings())
 		if dns := info.Config.GetDnsConfig(); dns != nil {
 			result.DNS = &DNSConfig{
-				Domain:   "",
 				Servers:  append([]string(nil), dns.GetServers()...),
 				Searches: append([]string(nil), dns.GetSearches()...),
 				Options:  append([]string(nil), dns.GetOptions()...),
@@ -347,23 +374,28 @@ func decodePodSandboxNetwork(resp *runtimeapi.PodSandboxStatusResponse) *PodSand
 		result.ConfigSource = "cri-info"
 	}
 
-	if info.Metadata != nil {
-		if result.NetNSPath == "" && info.Metadata.NetNSPath != "" {
-			result.NetNSPath = info.Metadata.NetNSPath
+	// containerd populates sandboxMetadata with nested Metadata.
+	if info.Metadata != nil && info.Metadata.Metadata != nil {
+		meta := info.Metadata.Metadata
+		if result.NetNSPath == "" && meta.NetNSPath != "" {
+			result.NetNSPath = meta.NetNSPath
 			result.NamespaceSource = "cri-info-metadata"
 		}
 		if result.PrimaryIP == "" {
-			result.PrimaryIP = info.Metadata.IP
+			result.PrimaryIP = meta.IP
 		}
-		if len(result.AdditionalIPs) == 0 && len(info.Metadata.AdditionalIPs) > 0 {
-			result.AdditionalIPs = append([]string(nil), info.Metadata.AdditionalIPs...)
-		}
-		if result.RuntimeHandler == "" {
-			result.RuntimeHandler = info.Metadata.RuntimeHandler
+		if len(result.AdditionalIPs) == 0 && len(meta.AdditionalIPs) > 0 {
+			result.AdditionalIPs = append([]string(nil), meta.AdditionalIPs...)
 		}
 	}
 
+	// Both CRI-O and containerd populate runtimeSpec.
 	if info.RuntimeSpec != nil {
+		// CRI-O has no config; fall back to runtimeSpec for hostname.
+		if result.Hostname == "" {
+			result.Hostname = info.RuntimeSpec.Hostname
+		}
+
 		if path := runtimeSpecNetworkPath(info.RuntimeSpec); path != "" {
 			if result.NetNSPath == "" {
 				result.NetNSPath = path
@@ -372,11 +404,19 @@ func decodePodSandboxNetwork(resp *runtimeapi.PodSandboxStatusResponse) *PodSand
 				result.Warnings = append(result.Warnings, fmt.Sprintf("netns path mismatch: metadata=%s spec=%s", result.NetNSPath, path))
 			}
 		}
+
+		// CRI-O exposes CNI result via annotation in standard CNI spec format.
+		if cniJSON, ok := info.RuntimeSpec.Annotations["io.kubernetes.cri-o.CNIResult"]; ok && cniJSON != "" {
+			var cniPayload crioCNIResultPayload
+			if err := json.Unmarshal([]byte(cniJSON), &cniPayload); err == nil {
+				if parsed := normalizeCrioCNIResult(&cniPayload); parsed != nil {
+					result.CNI = parsed
+				}
+			}
+		}
 	}
 
-	if info.RuntimeType != "" {
-		result.RuntimeType = info.RuntimeType
-	}
+	// containerd populates top-level cniResult.
 	if info.CNIResult != nil {
 		result.CNI = normalizeCNIResult(info.CNIResult)
 	}
@@ -406,6 +446,17 @@ func decodeContainerStatus(resp *runtimeapi.ContainerStatusResponse) *ContainerS
 		if metadata := status.GetMetadata(); metadata != nil {
 			attempt := metadata.GetAttempt()
 			result.RestartCount = &attempt
+		}
+
+		switch status.GetState() {
+		case runtimeapi.ContainerState_CONTAINER_CREATED:
+			result.Status = "created"
+		case runtimeapi.ContainerState_CONTAINER_RUNNING:
+			result.Status = "running"
+		case runtimeapi.ContainerState_CONTAINER_EXITED:
+			result.Status = "stopped"
+		default:
+			result.Status = "unknown"
 		}
 	}
 
@@ -540,6 +591,82 @@ func normalizeCNIResult(result *cniResultPayload) *CNIResultInfo {
 			}
 		}
 		info.DNS = dns
+	}
+
+	if len(info.Interfaces) == 0 && len(info.Routes) == 0 && info.DNS == nil {
+		return nil
+	}
+	return info
+}
+
+// normalizeCrioCNIResult converts CRI-O's standard CNI spec format to CNIResultInfo.
+// CRI-O returns interfaces as an array and IPs reference interfaces by index.
+func normalizeCrioCNIResult(result *crioCNIResultPayload) *CNIResultInfo {
+	if result == nil {
+		return nil
+	}
+
+	info := &CNIResultInfo{}
+
+	// Build interface list and map IPs to interfaces by index.
+	ifaces := make([]*CNIInterface, len(result.Interfaces))
+	for i, ifc := range result.Interfaces {
+		ifaces[i] = &CNIInterface{
+			Name:    ifc.Name,
+			MAC:     ifc.Mac,
+			Sandbox: ifc.Sandbox,
+		}
+	}
+
+	for _, ip := range result.IPs {
+		addr := &CNIInterfaceAddress{
+			Gateway: ip.Gateway,
+		}
+		if ip.Address != "" {
+			addr.CIDR = ip.Address
+			// Parse IP from CIDR to determine family.
+			ipStr := ip.Address
+			if idx := strings.IndexByte(ipStr, '/'); idx >= 0 {
+				ipStr = ipStr[:idx]
+			}
+			if parsedIP := net.ParseIP(ipStr); parsedIP != nil && parsedIP.To4() != nil {
+				addr.Family = "ipv4"
+			} else {
+				addr.Family = "ipv6"
+			}
+		}
+
+		if ip.Interface != nil && *ip.Interface >= 0 && *ip.Interface < len(ifaces) {
+			ifaces[*ip.Interface].Addresses = append(ifaces[*ip.Interface].Addresses, addr)
+		}
+	}
+
+	// Sort interfaces by name for stable output.
+	sort.Slice(ifaces, func(i, j int) bool { return ifaces[i].Name < ifaces[j].Name })
+	info.Interfaces = ifaces
+
+	for _, route := range result.Routes {
+		entry := &CNIRoute{Destination: route.Dst}
+		if route.GW != "" {
+			entry.Gateway = route.GW
+		}
+		info.Routes = append(info.Routes, entry)
+	}
+	sort.SliceStable(info.Routes, func(i, j int) bool {
+		if info.Routes[i].Destination != info.Routes[j].Destination {
+			return info.Routes[i].Destination < info.Routes[j].Destination
+		}
+		return info.Routes[i].Gateway < info.Routes[j].Gateway
+	})
+
+	dns := result.DNS
+	if len(dns.Nameservers) > 0 || len(dns.Search) > 0 || len(dns.Options) > 0 || dns.Domain != "" {
+		info.DNS = &DNSConfig{
+			Domain:   dns.Domain,
+			Servers:  append([]string(nil), dns.Nameservers...),
+			Searches: append([]string(nil), dns.Search...),
+			Options:  append([]string(nil), dns.Options...),
+		}
 	}
 
 	if len(info.Interfaces) == 0 && len(info.Routes) == 0 && info.DNS == nil {

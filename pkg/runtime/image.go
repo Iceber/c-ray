@@ -29,8 +29,8 @@ type ImageLayer struct {
 	UsageSize   int64
 	UsageInodes int64
 
-	ImageContainerdLayer
-	ImageCRIOLayer
+	Containerd *ImageContainerdLayer
+	Crio       *ImageCRIOLayer
 }
 
 type ImageContainerdLayer struct {
@@ -40,7 +40,9 @@ type ImageContainerdLayer struct {
 
 // ImageCRIOLayer contains CRI-O/containers-storage specific layer fields.
 type ImageCRIOLayer struct {
-	StorageID string
+	ID       string
+	Metadata map[string]string
+	Names    []string
 }
 
 type ContainerStorage struct {

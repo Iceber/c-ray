@@ -15,8 +15,6 @@ func ApplyCRINetwork(dst *runtime.PodNetworkInfo, src *PodSandboxNetwork) {
 	dst.HostNetwork = src.HostNetwork
 	dst.NamespaceMode = src.NamespaceMode
 	dst.Hostname = src.Hostname
-	dst.RuntimeHandler = src.RuntimeHandler
-	dst.RuntimeType = src.RuntimeType
 
 	if len(src.PortMappings) > 0 {
 		dst.PortMappings = ConvertPortMappings(src.PortMappings)

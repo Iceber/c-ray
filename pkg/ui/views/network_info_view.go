@@ -171,8 +171,6 @@ func buildSandboxNodeV1(network *runtime.PodNetworkInfo) *tview.TreeNode {
 		"Namespace Mode: " + fallbackNetField(network.NamespaceMode),
 		"NetNS Path: " + fallbackNetField(network.NetNSPath),
 		"Hostname: " + fallbackNetField(network.Hostname),
-		"Runtime Handler: " + fallbackNetField(network.RuntimeHandler),
-		"Runtime Type: " + fallbackNetField(network.RuntimeType),
 	}
 	for _, row := range rows {
 		node.AddChild(tview.NewTreeNode("[gray]  " + row + "[-]").SetSelectable(false))

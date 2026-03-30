@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/icebergu/c-ray/pkg/runtime"
@@ -77,15 +78,19 @@ func runTests(args []string) {
 		fmt.Println("    container-mounts <id>              Show container mounts")
 		fmt.Println("    container-network <id>             Show container network")
 		fmt.Println("    container-storage <id>             Show container storage / layers")
-		fmt.Println("    container-processes <id>            Show container processes")
+		fmt.Println("    container-processes <id>           Show container processes")
+		fmt.Println("    crio-container-storage <id>        Show CRI-O storage object details")
 		fmt.Println("    container-all <id>                 Show all container details")
 		fmt.Println("\n  Images:")
 		fmt.Println("    list-images                        List all images")
 		fmt.Println("    image-info <ref>                   Show image info")
 		fmt.Println("    image-config <ref>                 Show image config")
 		fmt.Println("    image-layers <ref> [snapshotter]   Show image layers")
+		fmt.Println("    crio-image-storage <ref>           Show CRI-O image storage details")
 		fmt.Println("\n  Pods:")
 		fmt.Println("    list-pods                          List all pods")
+		fmt.Println("\n  Runtime:")
+		fmt.Println("    crio-store-info                    Show CRI-O containers/storage profile")
 		os.Exit(1)
 	}
 
@@ -133,6 +138,9 @@ func runTests(args []string) {
 	case "container-processes":
 		requireArg(args, "container-processes <id>")
 		containerProcesses(ctx, rt, args[1])
+	case "crio-container-storage":
+		requireArg(args, "crio-container-storage <id>")
+		crioContainerStorage(ctx, rt, args[1])
 	case "container-all":
 		requireArg(args, "container-all <id>")
 		containerAll(ctx, rt, args[1])
@@ -151,8 +159,13 @@ func runTests(args []string) {
 			snap = args[2]
 		}
 		imageLayers(ctx, rt, args[1], snap)
+	case "crio-image-storage":
+		requireArg(args, "crio-image-storage <ref>")
+		crioImageStorage(ctx, rt, args[1])
 	case "list-pods":
 		listPods(ctx, rt)
+	case "crio-store-info":
+		crioStoreInfo(ctx, rt)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown test command: %s\n", command)
 		os.Exit(1)
@@ -430,6 +443,9 @@ func containerStorage(ctx context.Context, rt runtime.Runtime, id string) {
 			if l.Path != "" {
 				fmt.Printf("         Path: %s\n", l.Path)
 			}
+			if l.Crio != nil && len(l.Crio.Names) > 0 {
+				fmt.Printf("         Names: %s\n", strings.Join(l.Crio.Names, ", "))
+			}
 		}
 	}
 }
@@ -470,6 +486,8 @@ func containerAll(ctx context.Context, rt runtime.Runtime, id string) {
 	containerNetwork(ctx, rt, id)
 	fmt.Println()
 	containerStorage(ctx, rt, id)
+	fmt.Println()
+	crioContainerStorage(ctx, rt, id)
 	fmt.Println()
 	containerProcesses(ctx, rt, id)
 }
@@ -550,10 +568,294 @@ func imageLayers(ctx context.Context, rt runtime.Runtime, ref, snapshotter strin
 		if l.Path != "" {
 			fmt.Printf("  Path:          %s\n", l.Path)
 		}
-		if l.ContentPath != "" {
-			fmt.Printf("  Content Path:  %s\n", l.ContentPath)
+		if l.Containerd != nil {
+			if l.Containerd.ContentPath != "" {
+				fmt.Printf("  Content Path:  %s\n", l.Containerd.ContentPath)
+			}
+			if l.Containerd.SnapshotKey != "" {
+				fmt.Printf("  Snapshot Key:  %s\n", l.Containerd.SnapshotKey)
+			}
+		}
+		if l.Crio != nil && len(l.Crio.Names) > 0 {
+			fmt.Printf("  Names:         %s\n", strings.Join(l.Crio.Names, ", "))
 		}
 		fmt.Println()
+	}
+}
+
+func crioStoreInfo(ctx context.Context, rt runtime.Runtime) {
+	inspector, ok := rt.(runtimecrio.StoreIntrospector)
+	if !ok {
+		fmt.Println("Current runtime does not expose CRI-O store introspection.")
+		return
+	}
+	info, err := inspector.CRIOStoreInfo(ctx)
+	exitOnErr("CRI-O store info", err)
+
+	fmt.Println("=== CRI-O Store Info ===")
+	fmt.Printf("Graph Root:       %s\n", info.GraphRoot)
+	fmt.Printf("Run Root:         %s\n", info.RunRoot)
+	fmt.Printf("Image Store:      %s\n", emptyDash(info.ImageStore))
+	fmt.Printf("Driver:           %s\n", info.GraphDriverName)
+	fmt.Printf("Transient Store:  %v\n", info.TransientStore)
+	if len(info.GraphOptions) > 0 {
+		fmt.Printf("Graph Options:    %s\n", strings.Join(info.GraphOptions, ", "))
+	}
+	if len(info.PullOptions) > 0 {
+		fmt.Printf("Pull Options:     %s\n", formatStringMap(info.PullOptions))
+	}
+	if len(info.AdditionalImageStores) > 0 {
+		fmt.Printf("Additional Image Stores: %s\n", strings.Join(info.AdditionalImageStores, ", "))
+	}
+	if len(info.AdditionalLayerStores) > 0 {
+		fmt.Printf("Additional Layer Stores: %s\n", strings.Join(info.AdditionalLayerStores, ", "))
+	}
+	if len(info.DriverStatus) > 0 {
+		fmt.Println("\nDriver Status:")
+		for _, key := range sortedStringKeys(info.DriverStatus) {
+			fmt.Printf("  %-20s %s\n", key, info.DriverStatus[key])
+		}
+	}
+}
+
+func crioContainerStorage(ctx context.Context, rt runtime.Runtime, id string) {
+	c := mustGetContainer(ctx, rt, id)
+	inspector, ok := c.(runtimecrio.ContainerIntrospector)
+	if !ok {
+		fmt.Println("Container does not expose CRI-O storage introspection.")
+		return
+	}
+	info, err := inspector.CRIOContainerInfo(ctx)
+	exitOnErr("CRI-O container storage", err)
+
+	fmt.Printf("=== CRI-O Container Storage: %s ===\n", shortID(id))
+	fmt.Printf("Storage ID:       %s\n", info.ID)
+	fmt.Printf("Names:            %s\n", joinOrDash(info.Names))
+	fmt.Printf("Image ID:         %s\n", emptyDash(info.ImageID))
+	fmt.Printf("RW Layer ID:      %s\n", emptyDash(info.LayerID))
+	fmt.Printf("Created:          %s\n", info.CreatedAt.Format("2006-01-02 15:04:05"))
+	fmt.Printf("Directory:        %s\n", emptyDash(info.Directory))
+	fmt.Printf("Run Directory:    %s\n", emptyDash(info.RunDirectory))
+	fmt.Printf("Bundle Dir:       %s\n", emptyDash(info.BundleDir))
+	fmt.Printf("Writable Layer:   %s\n", emptyDash(info.WritableLayerDir))
+	if info.Size > 0 {
+		fmt.Printf("Container Size:   %s\n", formatBytes(info.Size))
+	}
+	if info.Metadata != "" {
+		fmt.Printf("Metadata:         %s\n", info.Metadata)
+	}
+	if info.MountLabel != "" {
+		fmt.Printf("Mount Label:      %s\n", info.MountLabel)
+	}
+	if len(info.MountOptions) > 0 {
+		fmt.Printf("Mount Options:    %s\n", strings.Join(info.MountOptions, ", "))
+	}
+	if len(info.ParentOwnerUIDs) > 0 || len(info.ParentOwnerGIDs) > 0 {
+		fmt.Printf("Parent Owners:    uid=%v gid=%v\n", info.ParentOwnerUIDs, info.ParentOwnerGIDs)
+	}
+	if len(info.UIDMap) > 0 {
+		fmt.Printf("UID Maps:         %s\n", formatCRIOIDMapEntries(info.UIDMap))
+	}
+	if len(info.GIDMap) > 0 {
+		fmt.Printf("GID Maps:         %s\n", formatCRIOIDMapEntries(info.GIDMap))
+	}
+	if len(info.Flags) > 0 {
+		fmt.Printf("Flags:            %s\n", formatAnyMap(info.Flags))
+	}
+	if len(info.DriverMetadata) > 0 {
+		fmt.Printf("Driver Metadata:  %s\n", formatStringMap(info.DriverMetadata))
+	}
+	if len(info.BigData) > 0 {
+		fmt.Println("\nBig Data:")
+		for _, item := range info.BigData {
+			fmt.Printf("  %-24s size=%s digest=%s\n", item.Name, formatMaybeBytes(item.Size), emptyDash(item.Digest))
+		}
+	}
+	if layer := info.RWLayer; layer != nil {
+		fmt.Println("\nRW Layer:")
+		printCRIOLayerInfo(layer)
+	}
+	if info.Store != nil {
+		fmt.Println("\nStore Summary:")
+		fmt.Printf("  %s @ %s\n", info.Store.GraphDriverName, info.Store.GraphRoot)
+		fmt.Printf("  runroot=%s imagestore=%s transient=%v\n", info.Store.RunRoot, emptyDash(info.Store.ImageStore), info.Store.TransientStore)
+	}
+}
+
+func crioImageStorage(ctx context.Context, rt runtime.Runtime, ref string) {
+	img := mustGetImage(ctx, rt, ref)
+	inspector, ok := img.(runtimecrio.ImageIntrospector)
+	if !ok {
+		fmt.Println("Image does not expose CRI-O storage introspection.")
+		return
+	}
+	info, err := inspector.CRIOImageInfo(ctx)
+	exitOnErr("CRI-O image storage", err)
+
+	fmt.Printf("=== CRI-O Image Storage: %s ===\n", ref)
+	fmt.Printf("Storage ID:       %s\n", info.ID)
+	fmt.Printf("Names:            %s\n", joinOrDash(info.Names))
+	if len(info.NamesHistory) > 0 {
+		fmt.Printf("Names History:    %s\n", strings.Join(info.NamesHistory, ", "))
+	}
+	fmt.Printf("Digest:           %s\n", emptyDash(info.Digest))
+	if len(info.Digests) > 0 {
+		fmt.Printf("Digests:          %s\n", strings.Join(info.Digests, ", "))
+	}
+	fmt.Printf("Top Layer:        %s\n", emptyDash(info.TopLayer))
+	if len(info.MappedTopLayers) > 0 {
+		fmt.Printf("Mapped Layers:    %s\n", strings.Join(info.MappedTopLayers, ", "))
+	}
+	fmt.Printf("Read Only:        %v\n", info.ReadOnly)
+	fmt.Printf("Directory:        %s\n", emptyDash(info.Directory))
+	fmt.Printf("Run Directory:    %s\n", emptyDash(info.RunDirectory))
+	if info.TopLayerPath != "" {
+		fmt.Printf("Top Layer Path:   %s\n", info.TopLayerPath)
+	}
+	if info.Size > 0 {
+		fmt.Printf("Image Size:       %s\n", formatBytes(info.Size))
+	}
+	if info.Metadata != "" {
+		fmt.Printf("Metadata:         %s\n", info.Metadata)
+	}
+	if len(info.Flags) > 0 {
+		fmt.Printf("Flags:            %s\n", formatAnyMap(info.Flags))
+	}
+	if len(info.TopLayerDriverMeta) > 0 {
+		fmt.Printf("Top Layer Meta:   %s\n", formatStringMap(info.TopLayerDriverMeta))
+	}
+	if len(info.Manifests) > 0 {
+		fmt.Println("\nManifests:")
+		for _, manifest := range info.Manifests {
+			fmt.Printf("  %-24s kind=%s mediaType=%s schema=%d digest=%s size=%s\n",
+				manifest.Name,
+				emptyDash(manifest.Kind),
+				emptyDash(manifest.MediaType),
+				manifest.SchemaVersion,
+				emptyDash(manifest.Digest),
+				formatMaybeBytes(manifest.Size),
+			)
+			if manifest.Config != nil {
+				fmt.Printf("    Config:       %s %s %s\n",
+					emptyDash(manifest.Config.MediaType),
+					emptyDash(manifest.Config.Digest),
+					formatMaybeBytes(manifest.Config.Size),
+				)
+				if manifest.LinkedConfig != "" {
+					fmt.Printf("    Resolved:     %s (%s match)\n", manifest.LinkedConfig, manifest.ConfigMatch)
+				} else {
+					fmt.Printf("    Resolved:     -\n")
+				}
+			}
+			if len(manifest.Layers) > 0 {
+				fmt.Printf("    Layers:       %d\n", len(manifest.Layers))
+				for i, layer := range manifest.Layers {
+					fmt.Printf("      [%d] %s %s %s\n", i, emptyDash(layer.MediaType), emptyDash(layer.Digest), formatMaybeBytes(layer.Size))
+				}
+			}
+			if len(manifest.Manifests) > 0 {
+				fmt.Printf("    Entries:      %d\n", len(manifest.Manifests))
+				for i, entry := range manifest.Manifests {
+					platform := formatPlatform(entry.OS, entry.Architecture, entry.Variant)
+					fmt.Printf("      [%d] %s %s %s %s\n", i, emptyDash(entry.MediaType), emptyDash(entry.Digest), formatMaybeBytes(entry.Size), platform)
+				}
+			}
+		}
+	}
+	if len(info.Configs) > 0 {
+		fmt.Println("\nConfigs:")
+		for _, config := range info.Configs {
+			fmt.Printf("  %-24s digest=%s size=%s\n", config.Name, emptyDash(config.Digest), formatMaybeBytes(config.Size))
+			fmt.Printf("    Platform:     %s\n", formatPlatform(config.OS, config.Architecture, config.Variant))
+			if len(config.ReferencedBy) > 0 {
+				fmt.Printf("    Referenced:   %d manifest(s)\n", len(config.ReferencedBy))
+				for _, ref := range config.ReferencedBy {
+					fmt.Printf("      %s %s\n", ref.Name, emptyDash(ref.Digest))
+				}
+			} else if len(info.Manifests) > 0 {
+				fmt.Printf("    Referenced:   -\n")
+			}
+			if config.Created != "" {
+				fmt.Printf("    Created:      %s\n", config.Created)
+			}
+			if config.Author != "" {
+				fmt.Printf("    Author:       %s\n", config.Author)
+			}
+			if config.RootFSType != "" {
+				fmt.Printf("    RootFS:       %s (%d diff IDs)\n", config.RootFSType, len(config.DiffIDs))
+			}
+			if config.User != "" {
+				fmt.Printf("    User:         %s\n", config.User)
+			}
+			if config.WorkingDir != "" {
+				fmt.Printf("    Working Dir:  %s\n", config.WorkingDir)
+			}
+			if len(config.Entrypoint) > 0 {
+				fmt.Printf("    Entrypoint:   %s\n", strings.Join(config.Entrypoint, " "))
+			}
+			if len(config.Cmd) > 0 {
+				fmt.Printf("    Cmd:          %s\n", strings.Join(config.Cmd, " "))
+			}
+			if len(config.Env) > 0 {
+				fmt.Printf("    Env:          %d vars\n", len(config.Env))
+				for _, env := range config.Env {
+					fmt.Printf("      %s\n", env)
+				}
+			}
+			if len(config.ExposedPorts) > 0 {
+				fmt.Printf("    Exposed:      %s\n", strings.Join(config.ExposedPorts, ", "))
+			}
+			if len(config.Volumes) > 0 {
+				fmt.Printf("    Volumes:      %s\n", strings.Join(config.Volumes, ", "))
+			}
+			if config.StopSignal != "" {
+				fmt.Printf("    Stop Signal:  %s\n", config.StopSignal)
+			}
+			if len(config.Healthcheck) > 0 {
+				fmt.Printf("    Healthcheck:  %s\n", strings.Join(config.Healthcheck, " "))
+			}
+			if len(config.Labels) > 0 {
+				fmt.Printf("    Labels:       %s\n", formatStringMap(config.Labels))
+			}
+			if len(config.Annotations) > 0 {
+				fmt.Printf("    Annotations:  %s\n", formatStringMap(config.Annotations))
+			}
+			if config.HistoryCount > 0 {
+				fmt.Printf("    History:      %d entries\n", config.HistoryCount)
+			}
+		}
+	}
+	if len(info.Signatures) > 0 {
+		fmt.Println("\nSignatures:")
+		for _, signature := range info.Signatures {
+			fmt.Printf("  %-24s format=%s entries=%d digest=%s size=%s\n",
+				signature.Name,
+				emptyDash(signature.Format),
+				signature.Entries,
+				emptyDash(signature.Digest),
+				formatMaybeBytes(signature.Size),
+			)
+			if signature.MediaType != "" {
+				fmt.Printf("    Media Type:   %s\n", signature.MediaType)
+			}
+			if len(signature.Annotations) > 0 {
+				fmt.Printf("    Annotations:  %s\n", formatStringMap(signature.Annotations))
+			}
+			if signature.Preview != "" {
+				fmt.Printf("    Preview:      %s\n", signature.Preview)
+			}
+		}
+	}
+	if len(info.OtherBigData) > 0 {
+		fmt.Println("\nOther Big Data:")
+		for _, item := range info.OtherBigData {
+			fmt.Printf("  %-24s size=%s digest=%s\n", item.Name, formatMaybeBytes(item.Size), emptyDash(item.Digest))
+		}
+	}
+	if info.Store != nil {
+		fmt.Println("\nStore Summary:")
+		fmt.Printf("  %s @ %s\n", info.Store.GraphDriverName, info.Store.GraphRoot)
+		fmt.Printf("  runroot=%s imagestore=%s transient=%v\n", info.Store.RunRoot, emptyDash(info.Store.ImageStore), info.Store.TransientStore)
 	}
 }
 
@@ -643,4 +945,144 @@ func printProcessStats(ps *runtime.ProcessStats, depth int) {
 	for _, child := range ps.Children {
 		printProcessStats(child, depth+1)
 	}
+}
+
+func printCRIOLayerInfo(layer *runtimecrio.LayerInfo) {
+	fmt.Printf("  ID:             %s\n", layer.ID)
+	if layer.Parent != "" {
+		fmt.Printf("  Parent:         %s\n", layer.Parent)
+	}
+	if len(layer.Names) > 0 {
+		fmt.Printf("  Names:          %s\n", strings.Join(layer.Names, ", "))
+	}
+	if layer.Path != "" {
+		fmt.Printf("  Path:           %s\n", layer.Path)
+	}
+	if layer.Metadata != "" {
+		fmt.Printf("  Metadata:       %s\n", layer.Metadata)
+	}
+	if layer.MountLabel != "" {
+		fmt.Printf("  Mount Label:    %s\n", layer.MountLabel)
+	}
+	if layer.MountPoint != "" {
+		fmt.Printf("  Mount Point:    %s (count=%d)\n", layer.MountPoint, layer.MountCount)
+	}
+	if layer.CompressedDigest != "" {
+		fmt.Printf("  Compressed:     %s (%s)\n", layer.CompressedDigest, formatMaybeBytes(layer.CompressedSize))
+	}
+	if layer.UncompressedDigest != "" {
+		fmt.Printf("  Uncompressed:   %s (%s)\n", layer.UncompressedDigest, formatMaybeBytes(layer.UncompressedSize))
+	}
+	if layer.TOCDigest != "" {
+		fmt.Printf("  TOC:            %s\n", layer.TOCDigest)
+	}
+	if layer.CompressionType != "" {
+		fmt.Printf("  Compression:    %s\n", layer.CompressionType)
+	}
+	if len(layer.BigDataNames) > 0 {
+		fmt.Printf("  Big Data:       %s\n", strings.Join(layer.BigDataNames, ", "))
+	}
+	if len(layer.UIDMap) > 0 {
+		fmt.Printf("  UID Maps:       %s\n", formatCRIOIDMapEntries(layer.UIDMap))
+	}
+	if len(layer.GIDMap) > 0 {
+		fmt.Printf("  GID Maps:       %s\n", formatCRIOIDMapEntries(layer.GIDMap))
+	}
+	if len(layer.UsedUIDs) > 0 {
+		fmt.Printf("  Used UIDs:      %v\n", layer.UsedUIDs)
+	}
+	if len(layer.UsedGIDs) > 0 {
+		fmt.Printf("  Used GIDs:      %v\n", layer.UsedGIDs)
+	}
+	if len(layer.Flags) > 0 {
+		fmt.Printf("  Flags:          %s\n", formatAnyMap(layer.Flags))
+	}
+	if len(layer.DriverMetadata) > 0 {
+		fmt.Printf("  Driver Meta:    %s\n", formatStringMap(layer.DriverMetadata))
+	}
+	fmt.Printf("  Read Only:      %v\n", layer.ReadOnly)
+}
+
+func formatStringMap(values map[string]string) string {
+	parts := make([]string, 0, len(values))
+	for _, key := range sortedStringKeys(values) {
+		parts = append(parts, fmt.Sprintf("%s=%s", key, values[key]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatAnyMap(values map[string]any) string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", key, values[key]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func sortedStringKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+func formatIDMapEntries(values []runtime.IDMapEntry) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, fmt.Sprintf("%d:%d:%d", value.ContainerID, value.HostID, value.Size))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatCRIOIDMapEntries(values []runtimecrio.IDMapEntry) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, fmt.Sprintf("%d:%d:%d", value.ContainerID, value.HostID, value.Size))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatMaybeBytes(size int64) string {
+	if size < 0 {
+		return "-"
+	}
+	return formatBytes(size)
+}
+
+func joinOrDash(values []string) string {
+	if len(values) == 0 {
+		return "-"
+	}
+	return strings.Join(values, ", ")
+}
+
+func emptyDash(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+func formatPlatform(osName, arch, variant string) string {
+	parts := make([]string, 0, 3)
+	if osName != "" {
+		parts = append(parts, osName)
+	}
+	if arch != "" {
+		parts = append(parts, arch)
+	}
+	if variant != "" {
+		parts = append(parts, variant)
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, "/")
 }

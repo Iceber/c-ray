@@ -158,7 +158,7 @@ func (h *imageHandle) buildLayers(ctx context.Context, manifest ocispec.Manifest
 			UncompressedDigest: diffIDs[i].String(),
 			Size:               manifest.Layers[i].Size,
 			CompressionType:    compressionType(manifest.Layers[i].MediaType),
-			ImageContainerdLayer: runtime.ImageContainerdLayer{
+			Containerd: &runtime.ImageContainerdLayer{
 				ContentPath: contentPath(manifest.Layers[i].Digest),
 				SnapshotKey: chainID,
 			},

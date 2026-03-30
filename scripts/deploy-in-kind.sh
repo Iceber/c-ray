@@ -56,3 +56,7 @@ echo -e "${GREEN}✓ Build successful${NC}"
 echo -e "\n${YELLOW}[4/7] Copying binary to ${CONTAINER_NAME}...${NC}"
 cat ${BUILD_DIR}/${BINARY_NAME}-linux | docker exec -i ${CONTAINER_NAME} bash -c "cat > ${INSTALL_PATH} && chmod +x ${INSTALL_PATH}"
 echo -e "${GREEN}✓ Binary installed to ${INSTALL_PATH}${NC}"
+
+echo -e "\n${YELLOW}[4/7] Copying binary to minikube...${NC}"
+cat ${BUILD_DIR}/${BINARY_NAME}-linux | docker exec -i minikube bash -c "cat > ${INSTALL_PATH} && chmod +x ${INSTALL_PATH}"
+echo -e "${GREEN}✓ Binary installed to ${INSTALL_PATH}${NC}"

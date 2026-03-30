@@ -43,6 +43,7 @@ func (c *MetadataClient) InspectContainerMounts(ctx context.Context, containerID
 
 // ContainerStatus holds CRI-sourced container lifecycle fields.
 type ContainerStatus struct {
+	Status       string
 	StartedAt    time.Time
 	FinishedAt   time.Time
 	ExitCode     *int32
@@ -66,6 +67,7 @@ func convertContainerStatus(raw *ContainerStatusInfo) *ContainerStatus {
 		return nil
 	}
 	s := &ContainerStatus{
+		Status:       raw.Status,
 		StartedAt:    raw.StartedAt,
 		FinishedAt:   raw.FinishedAt,
 		ExitCode:     raw.ExitCode,

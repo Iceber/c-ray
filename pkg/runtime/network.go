@@ -71,8 +71,6 @@ type PodNetworkInfo struct {
 	Hostname           string
 	DNS                *DNSConfig
 	PortMappings       []*PortMapping
-	RuntimeHandler     string
-	RuntimeType        string
 	CNI                *CNIResultInfo
 	ObservedInterfaces []*NetworkStats
 	Warnings           []string

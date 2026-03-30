@@ -298,6 +298,15 @@ func dirUsage(path string) runtime.ContainerRWLayerStats {
 // RootFS resolution
 // ---------------------------------------------------------------------------
 
+// resolveSpecRootPath resolves the OCI spec root.path. Per OCI spec, if
+// the path is relative it is resolved relative to the bundle directory.
+func resolveSpecRootPath(rootPath, bundleDir string) string {
+	if filepath.IsAbs(rootPath) {
+		return rootPath
+	}
+	return filepath.Join(bundleDir, rootPath)
+}
+
 func resolveRootFSPath(rt *Runtime, pid uint32) string {
 	if pid == 0 || rt.mountReader == nil {
 		return ""

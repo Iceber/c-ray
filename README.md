@@ -116,14 +116,19 @@ cray test container-processes <container-id>
 cray test container-top <container-id>
 cray test container-mounts <container-id>
 cray test container-layers <container-id>
+cray test crio-container-storage <container-id>
 
 # 镜像操作
 cray test list-images
 cray test image-detail <image-ref>
 cray test image-layers <image-id>
+cray test crio-image-storage <image-ref>
 
 # Pod 操作
 cray test list-pods
+
+# CRI-O 存储视图
+cray test crio-store-info
 ```
 
 ### TUI 快捷键
