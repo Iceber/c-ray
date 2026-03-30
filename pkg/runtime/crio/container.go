@@ -44,6 +44,10 @@ type containerHandle struct {
 	// from CRI (supplementary, may be nil)
 	cri *criContainerSupplement
 
+	// spoofed container: CRI cannot see it, supplement built from OCI spec.
+	spoofed     bool
+	spoofedOnce sync.Once
+
 	// lazy-loaded CRI detailed status
 	statusOnce sync.Once
 
@@ -85,6 +89,25 @@ func (h *containerHandle) ensureSpec(_ context.Context) {
 	})
 }
 
+// ensureSpoofedSupplement lazily checks OCI spec annotations for spoofed
+// containers (not visible to CRI) and builds a CRI supplement from annotations.
+func (h *containerHandle) ensureSpoofedSupplement(ctx context.Context) {
+	if h.cri != nil {
+		return
+	}
+	h.spoofedOnce.Do(func() {
+		h.ensureSpec(ctx)
+		if h.spec == nil {
+			return
+		}
+		if h.spec.Annotations["spoofed.crio.io"] != "true" {
+			return
+		}
+		h.spoofed = true
+		h.cri = buildSupplementFromSpecAnnotations(h.spec)
+	})
+}
+
 // readOCISpec reads the OCI runtime spec from CRI-O's bundle directory.
 func (h *containerHandle) readOCISpec() (*runtimespec.Spec, error) {
 	bundleDir := crioContainerBundleDir(h.rt.storageRunRoot, h.id)
@@ -101,7 +124,11 @@ func (h *containerHandle) readOCISpec() (*runtimespec.Spec, error) {
 }
 
 // pid returns the container's init PID, preferring CRI verbose info.
+// Spoofed containers are not visible to CRI so we skip the call.
 func (h *containerHandle) pid(ctx context.Context) uint32 {
+	if h.spoofed {
+		return 0
+	}
 	status, _ := h.rt.criClient.InspectContainerStatus(ctx, h.id)
 	if status != nil && status.PID > 0 {
 		return status.PID
@@ -167,6 +194,8 @@ func (h *containerHandle) OCISepc()   {}
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) Info(ctx context.Context) (*runtime.ContainerInfo, error) {
+	h.ensureSpoofedSupplement(ctx)
+
 	info := &runtime.ContainerInfo{
 		ID:        h.id,
 		Name:      h.containerName(),
@@ -179,9 +208,12 @@ func (h *containerHandle) Info(ctx context.Context) (*runtime.ContainerInfo, err
 		if h.cri.image != "" {
 			info.Image = h.cri.image
 		}
-		status, _ := h.rt.criClient.InspectContainerStatus(ctx, h.id)
-		if status != nil {
-			info.Status = convertStatus(status.Status)
+		// Spoofed containers are not visible to CRI; skip status call.
+		if !h.spoofed {
+			status, _ := h.rt.criClient.InspectContainerStatus(ctx, h.id)
+			if status != nil {
+				info.Status = convertStatus(status.Status)
+			}
 		}
 		info.PodName = h.cri.labels["io.kubernetes.pod.name"]
 		info.PodNamespace = h.cri.labels["io.kubernetes.pod.namespace"]
@@ -196,6 +228,7 @@ func (h *containerHandle) Info(ctx context.Context) (*runtime.ContainerInfo, err
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig, error) {
+	h.ensureSpoofedSupplement(ctx)
 	h.ensureSpec(ctx)
 
 	cfg := &runtime.ContainerConfig{}
@@ -214,7 +247,10 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 		}
 	}
 
-	status, _ := h.rt.criClient.InspectContainerStatus(ctx, h.id)
+	var status *cri.ContainerStatus
+	if !h.spoofed {
+		status, _ = h.rt.criClient.InspectContainerStatus(ctx, h.id)
+	}
 	cfg.Environment = buildEnvironment(h.spec, status)
 
 	if cfg.CGroupPath != "" && h.rt.cgroupReader != nil {
@@ -232,15 +268,22 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) State(ctx context.Context) (*runtime.ContainerState, error) {
+	h.ensureSpoofedSupplement(ctx)
 	pid := h.pid(ctx)
 
 	state := &runtime.ContainerState{
 		PID: pid,
 	}
 
-	if h.cri != nil {
+	if h.spoofed {
+		state.Status = runtime.ContainerStatusStopped
+	} else if h.cri != nil {
 		status, _ := h.rt.criClient.InspectContainerStatus(ctx, h.id)
-		state.Status = convertStatus(status.Status)
+		if status != nil {
+			state.Status = convertStatus(status.Status)
+		} else {
+			state.Status = runtime.ContainerStatusUnknown
+		}
 	} else {
 		state.Status = runtime.ContainerStatusUnknown
 	}
@@ -258,16 +301,18 @@ func (h *containerHandle) State(ctx context.Context) (*runtime.ContainerState, e
 		}
 	}
 
-	if status, _ := h.rt.criClient.InspectContainerStatus(ctx, h.id); status != nil {
-		if !status.StartedAt.IsZero() {
-			state.StartedAt = status.StartedAt
+	if !h.spoofed {
+		if status, _ := h.rt.criClient.InspectContainerStatus(ctx, h.id); status != nil {
+			if !status.StartedAt.IsZero() {
+				state.StartedAt = status.StartedAt
+			}
+			if !status.FinishedAt.IsZero() {
+				state.ExitedAt = status.FinishedAt
+			}
+			state.ExitCode = status.ExitCode
+			state.ExitReason = status.Reason
+			state.RestartCount = status.RestartCount
 		}
-		if !status.FinishedAt.IsZero() {
-			state.ExitedAt = status.FinishedAt
-		}
-		state.ExitCode = status.ExitCode
-		state.ExitReason = status.Reason
-		state.RestartCount = status.RestartCount
 	}
 
 	return state, nil
@@ -278,6 +323,7 @@ func (h *containerHandle) State(ctx context.Context) (*runtime.ContainerState, e
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) Network(ctx context.Context) (*runtime.ContainerNetworkState, error) {
+	h.ensureSpoofedSupplement(ctx)
 	h.ensureSpec(ctx)
 	podNet := h.buildPodNetwork(ctx)
 	if podNet == nil {
@@ -377,6 +423,7 @@ func (h *containerHandle) Mounts(ctx context.Context) ([]*runtime.Mount, error) 
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile, error) {
+	h.ensureSpoofedSupplement(ctx)
 	h.ensureSpec(ctx)
 	pid := h.pid(ctx)
 

@@ -24,6 +24,41 @@ func crioContainerBundleDir(runRoot, containerID string) string {
 	return filepath.Join(runRoot, "overlay-containers", containerID, "userdata")
 }
 
+// ---------------------------------------------------------------------------
+// Spoofed container helpers
+// ---------------------------------------------------------------------------
+
+// buildSupplementFromSpecAnnotations creates a criContainerSupplement from
+// OCI spec annotations. This is used for spoofed containers that CRI cannot see.
+func buildSupplementFromSpecAnnotations(spec *runtimespec.Spec) *criContainerSupplement {
+	if spec == nil {
+		return nil
+	}
+	ann := spec.Annotations
+	if len(ann) == 0 {
+		return nil
+	}
+	labels := map[string]string{}
+	for _, key := range []string{
+		"io.kubernetes.container.name",
+		"io.kubernetes.pod.name",
+		"io.kubernetes.pod.namespace",
+		"io.kubernetes.pod.uid",
+	} {
+		if v, ok := ann[key]; ok {
+			labels[key] = v
+		}
+	}
+	return &criContainerSupplement{
+		podSandboxID: ann["io.kubernetes.cri-o.SandboxID"],
+		image:        ann["io.kubernetes.cri-o.ImageName"],
+		imageRef:     ann["io.kubernetes.cri-o.ImageRef"],
+		name:         ann["io.kubernetes.cri-o.ContainerName"],
+		labels:       labels,
+		annotations:  ann,
+	}
+}
+
 func existingPath(path string) string {
 	if _, err := os.Stat(path); err == nil {
 		return path

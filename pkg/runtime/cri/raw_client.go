@@ -129,6 +129,7 @@ func NewClient(socketPath string) *Client {
 }
 
 type containerInfo struct {
+	PID    int                         `json:"pid"`
 	Config *runtimeapi.ContainerConfig `json:"config"`
 }
 
@@ -468,6 +469,10 @@ func decodeContainerStatus(resp *runtimeapi.ContainerStatusResponse) *ContainerS
 	var info containerInfo
 	if err := json.Unmarshal([]byte(infoJSON), &info); err != nil {
 		return result
+	}
+
+	if info.PID > 0 {
+		result.PID = uint32(info.PID)
 	}
 
 	if info.Config == nil {
