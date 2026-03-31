@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -46,8 +47,9 @@ type ContainerDetailView struct {
 	runtimeView    *RuntimeInfoView
 	networkView    *NetworkInfoView
 
-	activeTab DetailTab
-	onBack    func()
+	activeTab  DetailTab
+	onBack     func()
+	refreshGen uint64
 }
 
 // NewContainerDetailView creates a new container detail view.
@@ -101,6 +103,7 @@ func (v *ContainerDetailView) setupLayout() {
 
 // SetContainer sets the container handle to display and loads initial data.
 func (v *ContainerDetailView) SetContainer(c runtime.Container) {
+	atomic.AddUint64(&v.refreshGen, 1)
 	v.container = c
 	v.info = nil
 	v.state = nil
@@ -152,8 +155,13 @@ func (v *ContainerDetailView) Refresh() {
 		return
 	}
 
+	gen := atomic.LoadUint64(&v.refreshGen)
+
 	info, err := v.container.Info(v.ctx)
 	if err != nil {
+		if atomic.LoadUint64(&v.refreshGen) != gen {
+			return
+		}
 		queueUpdateDraw(v.app, func() {
 			v.headerLine1.SetText(fmt.Sprintf(" [red]Failed to load container: %v[-]", err))
 			v.headerLine2.SetText(" ")
@@ -163,6 +171,11 @@ func (v *ContainerDetailView) Refresh() {
 	}
 
 	state, _ := v.container.State(v.ctx)
+
+	// Discard stale result if container was switched while we were loading.
+	if atomic.LoadUint64(&v.refreshGen) != gen {
+		return
+	}
 
 	v.info = info
 	v.state = state

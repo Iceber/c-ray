@@ -131,6 +131,7 @@ func (v *MainView) switchTab(tab TabIndex) {
 		v.app.SetFocus(v.podList.GetFocusPrimitive())
 	}
 	v.updateTabBar()
+	go v.refreshCurrentTab()
 }
 
 func (v *MainView) updateTabBar() {

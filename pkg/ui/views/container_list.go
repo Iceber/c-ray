@@ -104,6 +104,12 @@ func (v *ContainerTreeView) SetSelectedFunc(handler func(c runtime.Container)) {
 func (v *ContainerTreeView) Refresh(ctx context.Context) error {
 	containers, err := v.rt.ListContainers(ctx)
 	if err != nil {
+		v.entries = nil
+		queueUpdateDraw(v.app, func() {
+			root := v.tree.GetRoot()
+			root.ClearChildren()
+			root.AddChild(tview.NewTreeNode(fmt.Sprintf("[red]Failed to load containers: %v[-]", err)).SetSelectable(false))
+		})
 		return err
 	}
 

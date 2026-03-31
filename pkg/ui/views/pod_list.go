@@ -25,6 +25,8 @@ type PodListView struct {
 type podEntry struct {
 	info       *runtime.PodInfo
 	containers []runtime.Container
+	running    int
+	total      int
 }
 
 type podSelection struct {
@@ -65,6 +67,11 @@ func (v *PodListView) Refresh(ctx context.Context) error {
 
 	pods, err := v.rt.ListPods(ctx)
 	if err != nil {
+		v.pods = nil
+		queueUpdateDraw(v.app, func() {
+			v.table.ClearData()
+			v.table.AddRow(fmt.Sprintf("[red]Failed to load pods: %v[-]", err), "", "", "")
+		})
 		return err
 	}
 
@@ -75,7 +82,19 @@ func (v *PodListView) Refresh(ctx context.Context) error {
 			continue
 		}
 		containers, _ := p.Containers(ctx)
-		entries = append(entries, podEntry{info: info, containers: containers})
+		running := 0
+		for _, c := range containers {
+			cInfo, err := c.Info(ctx)
+			if err == nil && cInfo.Status == runtime.ContainerStatusRunning {
+				running++
+			}
+		}
+		entries = append(entries, podEntry{
+			info:       info,
+			containers: containers,
+			running:    running,
+			total:      len(containers),
+		})
 	}
 
 	v.pods = entries
@@ -89,15 +108,7 @@ func (v *PodListView) Refresh(ctx context.Context) error {
 func (v *PodListView) render() {
 	v.table.ClearData()
 	for _, pe := range v.pods {
-		running := 0
-		for _, c := range pe.containers {
-			info, err := c.Info(context.Background())
-			if err == nil && info.Status == runtime.ContainerStatusRunning {
-				running++
-			}
-		}
-		total := len(pe.containers)
-		containers := fmt.Sprintf("%d/%d", running, total)
+		containers := fmt.Sprintf("%d/%d", pe.running, pe.total)
 
 		uid := pe.info.UID
 		if len(uid) > 36 {
@@ -108,9 +119,9 @@ func (v *PodListView) render() {
 
 		row := v.table.DataRowCount() - 1
 		switch {
-		case running == total && total > 0:
+		case pe.running == pe.total && pe.total > 0:
 			v.table.SetRowColor(row, tcell.ColorGreen)
-		case running > 0:
+		case pe.running > 0:
 			v.table.SetRowColor(row, tcell.ColorYellow)
 		default:
 			v.table.SetRowColor(row, tcell.ColorRed)

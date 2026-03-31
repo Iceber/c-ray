@@ -216,36 +216,30 @@ func (v *ImageLayersView) render() {
 	v.mu.Lock()
 	storage := v.storage
 	config := v.config
-	runtime := v.runtime
+	rt := v.runtime
 	rwStats := v.rwStats
 	imgConfig := v.imageConfig
 	lastError := v.lastError
 	v.mu.Unlock()
 
-	v.header.SetText(buildLayerHeaderV1(config, runtime, imgConfig))
+	headerText := buildLayerHeaderV1(config, rt, imgConfig)
 
 	root := tview.NewTreeNode("[aqua::b]Rootfs Layers[-:-:-]").SetSelectable(false).SetExpanded(true)
 	if lastError != nil {
 		root.AddChild(tview.NewTreeNode("[red]Failed to load layers: " + lastError.Error() + "[-]").SetSelectable(false))
-		v.tree.SetRoot(root)
-		v.tree.SetCurrentNode(root)
-		v.refreshBodyLayout()
-		return
-	}
-	if storage == nil {
+	} else if storage == nil {
 		root.AddChild(tview.NewTreeNode("[gray]Refresh to resolve snapshotter, rootfs path and image layers[-]").SetSelectable(false))
+	} else {
+		root.AddChild(buildRWLayerNodeV1(config, rwStats, storage.RWLayerPath))
+		root.AddChild(buildReadOnlyLayersNodeV1(storage.ReadOnlyLayers))
+	}
+
+	queueUpdateDraw(v.app, func() {
+		v.header.SetText(headerText)
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(root)
 		v.refreshBodyLayout()
-		return
-	}
-
-	root.AddChild(buildRWLayerNodeV1(config, rwStats, storage.RWLayerPath))
-	root.AddChild(buildReadOnlyLayersNodeV1(storage.ReadOnlyLayers))
-
-	v.tree.SetRoot(root)
-	v.tree.SetCurrentNode(root)
-	v.refreshBodyLayout()
+	})
 }
 
 func (v *ImageLayersView) expandAll() {

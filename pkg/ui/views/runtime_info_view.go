@@ -71,6 +71,7 @@ func (v *RuntimeInfoView) Refresh(ctx context.Context) error {
 
 	profile, err := c.Runtime(ctx)
 	if err != nil {
+		v.renderError(err)
 		return err
 	}
 
@@ -80,6 +81,15 @@ func (v *RuntimeInfoView) Refresh(ctx context.Context) error {
 	v.render(profile, config, state)
 	v.updateStatusBar()
 	return nil
+}
+
+func (v *RuntimeInfoView) renderError(err error) {
+	queueUpdateDraw(v.app, func() {
+		root := tview.NewTreeNode("[aqua::b]Runtime[-:-:-]").SetSelectable(false).SetExpanded(true)
+		root.AddChild(tview.NewTreeNode(fmt.Sprintf("[red]Failed to load runtime: %v[-]", err)).SetSelectable(false))
+		v.tree.SetRoot(root)
+		v.tree.SetCurrentNode(root)
+	})
 }
 
 // HandleInput processes tree interaction.
@@ -113,28 +123,29 @@ func (v *RuntimeInfoView) GetFocusPrimitive() tview.Primitive {
 }
 
 func (v *RuntimeInfoView) renderEmpty() {
-	root := tview.NewTreeNode("[aqua::b]Runtime[-:-:-]").SetSelectable(false).SetExpanded(true)
-	root.AddChild(tview.NewTreeNode("[gray]Refresh to resolve shim, OCI runtime and namespace metadata[-]").SetSelectable(false))
-	v.tree.SetRoot(root)
-	v.tree.SetCurrentNode(root)
-}
-
-func (v *RuntimeInfoView) render(runtime *runtime.RuntimeProfile, config *runtime.ContainerConfig, state *runtime.ContainerState) {
-	root := tview.NewTreeNode("[aqua::b]Runtime[-:-:-]").SetSelectable(false).SetExpanded(true)
-
-	if runtime == nil {
-		root.AddChild(tview.NewTreeNode("[gray]Runtime metadata unresolved[-]").SetSelectable(false))
+	queueUpdateDraw(v.app, func() {
+		root := tview.NewTreeNode("[aqua::b]Runtime[-:-:-]").SetSelectable(false).SetExpanded(true)
+		root.AddChild(tview.NewTreeNode("[gray]Refresh to resolve shim, OCI runtime and namespace metadata[-]").SetSelectable(false))
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(root)
-		return
+	})
+}
+
+func (v *RuntimeInfoView) render(rt *runtime.RuntimeProfile, config *runtime.ContainerConfig, state *runtime.ContainerState) {
+	root := tview.NewTreeNode("[aqua::b]Runtime[-:-:-]").SetSelectable(false).SetExpanded(true)
+
+	if rt == nil {
+		root.AddChild(tview.NewTreeNode("[gray]Runtime metadata unresolved[-]").SetSelectable(false))
+	} else {
+		root.AddChild(buildShimNodeV1(rt, state))
+		root.AddChild(buildOCINodeV1(rt))
+		root.AddChild(buildNamespaceNodeV1(config))
 	}
 
-	root.AddChild(buildShimNodeV1(runtime, state))
-	root.AddChild(buildOCINodeV1(runtime))
-	root.AddChild(buildNamespaceNodeV1(config))
-
-	v.tree.SetRoot(root)
-	v.tree.SetCurrentNode(root)
+	queueUpdateDraw(v.app, func() {
+		v.tree.SetRoot(root)
+		v.tree.SetCurrentNode(root)
+	})
 }
 
 func (v *RuntimeInfoView) expandAll() {

@@ -107,6 +107,16 @@ func (v *TopView) Refresh(ctx context.Context) error {
 
 	stats, err := c.ProcessStats(ctx)
 	if err != nil {
+		v.mu.Lock()
+		v.flatProcs = nil
+		v.networkIO = nil
+		v.procCount = 0
+		v.mu.Unlock()
+		queueUpdateDraw(v.app, func() {
+			v.table.ClearData()
+			v.table.AddRow(fmt.Sprintf("[red]Error: %v[-]", err), "", "", "", "", "", "", "", "", "", "")
+			v.updateStatusBar()
+		})
 		return err
 	}
 

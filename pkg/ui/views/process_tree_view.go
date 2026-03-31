@@ -66,6 +66,15 @@ func (v *ProcessTreeView) Refresh(ctx context.Context) error {
 
 	processes, err := c.Processes(ctx)
 	if err != nil {
+		v.mu.Lock()
+		v.processes = nil
+		v.mu.Unlock()
+		queueUpdateDraw(v.app, func() {
+			root := tview.NewTreeNode(fmt.Sprintf("[red]Failed to load processes: %v[-]", err)).SetSelectable(false)
+			v.tree.SetRoot(root)
+			v.tree.SetCurrentNode(root)
+			v.updateStatusBar()
+		})
 		return err
 	}
 

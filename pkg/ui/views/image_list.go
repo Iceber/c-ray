@@ -59,6 +59,11 @@ func (v *ImageListView) Refresh(ctx context.Context) error {
 
 	images, err := v.rt.ListImages(ctx)
 	if err != nil {
+		v.images = nil
+		queueUpdateDraw(v.app, func() {
+			v.table.ClearData()
+			v.table.AddRow(fmt.Sprintf("[red]Failed to load images: %v[-]", err), "", "", "")
+		})
 		return err
 	}
 

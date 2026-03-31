@@ -71,12 +71,22 @@ func (v *NetworkInfoView) Refresh(ctx context.Context) error {
 
 	netState, err := c.Network(ctx)
 	if err != nil {
+		v.renderError(err)
 		return err
 	}
 
 	v.render(netState)
 	v.updateStatusBar()
 	return nil
+}
+
+func (v *NetworkInfoView) renderError(err error) {
+	queueUpdateDraw(v.app, func() {
+		root := tview.NewTreeNode("[aqua::b]Network[-:-:-]").SetSelectable(false).SetExpanded(true)
+		root.AddChild(tview.NewTreeNode(fmt.Sprintf("[red]Failed to load network: %v[-]", err)).SetSelectable(false))
+		v.tree.SetRoot(root)
+		v.tree.SetCurrentNode(root)
+	})
 }
 
 // HandleInput processes tree interaction.
@@ -110,18 +120,22 @@ func (v *NetworkInfoView) GetFocusPrimitive() tview.Primitive {
 }
 
 func (v *NetworkInfoView) renderEmpty() {
-	root := tview.NewTreeNode("[aqua::b]Network[-:-:-]").SetSelectable(false).SetExpanded(true)
-	root.AddChild(tview.NewTreeNode("[gray]Refresh to resolve sandbox, DNS, interfaces and routes[-]").SetSelectable(false))
-	v.tree.SetRoot(root)
-	v.tree.SetCurrentNode(root)
+	queueUpdateDraw(v.app, func() {
+		root := tview.NewTreeNode("[aqua::b]Network[-:-:-]").SetSelectable(false).SetExpanded(true)
+		root.AddChild(tview.NewTreeNode("[gray]Refresh to resolve sandbox, DNS, interfaces and routes[-]").SetSelectable(false))
+		v.tree.SetRoot(root)
+		v.tree.SetCurrentNode(root)
+	})
 }
 
 func (v *NetworkInfoView) render(netState *runtime.ContainerNetworkState) {
 	root := tview.NewTreeNode("[aqua::b]Network[-:-:-]").SetSelectable(false).SetExpanded(true)
 	if netState == nil || netState.PodNetwork == nil {
 		root.AddChild(tview.NewTreeNode("[gray]No network metadata available[-]").SetSelectable(false))
-		v.tree.SetRoot(root)
-		v.tree.SetCurrentNode(root)
+		queueUpdateDraw(v.app, func() {
+			v.tree.SetRoot(root)
+			v.tree.SetCurrentNode(root)
+		})
 		return
 	}
 
@@ -132,8 +146,11 @@ func (v *NetworkInfoView) render(netState *runtime.ContainerNetworkState) {
 	root.AddChild(buildRoutesNodeV1(network.CNI))
 	root.AddChild(buildDNSNodeV1("CNI DNS", cniDNSV1(network.CNI), false))
 
-	v.tree.SetRoot(root)
-	v.tree.SetCurrentNode(selectFirstNetworkNode(root))
+	firstNode := selectFirstNetworkNode(root)
+	queueUpdateDraw(v.app, func() {
+		v.tree.SetRoot(root)
+		v.tree.SetCurrentNode(firstNode)
+	})
 }
 
 func (v *NetworkInfoView) expandAll() {

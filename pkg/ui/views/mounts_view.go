@@ -84,6 +84,10 @@ func (v *MountsView) Refresh(ctx context.Context) error {
 
 	mounts, err := c.Mounts(ctx)
 	if err != nil {
+		v.mu.Lock()
+		v.mounts = nil
+		v.mu.Unlock()
+		v.render()
 		return err
 	}
 
@@ -144,27 +148,26 @@ func (v *MountsView) render() {
 	root := tview.NewTreeNode("[aqua::b]Mounts[-:-:-]").SetSelectable(false).SetExpanded(true)
 	if len(mounts) == 0 {
 		root.AddChild(tview.NewTreeNode("[gray]Refresh to resolve mounts[-]").SetSelectable(false))
-		v.tree.SetRoot(root)
-		v.tree.SetCurrentNode(root)
-		v.renderSelectionDetail(root)
-		return
+	} else {
+		rootMount, criMounts, runtimeMounts, otherMounts := splitMounts(mounts)
+		if rootMount != nil {
+			root.AddChild(buildMountNodeV1(rootMount, runtimePath))
+		}
+		root.AddChild(buildMountGroupNodeV1("CRI Mounts", criMounts, true, runtimePath))
+		root.AddChild(buildMountGroupNodeV1("Runtime Mounts", runtimeMounts, false, runtimePath))
+		root.AddChild(buildMountGroupNodeV1("Kernel / Other", otherMounts, false, runtimePath))
 	}
 
-	rootMount, criMounts, runtimeMounts, otherMounts := splitMounts(mounts)
-	if rootMount != nil {
-		root.AddChild(buildMountNodeV1(rootMount, runtimePath))
-	}
-	root.AddChild(buildMountGroupNodeV1("CRI Mounts", criMounts, true, runtimePath))
-	root.AddChild(buildMountGroupNodeV1("Runtime Mounts", runtimeMounts, false, runtimePath))
-	root.AddChild(buildMountGroupNodeV1("Kernel / Other", otherMounts, false, runtimePath))
-
-	v.tree.SetRoot(root)
 	current := root
 	if len(root.GetChildren()) > 0 {
 		current = root.GetChildren()[0]
 	}
-	v.tree.SetCurrentNode(current)
-	v.renderSelectionDetail(current)
+
+	queueUpdateDraw(v.app, func() {
+		v.tree.SetRoot(root)
+		v.tree.SetCurrentNode(current)
+		v.renderSelectionDetail(current)
+	})
 }
 
 func (v *MountsView) renderSelectionDetail(node *tview.TreeNode) {
