@@ -79,18 +79,19 @@ func runTests(args []string) {
 		fmt.Println("    container-network <id>             Show container network")
 		fmt.Println("    container-storage <id>             Show container storage / layers")
 		fmt.Println("    container-processes <id>           Show container processes")
-		fmt.Println("    crio-container-storage <id>        Show CRI-O storage object details")
+		fmt.Println("    container-process-stats <id> <pid> Show single process stats")
+		fmt.Println("    container-image <id>               Show container's image info")
 		fmt.Println("    container-all <id>                 Show all container details")
 		fmt.Println("\n  Images:")
 		fmt.Println("    list-images                        List all images")
 		fmt.Println("    image-info <ref>                   Show image info")
 		fmt.Println("    image-config <ref>                 Show image config")
 		fmt.Println("    image-layers <ref> [snapshotter]   Show image layers")
-		fmt.Println("    crio-image-storage <ref>           Show CRI-O image storage details")
 		fmt.Println("\n  Pods:")
 		fmt.Println("    list-pods                          List all pods")
+		fmt.Println("    pod-info <uid>                     Show pod details")
 		fmt.Println("\n  Runtime:")
-		fmt.Println("    crio-store-info                    Show CRI-O containers/storage profile")
+		fmt.Println("    runtime-info                       Show runtime / storage backend info")
 		os.Exit(1)
 	}
 
@@ -138,9 +139,12 @@ func runTests(args []string) {
 	case "container-processes":
 		requireArg(args, "container-processes <id>")
 		containerProcesses(ctx, rt, args[1])
-	case "crio-container-storage":
-		requireArg(args, "crio-container-storage <id>")
-		crioContainerStorage(ctx, rt, args[1])
+	case "container-process-stats":
+		requireArgN(args, 3, "container-process-stats <id> <pid>")
+		containerProcessStatsByPID(ctx, rt, args[1], args[2])
+	case "container-image":
+		requireArg(args, "container-image <id>")
+		containerImage(ctx, rt, args[1])
 	case "container-all":
 		requireArg(args, "container-all <id>")
 		containerAll(ctx, rt, args[1])
@@ -159,13 +163,13 @@ func runTests(args []string) {
 			snap = args[2]
 		}
 		imageLayers(ctx, rt, args[1], snap)
-	case "crio-image-storage":
-		requireArg(args, "crio-image-storage <ref>")
-		crioImageStorage(ctx, rt, args[1])
 	case "list-pods":
 		listPods(ctx, rt)
-	case "crio-store-info":
-		crioStoreInfo(ctx, rt)
+	case "pod-info":
+		requireArg(args, "pod-info <uid>")
+		podInfo(ctx, rt, args[1])
+	case "runtime-info":
+		runtimeInfo(ctx, rt)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown test command: %s\n", command)
 		os.Exit(1)
@@ -174,6 +178,13 @@ func runTests(args []string) {
 
 func requireArg(args []string, usage string) {
 	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: cray test %s\n", usage)
+		os.Exit(1)
+	}
+}
+
+func requireArgN(args []string, n int, usage string) {
+	if len(args) < n {
 		fmt.Fprintf(os.Stderr, "Usage: cray test %s\n", usage)
 		os.Exit(1)
 	}
@@ -333,6 +344,22 @@ func containerRuntime(ctx context.Context, rt runtime.Runtime, id string) {
 			fmt.Printf("Sandbox Bundle:  %s\n", shim.SandboxBundleDir)
 		}
 	}
+	if conmon := profile.Conmon; conmon != nil {
+		fmt.Println("\n--- Conmon ---")
+		fmt.Printf("PID:             %d\n", conmon.PID)
+		if conmon.BinaryPath != "" {
+			fmt.Printf("Binary:          %s\n", conmon.BinaryPath)
+		}
+		if len(conmon.Cmdline) > 0 {
+			fmt.Printf("Cmdline:         %s\n", strings.Join(conmon.Cmdline, " "))
+		}
+		if conmon.LogDriver != "" {
+			fmt.Printf("Log Driver:      %s\n", conmon.LogDriver)
+		}
+		if conmon.LogPath != "" {
+			fmt.Printf("Log Path:        %s\n", conmon.LogPath)
+		}
+	}
 }
 
 func containerMounts(ctx context.Context, rt runtime.Runtime, id string) {
@@ -448,6 +475,14 @@ func containerStorage(ctx context.Context, rt runtime.Runtime, id string) {
 			}
 		}
 	}
+
+	// CRI-O extended storage introspection (auto-detected).
+	if inspector, ok := c.(runtimecrio.ContainerIntrospector); ok {
+		crioInfo, err := inspector.CRIOContainerInfo(ctx)
+		if err == nil {
+			printCRIOContainerStorage(id, crioInfo)
+		}
+	}
 }
 
 func containerProcesses(ctx context.Context, rt runtime.Runtime, id string) {
@@ -472,6 +507,35 @@ func containerProcesses(ctx context.Context, rt runtime.Runtime, id string) {
 	}
 }
 
+func containerProcessStatsByPID(ctx context.Context, rt runtime.Runtime, id, pid string) {
+	c := mustGetContainer(ctx, rt, id)
+	stats, err := c.GetProcessStats(ctx, pid)
+	exitOnErr("GetProcessStats", err)
+
+	fmt.Printf("=== Process Stats: container=%s pid=%s ===\n", shortID(id), pid)
+	if stats == nil {
+		fmt.Println("No stats available.")
+		return
+	}
+	printProcessStats(stats, 0)
+}
+
+func containerImage(ctx context.Context, rt runtime.Runtime, id string) {
+	c := mustGetContainer(ctx, rt, id)
+	img, err := c.Image(ctx)
+	exitOnErr("Image", err)
+
+	info, err := img.Info(ctx)
+	exitOnErr("Image.Info", err)
+
+	fmt.Printf("=== Container Image: %s ===\n", shortID(id))
+	fmt.Printf("Ref:       %s\n", img.Ref())
+	fmt.Printf("Name:      %s\n", info.Name)
+	fmt.Printf("Digest:    %s\n", info.Digest)
+	fmt.Printf("Size:      %s\n", formatBytes(info.Size))
+	fmt.Printf("Created:   %s\n", info.CreatedAt.Format("2006-01-02 15:04:05"))
+}
+
 func containerAll(ctx context.Context, rt runtime.Runtime, id string) {
 	containerInfo(ctx, rt, id)
 	fmt.Println()
@@ -487,9 +551,9 @@ func containerAll(ctx context.Context, rt runtime.Runtime, id string) {
 	fmt.Println()
 	containerStorage(ctx, rt, id)
 	fmt.Println()
-	crioContainerStorage(ctx, rt, id)
-	fmt.Println()
 	containerProcesses(ctx, rt, id)
+	fmt.Println()
+	containerImage(ctx, rt, id)
 }
 
 // ---------------------------------------------------------------------------
@@ -530,6 +594,14 @@ func imageInfo(ctx context.Context, rt runtime.Runtime, ref string) {
 	fmt.Printf("Digest:    %s\n", info.Digest)
 	fmt.Printf("Size:      %s\n", formatBytes(info.Size))
 	fmt.Printf("Created:   %s\n", info.CreatedAt.Format("2006-01-02 15:04:05"))
+
+	// CRI-O extended image introspection (auto-detected).
+	if inspector, ok := img.(runtimecrio.ImageIntrospector); ok {
+		crioInfo, err := inspector.CRIOImageInfo(ctx)
+		if err == nil {
+			printCRIOImageStorage(ref, crioInfo)
+		}
+	}
 }
 
 func imageConfig(ctx context.Context, rt runtime.Runtime, ref string) {
@@ -583,52 +655,43 @@ func imageLayers(ctx context.Context, rt runtime.Runtime, ref, snapshotter strin
 	}
 }
 
-func crioStoreInfo(ctx context.Context, rt runtime.Runtime) {
-	inspector, ok := rt.(runtimecrio.StoreIntrospector)
-	if !ok {
-		fmt.Println("Current runtime does not expose CRI-O store introspection.")
-		return
-	}
-	info, err := inspector.CRIOStoreInfo(ctx)
-	exitOnErr("CRI-O store info", err)
+func runtimeInfo(ctx context.Context, rt runtime.Runtime) {
+	if inspector, ok := rt.(runtimecrio.StoreIntrospector); ok {
+		info, err := inspector.CRIOStoreInfo(ctx)
+		exitOnErr("CRI-O store info", err)
 
-	fmt.Println("=== CRI-O Store Info ===")
-	fmt.Printf("Graph Root:       %s\n", info.GraphRoot)
-	fmt.Printf("Run Root:         %s\n", info.RunRoot)
-	fmt.Printf("Image Store:      %s\n", emptyDash(info.ImageStore))
-	fmt.Printf("Driver:           %s\n", info.GraphDriverName)
-	fmt.Printf("Transient Store:  %v\n", info.TransientStore)
-	if len(info.GraphOptions) > 0 {
-		fmt.Printf("Graph Options:    %s\n", strings.Join(info.GraphOptions, ", "))
-	}
-	if len(info.PullOptions) > 0 {
-		fmt.Printf("Pull Options:     %s\n", formatStringMap(info.PullOptions))
-	}
-	if len(info.AdditionalImageStores) > 0 {
-		fmt.Printf("Additional Image Stores: %s\n", strings.Join(info.AdditionalImageStores, ", "))
-	}
-	if len(info.AdditionalLayerStores) > 0 {
-		fmt.Printf("Additional Layer Stores: %s\n", strings.Join(info.AdditionalLayerStores, ", "))
-	}
-	if len(info.DriverStatus) > 0 {
-		fmt.Println("\nDriver Status:")
-		for _, key := range sortedStringKeys(info.DriverStatus) {
-			fmt.Printf("  %-20s %s\n", key, info.DriverStatus[key])
+		fmt.Println("=== Runtime Info (CRI-O) ===")
+		fmt.Printf("Graph Root:       %s\n", info.GraphRoot)
+		fmt.Printf("Run Root:         %s\n", info.RunRoot)
+		fmt.Printf("Image Store:      %s\n", emptyDash(info.ImageStore))
+		fmt.Printf("Driver:           %s\n", info.GraphDriverName)
+		fmt.Printf("Transient Store:  %v\n", info.TransientStore)
+		if len(info.GraphOptions) > 0 {
+			fmt.Printf("Graph Options:    %s\n", strings.Join(info.GraphOptions, ", "))
 		}
+		if len(info.PullOptions) > 0 {
+			fmt.Printf("Pull Options:     %s\n", formatStringMap(info.PullOptions))
+		}
+		if len(info.AdditionalImageStores) > 0 {
+			fmt.Printf("Additional Image Stores: %s\n", strings.Join(info.AdditionalImageStores, ", "))
+		}
+		if len(info.AdditionalLayerStores) > 0 {
+			fmt.Printf("Additional Layer Stores: %s\n", strings.Join(info.AdditionalLayerStores, ", "))
+		}
+		if len(info.DriverStatus) > 0 {
+			fmt.Println("\nDriver Status:")
+			for _, key := range sortedStringKeys(info.DriverStatus) {
+				fmt.Printf("  %-20s %s\n", key, info.DriverStatus[key])
+			}
+		}
+	} else {
+		fmt.Println("=== Runtime Info ===")
+		fmt.Println("No extended runtime introspection available for current backend.")
 	}
 }
 
-func crioContainerStorage(ctx context.Context, rt runtime.Runtime, id string) {
-	c := mustGetContainer(ctx, rt, id)
-	inspector, ok := c.(runtimecrio.ContainerIntrospector)
-	if !ok {
-		fmt.Println("Container does not expose CRI-O storage introspection.")
-		return
-	}
-	info, err := inspector.CRIOContainerInfo(ctx)
-	exitOnErr("CRI-O container storage", err)
-
-	fmt.Printf("=== CRI-O Container Storage: %s ===\n", shortID(id))
+func printCRIOContainerStorage(id string, info *runtimecrio.ContainerInfo) {
+	fmt.Printf("\n--- CRI-O Container Storage ---\n")
 	fmt.Printf("Storage ID:       %s\n", info.ID)
 	fmt.Printf("Names:            %s\n", joinOrDash(info.Names))
 	fmt.Printf("Image ID:         %s\n", emptyDash(info.ImageID))
@@ -682,17 +745,8 @@ func crioContainerStorage(ctx context.Context, rt runtime.Runtime, id string) {
 	}
 }
 
-func crioImageStorage(ctx context.Context, rt runtime.Runtime, ref string) {
-	img := mustGetImage(ctx, rt, ref)
-	inspector, ok := img.(runtimecrio.ImageIntrospector)
-	if !ok {
-		fmt.Println("Image does not expose CRI-O storage introspection.")
-		return
-	}
-	info, err := inspector.CRIOImageInfo(ctx)
-	exitOnErr("CRI-O image storage", err)
-
-	fmt.Printf("=== CRI-O Image Storage: %s ===\n", ref)
+func printCRIOImageStorage(ref string, info *runtimecrio.ImageInfo) {
+	fmt.Printf("\n--- CRI-O Image Storage ---\n")
 	fmt.Printf("Storage ID:       %s\n", info.ID)
 	fmt.Printf("Names:            %s\n", joinOrDash(info.Names))
 	if len(info.NamesHistory) > 0 {
@@ -890,6 +944,50 @@ func listPods(ctx context.Context, rt runtime.Runtime) {
 				fmt.Printf("    [%d] %s (%s)\n", j+1, cInfo.Name, cInfo.Status)
 			}
 		}
+		fmt.Println()
+	}
+}
+
+func podInfo(ctx context.Context, rt runtime.Runtime, uid string) {
+	pods, err := rt.ListPods(ctx)
+	exitOnErr("ListPods", err)
+
+	var target runtime.Pod
+	for _, pod := range pods {
+		if pod.UID() == uid {
+			target = pod
+			break
+		}
+	}
+	if target == nil {
+		fmt.Fprintf(os.Stderr, "Pod not found: %s\n", uid)
+		os.Exit(1)
+	}
+
+	info, err := target.Info(ctx)
+	exitOnErr("Pod.Info", err)
+
+	fmt.Printf("=== Pod Info: %s ===\n", uid)
+	fmt.Printf("Name:       %s\n", info.Name)
+	fmt.Printf("Namespace:  %s\n", info.Namespace)
+	fmt.Printf("UID:        %s\n", info.UID)
+
+	containers, err := target.Containers(ctx)
+	exitOnErr("Pod.Containers", err)
+
+	fmt.Printf("Containers: %d\n\n", len(containers))
+	for i, c := range containers {
+		cInfo, err := c.Info(ctx)
+		if err != nil {
+			fmt.Printf("[%d] %s  (info error: %v)\n", i+1, c.ID(), err)
+			continue
+		}
+		fmt.Printf("[%d] Container:\n", i+1)
+		fmt.Printf("  ID:      %s\n", shortID(cInfo.ID))
+		fmt.Printf("  Name:    %s\n", cInfo.Name)
+		fmt.Printf("  Image:   %s\n", cInfo.Image)
+		fmt.Printf("  Status:  %s\n", cInfo.Status)
+		fmt.Printf("  PID:     %d\n", cInfo.PID)
 		fmt.Println()
 	}
 }
