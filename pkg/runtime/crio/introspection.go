@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -172,6 +173,7 @@ type LayerInfo struct {
 	BigDataNames       []string
 	DriverMetadata     map[string]string
 	Path               string
+	OverlayLinkID      string
 }
 
 // ContainerInfo captures CRI-O container storage object details.
@@ -504,6 +506,14 @@ func (r *Runtime) convertStorageLayer(store cstorage.Store, layer *cstorage.Laye
 	}
 	if info.Path == "" && store.GraphDriverName() == defaultGraphDriver {
 		info.Path = filepath.Join(store.GraphRoot(), store.GraphDriverName(), layer.ID, "diff")
+	}
+	// Read the short-link name from the overlay "link" file.
+	// The file lives at <layerDir>/link, one level above the diff directory.
+	if store.GraphDriverName() == defaultGraphDriver && info.Path != "" {
+		layerDir := filepath.Dir(info.Path)
+		if linkData, err := os.ReadFile(filepath.Join(layerDir, "link")); err == nil {
+			info.OverlayLinkID = strings.TrimSpace(string(linkData))
+		}
 	}
 	return info
 }
@@ -1077,9 +1087,10 @@ func (r *Runtime) convertStorageLayerToRuntime(store cstorage.Store, layer *csto
 		UsageSize:          info.UncompressedSize,
 		Path:               info.Path,
 		Crio: &runtime.ImageCRIOLayer{
-			ID:       info.ID,
-			Names:    append([]string(nil), info.Names...),
-			Metadata: info.DriverMetadata,
+			ID:            info.ID,
+			Names:         append([]string(nil), info.Names...),
+			Metadata:      info.DriverMetadata,
+			OverlayLinkID: info.OverlayLinkID,
 		},
 	}
 }

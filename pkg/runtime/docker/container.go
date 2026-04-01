@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -175,6 +176,9 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 	}
 	if cfg.WritableLayerPath == "" || cfg.ReadOnlyLayerPath == "" {
 		if live := h.resolveLiveRootPaths(); live != nil {
+			if cfg.SnapshotKey == "" {
+				cfg.SnapshotKey = live.rwSnapshotKey
+			}
 			if cfg.WritableLayerPath == "" {
 				cfg.WritableLayerPath = live.upperdir
 			}
@@ -391,6 +395,7 @@ func (h *containerHandle) Storage(ctx context.Context) (*runtime.ContainerStorag
 	if storage.GraphDriver == "" {
 		storage.GraphDriver = h.inspect.Driver
 	}
+	storage.Snapshotter = h.inspect.Driver
 
 	// RW layer path.
 	if upper, ok := gd.Data["UpperDir"]; ok {
@@ -398,6 +403,7 @@ func (h *containerHandle) Storage(ctx context.Context) (*runtime.ContainerStorag
 	}
 	if storage.RWLayerPath == "" {
 		if live := h.resolveLiveRootPaths(); live != nil {
+			storage.RWSnapshotKey = live.rwSnapshotKey
 			storage.RWLayerPath = live.upperdir
 		}
 	}
@@ -601,9 +607,10 @@ func (h *containerHandle) cgroupPath() string {
 }
 
 type liveRootPaths struct {
-	rootfs    string
-	upperdir  string
-	baseLayer string
+	rootfs        string
+	upperdir      string
+	baseLayer     string
+	rwSnapshotKey string
 }
 
 func (h *containerHandle) resolveLiveRootPaths() *liveRootPaths {
@@ -626,6 +633,7 @@ func (h *containerHandle) resolveLiveRootPaths() *liveRootPaths {
 	if upperdir != "" {
 		paths.upperdir = upperdir
 		paths.rootfs = upperdir
+		paths.rwSnapshotKey = dockerSnapshotKeyFromPath(upperdir)
 	} else {
 		paths.rootfs = rootMount.Source
 	}
@@ -639,6 +647,21 @@ func (h *containerHandle) resolveLiveRootPaths() *liveRootPaths {
 		return nil
 	}
 	return paths
+}
+
+func dockerSnapshotKeyFromPath(path string) string {
+	cleaned := filepath.Clean(path)
+	parts := strings.Split(cleaned, string(filepath.Separator))
+	for i, part := range parts {
+		if part == "snapshots" && i+2 < len(parts) {
+			next := parts[i+1]
+			leaf := parts[i+2]
+			if next != "" && (leaf == "fs" || leaf == "diff") {
+				return next
+			}
+		}
+	}
+	return ""
 }
 
 func (h *containerHandle) liveContainerPID() uint32 {

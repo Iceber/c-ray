@@ -22,6 +22,9 @@ func TestContainerConfigFallsBackToLiveMountPaths(t *testing.T) {
 	if cfg.Snapshotter != "overlayfs" {
 		t.Fatalf("Snapshotter = %s, want overlayfs", cfg.Snapshotter)
 	}
+	if cfg.SnapshotKey != "1102" {
+		t.Fatalf("SnapshotKey = %s, want 1102", cfg.SnapshotKey)
+	}
 	if cfg.WritableLayerPath != upperDir {
 		t.Fatalf("WritableLayerPath = %s, want %s", cfg.WritableLayerPath, upperDir)
 	}
@@ -39,6 +42,12 @@ func TestContainerStorageFallsBackToLiveMountRWPath(t *testing.T) {
 	}
 	if storage.GraphDriver != "overlayfs" {
 		t.Fatalf("GraphDriver = %s, want overlayfs", storage.GraphDriver)
+	}
+	if storage.Snapshotter != "overlayfs" {
+		t.Fatalf("Snapshotter = %s, want overlayfs", storage.Snapshotter)
+	}
+	if storage.RWSnapshotKey != "1102" {
+		t.Fatalf("RWSnapshotKey = %s, want 1102", storage.RWSnapshotKey)
 	}
 	if storage.RWLayerPath != upperDir {
 		t.Fatalf("RWLayerPath = %s, want %s", storage.RWLayerPath, upperDir)

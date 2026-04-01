@@ -37,8 +37,10 @@ type ImageLayer struct {
 
 // ImageDockerLayer contains Docker-specific layer fields (classic image store).
 type ImageDockerLayer struct {
-	CacheID     string
-	GraphDriver string
+	CacheID       string
+	GraphDriver   string
+	ShortLinkID   string
+	ShortLinkPath string
 }
 
 type ImageContainerdLayer struct {
@@ -48,15 +50,18 @@ type ImageContainerdLayer struct {
 
 // ImageCRIOLayer contains CRI-O/containers-storage specific layer fields.
 type ImageCRIOLayer struct {
-	ID       string
-	Metadata map[string]string
-	Names    []string
+	ID            string
+	Metadata      map[string]string
+	Names         []string
+	OverlayLinkID string
 }
 
 type ContainerStorage struct {
 	ReadOnlyLayers []*ImageLayer
 
-	RWLayerPath string
+	Snapshotter   string
+	RWSnapshotKey string
+	RWLayerPath   string
 
 	// GraphDriver is the name of the storage driver (e.g. "overlay2", "overlayfs").
 	GraphDriver string

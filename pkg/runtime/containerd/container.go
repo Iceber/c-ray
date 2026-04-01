@@ -288,6 +288,8 @@ func (h *containerHandle) Storage(ctx context.Context) (*runtime.ContainerStorag
 	}
 
 	storage := &runtime.ContainerStorage{}
+	storage.Snapshotter = info.Snapshotter
+	storage.RWSnapshotKey = info.SnapshotKey
 
 	// RW layer path.
 	if path, err := rwLayerPathFromMounts(ctx, snapshotter, info.SnapshotKey); err == nil {
