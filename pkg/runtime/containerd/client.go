@@ -25,6 +25,7 @@ type Runtime struct {
 	cgroupReader     *sysinfo.CGroupReader
 	mountReader      *sysinfo.MountReader
 	criClient        criMetadataClient
+	paths            containerdPaths
 }
 
 // New creates a new containerd-backed runtime.
@@ -54,6 +55,7 @@ func (r *Runtime) Connect(ctx context.Context) error {
 		return fmt.Errorf("failed to connect to containerd at %s: %w", r.config.SocketPath, err)
 	}
 	r.client = c
+	r.paths = resolveContainerdPaths(ctx, c, r.procReader)
 	return nil
 }
 

@@ -111,10 +111,11 @@ func (h *imageHandle) Config(ctx context.Context) (*runtime.ImageConfigInfo, err
 	targetKind, schema := describeImageTarget(m.target.MediaType)
 
 	return &runtime.ImageConfigInfo{
-		ContentPath:     contentPath(m.configDesc.Digest),
+		ContentPath:     contentPath(h.rt.paths.Root, m.configDesc.Digest),
 		TargetMediaType: m.target.MediaType,
 		TargetKind:      targetKind,
 		Schema:          schema,
+		StorageBackend:  runtime.ImageBackendContainerd,
 	}, nil
 }
 
@@ -159,7 +160,7 @@ func (h *imageHandle) buildLayers(ctx context.Context, manifest ocispec.Manifest
 			Size:               manifest.Layers[i].Size,
 			CompressionType:    compressionType(manifest.Layers[i].MediaType),
 			Containerd: &runtime.ImageContainerdLayer{
-				ContentPath: contentPath(manifest.Layers[i].Digest),
+				ContentPath: contentPath(h.rt.paths.Root, manifest.Layers[i].Digest),
 				SnapshotKey: chainID,
 			},
 		}
@@ -257,9 +258,9 @@ func calculateChainIDs(diffIDs []digest.Digest) []digest.Digest {
 	return chainIDs
 }
 
-func contentPath(dgst digest.Digest) string {
-	return fmt.Sprintf("/var/lib/containerd/io.containerd.content.runtime.content/blobs/%s/%s",
-		dgst.Algorithm(), dgst.Encoded())
+func contentPath(rootDir string, dgst digest.Digest) string {
+	return fmt.Sprintf("%s/io.containerd.content.runtime.content/blobs/%s/%s",
+		rootDir, dgst.Algorithm(), dgst.Encoded())
 }
 
 func compressionType(mediaType string) string {

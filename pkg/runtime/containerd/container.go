@@ -347,11 +347,12 @@ func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile,
 	}
 
 	namespace := h.rt.config.Namespace
-	bundleDir := runtimeV2BundleDir(namespace, info.ID)
-	stateDir, _ := resolveOCIStateDir(info, namespace)
+	stateDir := h.rt.paths.State
+	bundleDir := runtimeV2BundleDir(stateDir, namespace, info.ID)
+	ociStateDir, _ := resolveOCIStateDir(stateDir, info, namespace)
 
 	profile.OCI.RuntimeName = info.Runtime.Name
-	profile.OCI.StateDir = stateDir
+	profile.OCI.StateDir = ociStateDir
 	profile.OCI.BundleDir = bundleDir
 	profile.OCI.SandboxID = info.SandboxID
 
@@ -371,7 +372,7 @@ func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile,
 		if shim := getShimProcessInfo(h.rt.procReader, pid); shim != nil {
 			profile.Shim.BinaryPath = shim.binaryPath
 			profile.Shim.Cmdline = append([]string(nil), shim.cmdline...)
-			profile.Shim.SocketAddress = resolveShimSocketAddress(bundleDir, info.ID, info.SandboxID, namespace)
+			profile.Shim.SocketAddress = resolveShimSocketAddress(stateDir, bundleDir, info.ID, info.SandboxID, namespace)
 			profile.Shim.SandboxBundleDir = resolveShimSandboxBundleDir(bundleDir, info.SandboxID)
 		}
 	}
@@ -632,31 +633,29 @@ func readOnlyLayerPathsFromMounts(ctx context.Context, snapshotter snapshots.Sna
 // OCI runtime helpers
 // ---------------------------------------------------------------------------
 
-const runtimeV2StateBase = "/run/containerd/io.containerd.runtime.v2.task"
-const defaultRuncRoot = "/run/containerd/runc"
-
-func runtimeV2BundleDir(namespace, containerID string) string {
-	return runtimeV2StateBase + "/" + namespace + "/" + containerID
+func runtimeV2BundleDir(stateDir, namespace, containerID string) string {
+	return stateDir + "/io.containerd.runtime.v2.task/" + namespace + "/" + containerID
 }
 
-func resolveOCIStateDir(info containers.Container, namespace string) (string, string) {
-	if root, source := resolveRuncRoot(info.Runtime); root != "" {
+func resolveOCIStateDir(stateDir string, info containers.Container, namespace string) (string, string) {
+	if root, source := resolveRuncRoot(stateDir, info.Runtime); root != "" {
 		return root + "/" + namespace + "/" + info.ID, source
 	}
-	return runtimeV2BundleDir(namespace, info.ID), "convention"
+	return runtimeV2BundleDir(stateDir, namespace, info.ID), "convention"
 }
 
-func resolveRuncRoot(runtimeInfo containers.RuntimeInfo) (string, string) {
+func resolveRuncRoot(stateDir string, runtimeInfo containers.RuntimeInfo) (string, string) {
+	defaultRoot := stateDir + "/runc"
 	if opts := resolveRuncOptions(runtimeInfo); opts != nil {
 		if opts.Root != "" {
 			return opts.Root, "runtime-options"
 		}
 		if isRuncRuntime(runtimeInfo.Name) {
-			return defaultRuncRoot, "runtime-default"
+			return defaultRoot, "runtime-default"
 		}
 	}
 	if isRuncRuntime(runtimeInfo.Name) {
-		return defaultRuncRoot, "runtime-default"
+		return defaultRoot, "runtime-default"
 	}
 	return "", ""
 }

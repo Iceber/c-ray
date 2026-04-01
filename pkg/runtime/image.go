@@ -15,6 +15,7 @@ type ImageConfigInfo struct {
 	TargetMediaType string
 	TargetKind      string
 	Schema          string
+	StorageBackend  ImageBackendType
 }
 
 // ImageLayer contains the layer fields rendered by the rootfs layers view.
@@ -31,6 +32,13 @@ type ImageLayer struct {
 
 	Containerd *ImageContainerdLayer
 	Crio       *ImageCRIOLayer
+	Docker     *ImageDockerLayer
+}
+
+// ImageDockerLayer contains Docker-specific layer fields (classic image store).
+type ImageDockerLayer struct {
+	CacheID     string
+	GraphDriver string
 }
 
 type ImageContainerdLayer struct {
@@ -49,4 +57,7 @@ type ContainerStorage struct {
 	ReadOnlyLayers []*ImageLayer
 
 	RWLayerPath string
+
+	// GraphDriver is the name of the storage driver (e.g. "overlay2", "overlayfs").
+	GraphDriver string
 }

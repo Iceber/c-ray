@@ -27,16 +27,27 @@ type MountInfo struct {
 }
 
 // MountReader reads mount information
-type MountReader struct{}
+type MountReader struct {
+	procRoot string
+}
 
 // NewMountReader creates a new mount reader
 func NewMountReader() *MountReader {
-	return &MountReader{}
+	return &MountReader{procRoot: "/proc"}
+	}
+
+// NewMountReaderWithRoot creates a mount reader with a custom proc root.
+func NewMountReaderWithRoot(root string) *MountReader {
+	return &MountReader{procRoot: root}
 }
 
 // ReadMounts reads mount information for a given PID
 func (r *MountReader) ReadMounts(pid int) ([]*models.Mount, error) {
-	path := filepath.Join("/proc", strconv.Itoa(pid), "mountinfo")
+	procRoot := r.procRoot
+	if procRoot == "" {
+		procRoot = "/proc"
+	}
+	path := filepath.Join(procRoot, strconv.Itoa(pid), "mountinfo")
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open mountinfo: %w", err)
@@ -57,7 +68,7 @@ func (r *MountReader) ReadMounts(pid int) ([]*models.Mount, error) {
 			Source:      mountInfo.MountSource,
 			Destination: mountInfo.MountPoint,
 			Type:        mountInfo.FSType,
-			Options:     mountInfo.MountOptions,
+			Options:     append(append([]string(nil), mountInfo.MountOptions...), mountInfo.SuperOptions...),
 		}
 
 		mounts = append(mounts, mount)

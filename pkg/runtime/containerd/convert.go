@@ -65,7 +65,7 @@ func isShimProcess(exePath string, cmdline []string) bool {
 // Shim socket resolution
 // ---------------------------------------------------------------------------
 
-func resolveShimSocketAddress(bundleDir, containerID, sandboxIDHint, namespace string) string {
+func resolveShimSocketAddress(stateDir, bundleDir, containerID, sandboxIDHint, namespace string) string {
 	if address, err := readBootstrapAddress(filepath.Join(bundleDir, "bootstrap.json")); err == nil {
 		return address
 	}
@@ -87,10 +87,10 @@ func resolveShimSocketAddress(bundleDir, containerID, sandboxIDHint, namespace s
 		if address, err := readAddressFile(filepath.Join(sandboxBundleDir, "address")); err == nil {
 			return address
 		}
-		return computeShimSocketAddress(namespace, sandboxID)
+		return computeShimSocketAddress(stateDir, namespace, sandboxID)
 	}
 
-	return computeShimSocketAddress(namespace, containerID)
+	return computeShimSocketAddress(stateDir, namespace, containerID)
 }
 
 func resolveShimSandboxBundleDir(bundleDir, sandboxID string) string {
@@ -133,10 +133,10 @@ func readAddressFile(path string) (string, error) {
 	return value, nil
 }
 
-func computeShimSocketAddress(namespace, id string) string {
-	path := runtimeV2StateBase + "/" + namespace + "/" + id
+func computeShimSocketAddress(stateDir, namespace, id string) string {
+	path := stateDir + "/io.containerd.runtime.v2.task/" + namespace + "/" + id
 	sum := sha256.Sum256([]byte(path))
-	return fmt.Sprintf("unix:///run/containerd/s/%x", sum)
+	return fmt.Sprintf("unix:///%s/s/%x", stateDir, sum)
 }
 
 func existingPathCheck(path string) string {

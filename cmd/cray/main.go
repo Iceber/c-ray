@@ -48,7 +48,7 @@ var (
 )
 
 func main() {
-	flag.StringVar(&socketPath, "socket", getEnvOrDefault("CONTAINERD_SOCKET", defaultSocketPath), "containerd socket path")
+	flag.StringVar(&socketPath, "socket", getEnvOrDefault("CRAY_SOCKET", getEnvOrDefault("CONTAINERD_SOCKET", defaultSocketPath)), "runtime socket path (containerd, CRI-O, or Docker)")
 	flag.StringVar(&namespace, "namespace", getEnvOrDefault("CONTAINERD_NAMESPACE", defaultNamespace), "containerd namespace")
 	flag.IntVar(&timeout, "timeout", defaultTimeout, "connection timeout in seconds")
 	flag.Parse()

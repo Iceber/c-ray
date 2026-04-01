@@ -10,6 +10,7 @@ import (
 	"github.com/icebergu/c-ray/pkg/runtime"
 	runtimecontainerd "github.com/icebergu/c-ray/pkg/runtime/containerd"
 	runtimecrio "github.com/icebergu/c-ray/pkg/runtime/crio"
+	runtimedocker "github.com/icebergu/c-ray/pkg/runtime/docker"
 )
 
 // Well-known runtime socket paths for auto-detection.
@@ -21,6 +22,8 @@ var knownSockets = []struct {
 	{"/run/crio/crio.sock", "crio"},
 	{"/var/run/containerd/containerd.sock", "containerd"},
 	{"/var/run/crio/crio.sock", "crio"},
+	{"/var/run/docker.sock", "docker"},
+	{"/run/docker.sock", "docker"},
 }
 
 // detectRuntime determines the runtime type from the socket path string.
@@ -31,6 +34,9 @@ func detectRuntime(sock string) (string, string) {
 	if sock != "" {
 		if strings.Contains(sock, "crio") {
 			return "crio", sock
+		}
+		if strings.Contains(sock, "docker") {
+			return "docker", sock
 		}
 		if strings.Contains(sock, "containerd") {
 			return "containerd", sock
@@ -59,6 +65,9 @@ func newRuntime(config *runtime.Config) runtime.Runtime {
 	case "crio":
 		fmt.Fprintf(os.Stderr, "[runtime] detected CRI-O (socket: %s)\n", resolvedSocket)
 		return runtimecrio.New(config)
+	case "docker":
+		fmt.Fprintf(os.Stderr, "[runtime] detected Docker (socket: %s)\n", resolvedSocket)
+		return runtimedocker.New(config)
 	default:
 		fmt.Fprintf(os.Stderr, "[runtime] detected containerd (socket: %s)\n", resolvedSocket)
 		return runtimecontainerd.New(config)

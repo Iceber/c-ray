@@ -86,6 +86,7 @@ func (h *imageHandle) Config(_ context.Context) (*runtime.ImageConfigInfo, error
 		TargetKind:      "Manifest",
 		Schema:          "OCI",
 		ContentPath:     digest,
+		StorageBackend:  runtime.ImageBackendCRIO,
 	}, nil
 }
 

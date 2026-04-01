@@ -3,6 +3,8 @@
 # Binary name
 BINARY_NAME=cray
 BUILD_DIR=bin
+LAUNCHER_DIR=cmd/cray-launcher
+LAUNCHER_EMBED_DIR=$(LAUNCHER_DIR)/embedded
 
 # Version
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -58,7 +60,7 @@ dev: build
 	@echo "Running in development mode..."
 	./$(BUILD_DIR)/$(BINARY_NAME)
 
-# Cross compilation
+# Cross compilation — Linux
 build-linux:
 	@echo "Building for Linux amd64..."
 	@mkdir -p $(BUILD_DIR)
@@ -69,12 +71,50 @@ build-linux-arm64:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=linux GOARCH=arm64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 ./cmd/cray
 
-build-darwin:
-	@echo "Building for macOS..."
+# Static Linux builds used for embedding inside Darwin launcher.
+# CGO_ENABLED=0 ensures the binary works after chroot into the Docker Desktop VM root.
+build-linux-static-amd64:
+	@echo "Building static Linux amd64..."
 	@mkdir -p $(BUILD_DIR)
-	GOOS=darwin GOARCH=arm64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 ./cmd/cray
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 ./cmd/cray
 
-build-all: build-linux build-linux-arm64 build-darwin
+build-linux-static-arm64:
+	@echo "Building static Linux arm64..."
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 ./cmd/cray
+
+# Cross compilation — Darwin (launcher that embeds the Linux binary)
+# The launcher runs on macOS and transparently executes the real cray
+# inside a privileged helper container with chroot into the Docker Desktop VM.
+build-darwin: build-darwin-arm64
+
+build-darwin-arm64: build-linux-static-arm64
+	@echo "Building Darwin arm64 launcher (embedded Linux arm64)..."
+	@mkdir -p $(LAUNCHER_EMBED_DIR)
+	@cp $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 $(LAUNCHER_EMBED_DIR)/cray-linux
+	GOOS=darwin GOARCH=arm64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 ./$(LAUNCHER_DIR)
+	@rm -f $(LAUNCHER_EMBED_DIR)/cray-linux
+
+build-darwin-amd64: build-linux-static-amd64
+	@echo "Building Darwin amd64 launcher (embedded Linux amd64)..."
+	@mkdir -p $(LAUNCHER_EMBED_DIR)
+	@cp $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 $(LAUNCHER_EMBED_DIR)/cray-linux
+	GOOS=darwin GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 ./$(LAUNCHER_DIR)
+	@rm -f $(LAUNCHER_EMBED_DIR)/cray-linux
+
+# Build the raw (non-launcher) Darwin binary, for testing only.
+build-darwin-native:
+	@echo "Building native Darwin arm64 (no launcher)..."
+	@mkdir -p $(BUILD_DIR)
+	GOOS=darwin GOARCH=arm64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64-native ./cmd/cray
+
+# Ensure the embed placeholder exists so that `go vet ./...` passes
+# even when the real embedded binary has not been built yet.
+ensure-embed-placeholder:
+	@mkdir -p $(LAUNCHER_EMBED_DIR)
+	@test -f $(LAUNCHER_EMBED_DIR)/cray-linux || printf '#!/bin/sh\necho "error: placeholder binary — rebuild with: make build-darwin"\nexit 1\n' > $(LAUNCHER_EMBED_DIR)/cray-linux
+
+build-all: build-linux build-linux-arm64 build-darwin-arm64 build-darwin-amd64
 
 help:
 	@echo "Available targets:"

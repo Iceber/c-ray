@@ -9,6 +9,16 @@ import "time"
 // by the UI. New fields should be added here only when the runtime interface
 // needs to expose them.
 
+// ImageBackendType identifies the image storage backend in use.
+type ImageBackendType string
+
+const (
+	ImageBackendContainerd       ImageBackendType = "containerd"
+	ImageBackendCRIO             ImageBackendType = "crio-storage"
+	ImageBackendDockerClassic    ImageBackendType = "docker-classic"
+	ImageBackendDockerContainerd ImageBackendType = "docker-containerd"
+)
+
 // ContainerStatus is the container lifecycle state exposed by runtime handles.
 type ContainerStatus string
 

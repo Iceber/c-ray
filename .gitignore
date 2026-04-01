@@ -6,6 +6,9 @@ bin/
 *.so
 *.dylib
 
+# Embedded launcher binary (built by Makefile)
+cmd/cray-launcher/embedded/cray-linux
+
 # Test binary
 *.test
 

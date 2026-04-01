@@ -2,6 +2,7 @@ package sysinfo
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/icebergu/c-ray/pkg/models"
@@ -11,6 +12,19 @@ func TestNewMountReader(t *testing.T) {
 	reader := NewMountReader()
 	if reader == nil {
 		t.Fatal("MountReader is nil")
+	}
+	if reader.procRoot != "/proc" {
+		t.Fatalf("expected procRoot=/proc, got %s", reader.procRoot)
+	}
+}
+
+func TestNewMountReaderWithRoot(t *testing.T) {
+	reader := NewMountReaderWithRoot("/tmp/proc")
+	if reader == nil {
+		t.Fatal("MountReader is nil")
+	}
+	if reader.procRoot != "/tmp/proc" {
+		t.Fatalf("expected procRoot=/tmp/proc, got %s", reader.procRoot)
 	}
 }
 
@@ -93,6 +107,42 @@ func TestParseOverlayFS(t *testing.T) {
 
 	if workdir != "/work" {
 		t.Errorf("Expected workdir=/work, got %s", workdir)
+	}
+}
+
+func TestReadMountsIncludesOverlaySuperOptions(t *testing.T) {
+	procRoot := t.TempDir()
+	pidDir := filepath.Join(procRoot, "123")
+	if err := os.MkdirAll(pidDir, 0o755); err != nil {
+		t.Fatalf("failed to create proc directory: %v", err)
+	}
+	content := "1746 1246 0:259 / / rw,relatime - overlay overlay rw,lowerdir=/snapshots/1101/fs:/snapshots/887/fs,upperdir=/snapshots/1102/fs,workdir=/snapshots/1102/work\n"
+	if err := os.WriteFile(filepath.Join(pidDir, "mountinfo"), []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write mountinfo: %v", err)
+	}
+
+	reader := NewMountReaderWithRoot(procRoot)
+	mounts, err := reader.ReadMounts(123)
+	if err != nil {
+		t.Fatalf("ReadMounts() error: %v", err)
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("ReadMounts() len = %d, want 1", len(mounts))
+	}
+
+	rootMount := reader.FindRootMount(mounts)
+	if rootMount == nil {
+		t.Fatal("expected root mount")
+	}
+	lowerdir, upperdir, workdir := reader.ParseOverlayFS(rootMount)
+	if lowerdir != "/snapshots/1101/fs:/snapshots/887/fs" {
+		t.Fatalf("lowerdir = %s", lowerdir)
+	}
+	if upperdir != "/snapshots/1102/fs" {
+		t.Fatalf("upperdir = %s", upperdir)
+	}
+	if workdir != "/snapshots/1102/work" {
+		t.Fatalf("workdir = %s", workdir)
 	}
 }
 
