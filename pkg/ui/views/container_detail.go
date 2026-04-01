@@ -8,6 +8,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/runtime"
+	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/rivo/tview"
 )
 
@@ -34,12 +35,11 @@ type ContainerDetailView struct {
 	state       *runtime.ContainerState
 	refreshedAt time.Time
 
-	headerLine1 *tview.TextView
-	headerLine2 *tview.TextView
-	contextLine *tview.TextView
-	tabBar      *tview.TextView
-	content     *tview.Pages
-	statusBar   *tview.TextView
+	headerBar  *tview.TextView
+	contextBar *tview.TextView
+	tabBar     *components.TabBar
+	content    *tview.Pages
+	footer     *components.Footer
 
 	summaryView    *DetailSummaryView
 	processesView  *ProcessesView
@@ -65,16 +65,19 @@ func NewContainerDetailView(app *tview.Application, ctx context.Context) *Contai
 }
 
 func (v *ContainerDetailView) setupLayout() {
-	v.headerLine1 = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
-	v.headerLine2 = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
-	v.contextLine = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
-	v.tabBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
-	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
+	// Header band: container identity + status
+	v.headerBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
+	v.headerBar.SetBackgroundColor(components.ColorBgHeader)
 
-	v.headerLine1.SetBackgroundColor(tcell.ColorDarkSlateGray)
-	v.headerLine2.SetBackgroundColor(tcell.ColorBlack)
-	v.contextLine.SetBackgroundColor(tcell.ColorBlack)
-	v.tabBar.SetBackgroundColor(tcell.ColorDarkSlateGray)
+	// Context bar: pod / image / timing context
+	v.contextBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
+	v.contextBar.SetBackgroundColor(components.ColorBgHeader)
+
+	// Tab bar
+	v.tabBar = components.NewTabBar()
+
+	// Footer
+	v.footer = components.NewFooter()
 
 	v.summaryView = NewDetailSummaryView(v.app)
 	v.processesView = NewProcessesView(v.app, v.ctx)
@@ -89,16 +92,15 @@ func (v *ContainerDetailView) setupLayout() {
 	v.content.AddPage("runtime", v.runtimeView, true, false)
 	v.content.AddPage("network", v.networkView, true, false)
 
-	v.Flex.AddItem(v.headerLine1, 1, 0, false)
-	v.Flex.AddItem(v.headerLine2, 1, 0, false)
-	v.Flex.AddItem(v.contextLine, 1, 0, false)
+	v.Flex.AddItem(v.headerBar, 1, 0, false)
+	v.Flex.AddItem(v.contextBar, 1, 0, false)
 	v.Flex.AddItem(v.tabBar, 1, 0, false)
 	v.Flex.AddItem(v.content, 0, 1, false)
-	v.Flex.AddItem(v.statusBar, 1, 0, false)
+	v.Flex.AddItem(v.footer, 1, 0, false)
 
 	v.renderHeader()
 	v.updateTabBar()
-	v.updateStatusBar()
+	v.updateFooter()
 }
 
 // SetContainer sets the container handle to display and loads initial data.
@@ -117,7 +119,7 @@ func (v *ContainerDetailView) SetContainer(c runtime.Container) {
 
 	queueUpdateDraw(v.app, func() {
 		v.renderHeader()
-		v.updateStatusBar()
+		v.updateFooter()
 	})
 
 	go v.Refresh()
@@ -163,9 +165,8 @@ func (v *ContainerDetailView) Refresh() {
 			return
 		}
 		queueUpdateDraw(v.app, func() {
-			v.headerLine1.SetText(fmt.Sprintf(" [red]Failed to load container: %v[-]", err))
-			v.headerLine2.SetText(" ")
-			v.contextLine.SetText(" ")
+			v.headerBar.SetText(fmt.Sprintf(" [%s]Failed to load container: %v[-]", components.ColorName(components.ColorFgError), err))
+			v.contextBar.SetText(" ")
 		})
 		return
 	}
@@ -183,7 +184,7 @@ func (v *ContainerDetailView) Refresh() {
 
 	queueUpdateDraw(v.app, func() {
 		v.renderHeader()
-		v.updateStatusBar()
+		v.updateFooter()
 	})
 
 	v.refreshActiveTab()
@@ -206,9 +207,8 @@ func (v *ContainerDetailView) refreshActiveTab() {
 
 func (v *ContainerDetailView) renderHeader() {
 	if v.info == nil {
-		v.headerLine1.SetText(" [gray]Loading container detail...[-]")
-		v.headerLine2.SetText(" ")
-		v.contextLine.SetText(" ")
+		v.headerBar.SetText(fmt.Sprintf(" %s Loading container detail...", components.Muted("⏳")))
+		v.contextBar.SetText(" ")
 		return
 	}
 
@@ -217,19 +217,25 @@ func (v *ContainerDetailView) renderHeader() {
 		name = shortID(v.info.ID)
 	}
 
-	v.headerLine1.SetText(fmt.Sprintf(
-		" [white::b]%s[-:-:-] [gray](%s)[-]   %s   [gray]Created[-] %s",
-		name, shortID(v.info.ID), detailStateHeadline(v.info, v.state),
-		detailTimeLabel(v.info.CreatedAt),
+	v.headerBar.SetText(fmt.Sprintf(
+		" %s  %s  %s",
+		components.Bright(name),
+		components.Muted(shortID(v.info.ID)),
+		detailStateTag(v.info, v.state),
 	))
-	v.headerLine2.SetText(" " + detailSecondaryLine(v.state))
 
+	var ctx []string
 	if v.info.PodNamespace != "" || v.info.PodName != "" {
-		v.contextLine.SetText(fmt.Sprintf(" [gray]Pod[-] [white]%s/%s[-]",
-			fallbackValue(v.info.PodNamespace, "?"), fallbackValue(v.info.PodName, "?")))
-	} else {
-		v.contextLine.SetText(" ")
+		ctx = append(ctx, components.KV("pod ", fallbackValue(v.info.PodNamespace, "?")+"/"+fallbackValue(v.info.PodName, "?")))
 	}
+	if v.info.Image != "" {
+		ctx = append(ctx, components.KV("image ", truncateForCard(v.info.Image, 40)))
+	}
+	ctx = append(ctx, components.KV("created ", detailTimeLabel(v.info.CreatedAt)))
+	if !v.refreshedAt.IsZero() {
+		ctx = append(ctx, components.Dim("refreshed "+v.refreshedAt.Format("15:04:05")))
+	}
+	v.contextBar.SetText(" " + joinSpaced(ctx))
 }
 
 // HandleInput processes key events for the detail view.
@@ -326,47 +332,42 @@ func (v *ContainerDetailView) switchTab(tab DetailTab) {
 	}
 
 	v.updateTabBar()
-	v.updateStatusBar()
+	v.updateFooter()
+}
+
+var detailTabs = []components.TabDef{
+	{Label: "Info", Key: "1"},
+	{Label: "Processes", Key: "2"},
+	{Label: "Filesystem", Key: "3"},
+	{Label: "Runtime", Key: "4"},
+	{Label: "Network", Key: "5"},
 }
 
 func (v *ContainerDetailView) updateTabBar() {
-	tabs := []struct {
-		label string
-		key   string
-	}{
-		{"Summary", "1"},
-		{"Processes", "2"},
-		{"Filesystem", "3"},
-		{"Runtime", "4"},
-		{"Network", "5"},
-	}
-	text := " "
-	for i, tab := range tabs {
-		if DetailTab(i) == v.activeTab {
-			text += fmt.Sprintf("[black:aqua] %s(%s) [-:-] ", tab.label, tab.key)
-		} else {
-			text += fmt.Sprintf("[white:darkslategray] %s(%s) [-:-] ", tab.label, tab.key)
-		}
-	}
-	v.tabBar.SetText(text)
+	v.tabBar.Update(detailTabs, int(v.activeTab))
 }
 
-func (v *ContainerDetailView) updateStatusBar() {
-	text := " [yellow]Esc/q[white]:back  [yellow]1-5[white]:pages  [yellow]Tab[white]:next page  [yellow]r[white]:refresh"
+func (v *ContainerDetailView) updateFooter() {
+	hints := []components.FooterHint{
+		{Key: "Esc", Action: "back"},
+		{Key: "1-5", Action: "pages"},
+		{Key: "Tab", Action: "next"},
+		{Key: "r", Action: "refresh"},
+	}
 	switch v.activeTab {
 	case DetailTabProcesses:
-		text += "  [yellow]s/g/t[white]:process tabs  [yellow][/][white]:cycle"
+		hints = append(hints, components.FooterHint{Key: "s/g/t", Action: "process tabs"}, components.FooterHint{Key: "[/]", Action: "cycle"})
 	case DetailTabFilesystem:
-		text += "  [yellow]m/l[white]:filesystem tabs"
+		hints = append(hints, components.FooterHint{Key: "l/m", Action: "filesystem tabs"})
 	case DetailTabRuntime, DetailTabNetwork:
-		text += "  [yellow]e[white]:toggle  [yellow]a[white]:expand/collapse"
+		hints = append(hints, components.FooterHint{Key: "e", Action: "toggle"}, components.FooterHint{Key: "a", Action: "expand/collapse"})
 	}
-	v.statusBar.SetText(text)
+	v.footer.Update(hints)
 }
 
 // --- Header helpers ---
 
-func detailStateHeadline(info *runtime.ContainerInfo, state *runtime.ContainerState) string {
+func detailStateTag(info *runtime.ContainerInfo, state *runtime.ContainerState) string {
 	status := info.Status
 	if state != nil {
 		status = state.Status
@@ -378,59 +379,32 @@ func detailStateHeadline(info *runtime.ContainerInfo, state *runtime.ContainerSt
 			pid = state.PID
 		}
 		if pid > 0 {
-			return fmt.Sprintf("[green]PID %d[-]", pid)
+			return components.StatusTag(fmt.Sprintf("RUNNING PID %d", pid), components.ColorFgTag, components.ColorBgTagRun)
 		}
-		return "[green]Running[-]"
+		return components.StatusTag("RUNNING", components.ColorFgTag, components.ColorBgTagRun)
 	case runtime.ContainerStatusStopped:
 		if state != nil && state.ExitCode != nil {
-			return fmt.Sprintf("[red]Exit %d[-]", *state.ExitCode)
+			return components.StatusTag(fmt.Sprintf("EXITED %d", *state.ExitCode), components.ColorFgTag, components.ColorBgTagStop)
 		}
-		return "[red]Exit unknown[-]"
+		return components.StatusTag("EXITED", components.ColorFgTag, components.ColorBgTagStop)
 	case runtime.ContainerStatusCreated:
-		return "[darkcyan]Created[-]"
+		return components.StatusTag("CREATED", components.ColorFgTag, components.ColorBgTagInfo)
 	case runtime.ContainerStatusPaused:
-		pid := info.PID
-		if state != nil && state.PID > 0 {
-			pid = state.PID
-		}
-		if pid > 0 {
-			return fmt.Sprintf("[yellow]Paused PID %d[-]", pid)
-		}
-		return "[yellow]Paused[-]"
+		return components.StatusTag("PAUSED", components.ColorFgTag, components.ColorBgTagWarn)
 	default:
-		return "[white]Unknown[-]"
+		return components.StatusTag("UNKNOWN", components.ColorFgMuted, components.ColorBgTabOff)
 	}
 }
 
-func detailSecondaryLine(state *runtime.ContainerState) string {
-	if state == nil {
-		return "State unknown"
+func joinSpaced(parts []string) string {
+	result := ""
+	for i, p := range parts {
+		if i > 0 {
+			result += "   "
+		}
+		result += p
 	}
-	switch state.Status {
-	case runtime.ContainerStatusRunning:
-		if !state.StartedAt.IsZero() {
-			return fmt.Sprintf("Started %s", detailTimeLabel(state.StartedAt))
-		}
-		return "Started unknown"
-	case runtime.ContainerStatusStopped:
-		exited := "Exited time unknown"
-		if !state.ExitedAt.IsZero() {
-			exited = fmt.Sprintf("Exited %s", detailTimeLabel(state.ExitedAt))
-		}
-		if state.ExitReason != "" {
-			return exited + "  Reason " + state.ExitReason
-		}
-		return exited + "  Reason unknown"
-	case runtime.ContainerStatusCreated:
-		return "Not started"
-	case runtime.ContainerStatusPaused:
-		if !state.StartedAt.IsZero() {
-			return fmt.Sprintf("Paused after start %s", detailTimeLabel(state.StartedAt))
-		}
-		return "Paused"
-	default:
-		return "State unknown"
-	}
+	return result
 }
 
 func detailTimeLabel(ts time.Time) string {

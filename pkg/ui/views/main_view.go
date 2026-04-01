@@ -2,12 +2,12 @@ package views
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/runtime"
+	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/rivo/tview"
 )
 
@@ -28,7 +28,8 @@ type MainView struct {
 	rt  runtime.Runtime
 	ctx context.Context
 
-	tabBar  *tview.TextView
+	tabBar  *components.TabBar
+	footer  *components.Footer
 	content *tview.Pages
 
 	containerList *ContainerTreeView
@@ -65,8 +66,8 @@ func NewMainView(app *tview.Application, rt runtime.Runtime, ctx context.Context
 	v.imageList = NewImageListView(app, rt)
 	v.podList = NewPodListView(app, rt)
 
-	v.tabBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
-	v.tabBar.SetBackgroundColor(tcell.ColorDarkSlateGray)
+	v.tabBar = components.NewTabBar()
+	v.footer = components.NewFooter()
 
 	v.content.AddPage("containers", v.containerList, true, true)
 	v.content.AddPage("images", v.imageList, true, false)
@@ -74,7 +75,9 @@ func NewMainView(app *tview.Application, rt runtime.Runtime, ctx context.Context
 
 	v.Flex.AddItem(v.tabBar, 1, 0, false)
 	v.Flex.AddItem(v.content, 0, 1, true)
+	v.Flex.AddItem(v.footer, 1, 0, false)
 	v.updateTabBar()
+	v.updateFooter()
 	return v
 }
 
@@ -131,28 +134,29 @@ func (v *MainView) switchTab(tab TabIndex) {
 		v.app.SetFocus(v.podList.GetFocusPrimitive())
 	}
 	v.updateTabBar()
+	v.updateFooter()
 	go v.refreshCurrentTab()
 }
 
+var mainTabs = []components.TabDef{
+	{Label: "Containers", Key: "1"},
+	{Label: "Images", Key: "2"},
+	{Label: "Pods", Key: "3"},
+}
+
 func (v *MainView) updateTabBar() {
-	tabs := []struct {
-		label string
-		key   string
-	}{
-		{"Containers", "1"},
-		{"Images", "2"},
-		{"Pods", "3"},
-	}
-	text := " "
-	for i, t := range tabs {
-		if TabIndex(i) == v.activeTab {
-			text += fmt.Sprintf("[black:aqua] %s(%s) [-:-] ", t.label, t.key)
-		} else {
-			text += fmt.Sprintf("[white:darkslategray] %s(%s) [-:-] ", t.label, t.key)
-		}
-	}
-	text += "  [darkgray]Tab[white]:next  [darkgray]?[white]:help  [darkgray]q[white]:quit"
-	v.tabBar.SetText(text)
+	v.tabBar.Update(mainTabs, int(v.activeTab))
+}
+
+func (v *MainView) updateFooter() {
+	v.footer.Update([]components.FooterHint{
+		{Key: "1/2/3", Action: "tabs"},
+		{Key: "Tab", Action: "next"},
+		{Key: "Enter", Action: "detail"},
+		{Key: "r", Action: "refresh"},
+		{Key: "?", Action: "help"},
+		{Key: "q", Action: "quit"},
+	})
 }
 
 // RefreshAll loads data for the active tab.

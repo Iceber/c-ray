@@ -41,7 +41,7 @@ func NewImageListView(app *tview.Application, rt runtime.Runtime) *ImageListView
 	}
 	v.table = components.NewTable(imageColumns)
 	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
-	v.table.AddRow("[gray]Loading images...[-]", "", "", "")
+	v.table.AddRow(components.Muted("Loading images..."), "", "", "")
 
 	v.Flex.AddItem(v.table, 0, 1, true)
 	v.Flex.AddItem(v.statusBar, 1, 0, false)
@@ -62,7 +62,7 @@ func (v *ImageListView) Refresh(ctx context.Context) error {
 		v.images = nil
 		queueUpdateDraw(v.app, func() {
 			v.table.ClearData()
-			v.table.AddRow(fmt.Sprintf("[red]Failed to load images: %v[-]", err), "", "", "")
+			v.table.AddRow(fmt.Sprintf("[%s]Failed to load images: %v[-]", components.ColorName(components.ColorFgError), err), "", "", "")
 		})
 		return err
 	}
@@ -129,7 +129,9 @@ func (v *ImageListView) updateStatusBar() {
 		totalSize += img.Size
 	}
 	v.statusBar.SetText(fmt.Sprintf(
-		" [white]Images: [green]%d[white] total, %s total size  |  [yellow]r[white]:refresh",
-		len(v.images), formatSize(totalSize),
+		" %s  %s  |  %s",
+		components.KV("Images ", fmt.Sprintf("%d", len(v.images))),
+		components.KV("Size ", formatSize(totalSize)),
+		components.KeyHint("r", "refresh"),
 	))
 }

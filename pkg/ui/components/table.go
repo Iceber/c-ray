@@ -27,19 +27,17 @@ func NewTable(columns []Column) *Table {
 	t := &Table{
 		Table:       tview.NewTable(),
 		columns:     columns,
-		headerStyle: tcell.StyleDefault.Bold(true).Foreground(tcell.ColorYellow),
+		headerStyle: StyleTableHead,
 	}
 
 	t.SetSelectable(true, false)
 	t.SetFixed(1, 0) // Fix header row
 	t.SetBorder(false)
 	t.SetBorders(false)
+	t.SetBackgroundColor(ColorBg)
 	t.Select(1, 0) // Start selection at first data row
 
-	// Use a muted background color for selection to avoid white-on-white
-	t.SetSelectedStyle(tcell.StyleDefault.
-		Background(tcell.ColorDarkSlateGray).
-		Foreground(tcell.ColorWhite))
+	t.SetSelectedStyle(StyleSelectRow)
 
 	t.renderHeader()
 

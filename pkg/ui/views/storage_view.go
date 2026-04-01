@@ -2,11 +2,11 @@ package views
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/runtime"
+	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/rivo/tview"
 )
 
@@ -24,7 +24,7 @@ type StorageView struct {
 
 	app        *tview.Application
 	ctx        context.Context
-	tabBar     *tview.TextView
+	tabBar     *components.TabBar
 	pages      *tview.Pages
 	layersView *ImageLayersView
 	mountsView *MountsView
@@ -44,8 +44,7 @@ func NewStorageView(app *tview.Application, ctx context.Context) *StorageView {
 		activeMode: StorageModeLayers,
 	}
 
-	v.tabBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
-	v.tabBar.SetBackgroundColor(tcell.ColorDarkSlateGray)
+	v.tabBar = components.NewTabBar()
 
 	v.pages = tview.NewPages()
 	v.pages.AddPage("layers", v.layersView, true, true)
@@ -122,22 +121,11 @@ func (v *StorageView) switchMode(mode StorageMode) {
 	go v.Refresh(v.ctx)
 }
 
+var storageTabs = []components.TabDef{
+	{Label: "Rootfs Layers", Key: "l"},
+	{Label: "Mounts", Key: "m"},
+}
+
 func (v *StorageView) updateTabBar() {
-	modes := []struct {
-		mode  StorageMode
-		label string
-		key   string
-	}{
-		{StorageModeLayers, "Rootfs Layers", "l"},
-		{StorageModeMounts, "Mounts", "m"},
-	}
-	text := " [white]Filesystem:[-] "
-	for _, m := range modes {
-		if m.mode == v.activeMode {
-			text += fmt.Sprintf("[black:aqua] %s(%s) [-:-] ", m.label, m.key)
-		} else {
-			text += fmt.Sprintf("[white:darkslategray] %s(%s) [-:-] ", m.label, m.key)
-		}
-	}
-	v.tabBar.SetText(text)
+	v.tabBar.Update(storageTabs, int(v.activeMode))
 }

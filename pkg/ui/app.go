@@ -6,6 +6,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/runtime"
+	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/icebergu/c-ray/pkg/ui/views"
 	"github.com/rivo/tview"
 )
@@ -98,48 +99,55 @@ func (a *App) setupKeybindings() {
 }
 
 func (a *App) showHelp() {
-	helpText := `[aqua::b]c-ray v1 - Keybindings[-:-:-]
+	accentTag := fmt.Sprintf("[%s::b]", components.ColorName(components.ColorFgAccent))
+	keyTag := fmt.Sprintf("[%s]", components.ColorName(components.ColorFgKey))
+	sectionTag := fmt.Sprintf("[%s::b]", components.ColorName(components.ColorFgAccentAlt))
+	mutedTag := fmt.Sprintf("[%s]", components.ColorName(components.ColorFgMuted))
+	reset := "[-:-:-]"
+	resetFg := "[-]"
 
-[yellow::b]Global[-:-:-]
-  [yellow]?[-]           Show this help
-  [yellow]q/Ctrl+C[-]    Quit / Back
+	helpText := accentTag + "c-ray v1 - Keybindings" + reset + `
 
-[yellow::b]Main View[-:-:-]
-  [yellow]1/2/3[-]       Switch tab (Containers/Images/Pods)
-  [yellow]Tab[-]         Next tab
-  [yellow]Shift+Tab[-]   Previous tab
-  [yellow]Enter[-]       Open container detail
-  [yellow]e[-]           Toggle expand/collapse
-  [yellow]a[-]           Expand/collapse all pods
-  [yellow]r[-]           Refresh data
+` + sectionTag + "Global" + reset + `
+  ` + keyTag + `?` + resetFg + `           Show this help
+  ` + keyTag + `q/Ctrl+C` + resetFg + `    Quit / Back
 
-[yellow::b]Detail View[-:-:-]
-  [yellow]Esc/q[-]       Back to list
-  [yellow]1-5[-]         Switch page (Summary/Processes/Filesystem/Runtime/Network)
-  [yellow]Tab[-]         Next page
-  [yellow]Shift+Tab[-]   Previous page
-  [yellow]r[-]           Refresh data
+` + sectionTag + "Main View" + reset + `
+  ` + keyTag + `1/2/3` + resetFg + `       Switch tab (Containers/Images/Pods)
+  ` + keyTag + `Tab` + resetFg + `         Next tab
+  ` + keyTag + `Shift+Tab` + resetFg + `   Previous tab
+  ` + keyTag + `Enter` + resetFg + `       Open container detail
+  ` + keyTag + `e` + resetFg + `           Toggle expand/collapse
+  ` + keyTag + `a` + resetFg + `           Expand/collapse all pods
+  ` + keyTag + `r` + resetFg + `           Refresh data
 
-[yellow::b]Processes Workspace[-:-:-]
-  [yellow]s[-]           Switch to summary mode
-  [yellow]g[-]           Switch to tree mode
-  [yellow]t[-]           Switch to top mode
-  [yellow][ / ][-]       Cycle process sub-tabs
-  [yellow]c[-]           Sort by CPU
-  [yellow]m[-]           Sort by Memory
-  [yellow]p[-]           Sort by PID
-  [yellow]i[-]           Sort by I/O
+` + sectionTag + "Detail View" + reset + `
+  ` + keyTag + `Esc/q` + resetFg + `       Back to list
+  ` + keyTag + `1-5` + resetFg + `         Switch page (Info/Processes/Filesystem/Runtime/Network)
+  ` + keyTag + `Tab` + resetFg + `         Next page
+  ` + keyTag + `Shift+Tab` + resetFg + `   Previous page
+  ` + keyTag + `r` + resetFg + `           Refresh data
 
-[yellow::b]Filesystem Workspace[-:-:-]
-  [yellow]l[-]           Switch to Rootfs Layers
-  [yellow]m[-]           Switch to Mounts
-  [yellow]i[-]           Toggle layer file browser in Rootfs Layers
+` + sectionTag + "Processes Workspace" + reset + `
+  ` + keyTag + `s` + resetFg + `           Switch to summary mode
+  ` + keyTag + `g` + resetFg + `           Switch to tree mode
+  ` + keyTag + `t` + resetFg + `           Switch to top mode
+  ` + keyTag + `[ / ]` + resetFg + `       Cycle process sub-tabs
+  ` + keyTag + `c` + resetFg + `           Sort by CPU
+  ` + keyTag + `m` + resetFg + `           Sort by Memory
+  ` + keyTag + `p` + resetFg + `           Sort by PID
+  ` + keyTag + `i` + resetFg + `           Sort by I/O
 
-[yellow::b]Tree Views[-:-:-]
-  [yellow]e[-]           Toggle expand/collapse
-  [yellow]a[-]           Expand/collapse all
+` + sectionTag + "Filesystem Workspace" + reset + `
+  ` + keyTag + `l` + resetFg + `           Switch to Rootfs Layers
+  ` + keyTag + `m` + resetFg + `           Switch to Mounts
+  ` + keyTag + `i` + resetFg + `           Toggle layer file browser in Rootfs Layers
 
-[gray]Press Esc or Enter to close[-]`
+` + sectionTag + "Tree Views" + reset + `
+  ` + keyTag + `e` + resetFg + `           Toggle expand/collapse
+  ` + keyTag + `a` + resetFg + `           Expand/collapse all
+
+` + mutedTag + `Press Esc or Enter to close` + resetFg
 
 	modal := tview.NewModal().
 		SetText(helpText).
@@ -147,7 +155,7 @@ func (a *App) showHelp() {
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
 			a.pages.RemovePage("help")
 		})
-	modal.SetBackgroundColor(tcell.ColorDarkSlateGray)
+	modal.SetBackgroundColor(components.ColorBgHeader)
 	a.pages.AddPage("help", modal, true, true)
 }
 

@@ -2,11 +2,11 @@ package views
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/runtime"
+	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/rivo/tview"
 )
 
@@ -25,7 +25,7 @@ type ProcessesView struct {
 
 	app         *tview.Application
 	ctx         context.Context
-	tabBar      *tview.TextView
+	tabBar      *components.TabBar
 	pages       *tview.Pages
 	summaryView *ProcessSummaryView
 	treeView    *ProcessTreeView
@@ -48,8 +48,7 @@ func NewProcessesView(app *tview.Application, ctx context.Context) *ProcessesVie
 		activeTab:   ProcessTabSummary,
 	}
 
-	v.tabBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
-	v.tabBar.SetBackgroundColor(tcell.ColorDarkSlateGray)
+	v.tabBar = components.NewTabBar()
 
 	v.pages = tview.NewPages()
 	v.pages.AddPage("summary", v.summaryView, true, true)
@@ -172,22 +171,12 @@ func (v *ProcessesView) switchTab(tab ProcessTab) {
 	v.updateTabBar()
 }
 
+var processTabs = []components.TabDef{
+	{Label: "Summary", Key: "s"},
+	{Label: "Tree", Key: "g"},
+	{Label: "Top", Key: "t"},
+}
+
 func (v *ProcessesView) updateTabBar() {
-	tabs := []struct {
-		label string
-		key   string
-	}{
-		{"Summary", "s"},
-		{"Tree", "g"},
-		{"Top", "t"},
-	}
-	text := " "
-	for i, tab := range tabs {
-		if ProcessTab(i) == v.activeTab {
-			text += fmt.Sprintf("[black:aqua] %s(%s) [-:-] ", tab.label, tab.key)
-		} else {
-			text += fmt.Sprintf("[white:darkslategray] %s(%s) [-:-] ", tab.label, tab.key)
-		}
-	}
-	v.tabBar.SetText(text)
+	v.tabBar.Update(processTabs, int(v.activeTab))
 }

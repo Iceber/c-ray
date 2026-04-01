@@ -46,14 +46,14 @@ func (p *InfoPanel) SetSections(sections []InfoSection) {
 			text += "\n"
 		}
 		if section.Title != "" {
-			text += fmt.Sprintf("[yellow::b]%s[-:-:-]\n", section.Title)
+			text += fmt.Sprintf("[%s::b]%s[-:-:-]\n", ColorName(ColorFgAccent), section.Title)
 		}
 		for _, item := range section.Items {
-			valueColor := "white"
+			valueColor := ColorName(ColorFgBright)
 			if item.Color != 0 {
 				valueColor = colorToTag(item.Color)
 			}
-			text += fmt.Sprintf("  [gray]%-20s[%s]%s[-]\n", item.Label, valueColor, item.Value)
+			text += fmt.Sprintf("  [%s]%-20s[%s]%s[-]\n", ColorName(ColorFgMuted), item.Label, valueColor, item.Value)
 		}
 	}
 

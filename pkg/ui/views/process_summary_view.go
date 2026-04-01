@@ -8,16 +8,23 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/runtime"
+	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/rivo/tview"
 )
+
+// processSummarySection holds one group of info for the process environment.
+type processSummarySection struct {
+	Title   string
+	Summary string
+	Rows    []string
+}
 
 // ProcessSummaryView renders the Summary sub-tab inside Processes.
 type ProcessSummaryView struct {
 	*tview.Flex
 
 	app       *tview.Application
-	tree      *tview.TreeView
-	statusBar *tview.TextView
+	panel     *tview.TextView
 	container runtime.Container
 	mu        sync.Mutex
 }
@@ -29,22 +36,13 @@ func NewProcessSummaryView(app *tview.Application) *ProcessSummaryView {
 		app:  app,
 	}
 
-	v.tree = tview.NewTreeView()
-	v.tree.SetBorder(false)
-	v.tree.SetGraphics(true)
-	v.tree.SetGraphicsColor(tcell.ColorDarkCyan)
-	v.tree.SetRoot(tview.NewTreeNode("[gray]No process summary[-]").SetSelectable(false))
-	v.tree.SetSelectedFunc(func(node *tview.TreeNode) {
-		if node != nil && len(node.GetChildren()) > 0 {
-			node.SetExpanded(!node.IsExpanded())
-		}
-	})
+	v.panel = tview.NewTextView().SetDynamicColors(true).SetWordWrap(true)
+	v.panel.SetBorder(true).SetBorderColor(components.ColorFgBorder)
+	v.panel.SetTitle(fmt.Sprintf(" %s ", components.Accent("Process Environment"))).SetTitleAlign(tview.AlignLeft)
+	v.panel.SetBackgroundColor(components.ColorBg)
+	v.panel.SetText(fmt.Sprintf("  %s", components.Muted("No process summary")))
 
-	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
-	v.statusBar.SetText(" [yellow]Enter/Space[white]:expand  [yellow]s/g/t[white]:switch process views")
-
-	v.Flex.AddItem(v.tree, 0, 1, true)
-	v.Flex.AddItem(v.statusBar, 1, 0, false)
+	v.Flex.AddItem(v.panel, 0, 1, true)
 	return v
 }
 
@@ -71,7 +69,7 @@ func (v *ProcessSummaryView) Refresh(ctx context.Context) {
 
 // GetFocusPrimitive returns the focus primitive.
 func (v *ProcessSummaryView) GetFocusPrimitive() tview.Primitive {
-	return v.tree
+	return v.panel
 }
 
 // HandleInput processes local keybindings.
@@ -79,23 +77,7 @@ func (v *ProcessSummaryView) HandleInput(event *tcell.EventKey) *tcell.EventKey 
 	if event.Key() == tcell.KeyCtrlC {
 		return event
 	}
-	switch event.Key() {
-	case tcell.KeyEnter:
-		v.toggleCurrentNode()
-		return nil
-	case tcell.KeyRune:
-		if event.Rune() == ' ' {
-			v.toggleCurrentNode()
-			return nil
-		}
-	}
 	return event
-}
-
-func (v *ProcessSummaryView) toggleCurrentNode() {
-	if node := v.tree.GetCurrentNode(); node != nil && len(node.GetChildren()) > 0 {
-		node.SetExpanded(!node.IsExpanded())
-	}
 }
 
 func (v *ProcessSummaryView) render(config *runtime.ContainerConfig) {
@@ -103,42 +85,40 @@ func (v *ProcessSummaryView) render(config *runtime.ContainerConfig) {
 
 	queueUpdateDraw(v.app, func() {
 		if config == nil {
-			root := tview.NewTreeNode("[gray]Waiting for process summary data...[-]").SetSelectable(false)
-			v.tree.SetRoot(root)
-			v.tree.SetCurrentNode(root)
+			v.panel.SetText(fmt.Sprintf("  %s", components.Muted("Waiting for process summary data...")))
 			return
 		}
 
-		root := tview.NewTreeNode("[aqua::b]Process Summary[-:-:-]").SetSelectable(false).SetExpanded(true)
-		for _, s := range sections {
-			node := tview.NewTreeNode(sectionLabel(s.Title, s.Summary)).
-				SetSelectable(true).SetExpanded(s.Expanded)
-			for _, row := range s.Rows {
-				node.AddChild(tview.NewTreeNode("[gray]" + row + "[-]").SetSelectable(false))
+		var b strings.Builder
+		for i, s := range sections {
+			if i > 0 {
+				b.WriteString("\n")
 			}
-			root.AddChild(node)
+			title := s.Title
+			if s.Summary != "" {
+				title += " " + components.Muted(s.Summary)
+			}
+			b.WriteString(fmt.Sprintf("  [%s::b]%s[-:-:-]\n", components.ColorName(components.ColorFgAccent), title))
+			for _, row := range s.Rows {
+				b.WriteString(fmt.Sprintf("  %s\n", components.Muted(row)))
+			}
 		}
-		v.tree.SetRoot(root)
-		if len(root.GetChildren()) > 0 {
-			v.tree.SetCurrentNode(root.GetChildren()[0])
-		} else {
-			v.tree.SetCurrentNode(root)
-		}
+		v.panel.SetText(b.String())
 	})
 }
 
-func buildProcessSections(config *runtime.ContainerConfig) []summarySection {
+func buildProcessSections(config *runtime.ContainerConfig) []processSummarySection {
 	if config == nil {
 		return nil
 	}
-	return []summarySection{
+	return []processSummarySection{
 		buildEnvironmentSection(config),
 		buildCGroupSection(config),
 		buildPIDNamespaceSection(config),
 	}
 }
 
-func buildEnvironmentSection(config *runtime.ContainerConfig) summarySection {
+func buildEnvironmentSection(config *runtime.ContainerConfig) processSummarySection {
 	summary := "unknown vars"
 	if len(config.Environment) > 0 {
 		summary = fmt.Sprintf("%d vars", len(config.Environment))
@@ -164,10 +144,10 @@ func buildEnvironmentSection(config *runtime.ContainerConfig) summarySection {
 		}
 	}
 
-	return summarySection{Title: "Environment", Summary: summary, Expanded: true, Rows: rows}
+	return processSummarySection{Title: "Environment", Summary: summary, Rows: rows}
 }
 
-func buildCGroupSection(config *runtime.ContainerConfig) summarySection {
+func buildCGroupSection(config *runtime.ContainerConfig) processSummarySection {
 	summary := "unknown"
 	if config.CGroupVersion > 0 {
 		summary = fmt.Sprintf("v%d", config.CGroupVersion)
@@ -180,10 +160,9 @@ func buildCGroupSection(config *runtime.ContainerConfig) summarySection {
 	pathLabel := fallbackValue(config.CGroupPath, "unknown")
 	mountLabel := fallbackValue(config.CGroupMountedPath, "unknown")
 
-	return summarySection{
-		Title:    "CGroup",
-		Summary:  summary,
-		Expanded: true,
+	return processSummarySection{
+		Title:   "CGroup",
+		Summary: summary,
 		Rows: []string{
 			"Version: " + versionLabel,
 			"Path: " + pathLabel,
@@ -192,7 +171,7 @@ func buildCGroupSection(config *runtime.ContainerConfig) summarySection {
 	}
 }
 
-func buildPIDNamespaceSection(config *runtime.ContainerConfig) summarySection {
+func buildPIDNamespaceSection(config *runtime.ContainerConfig) processSummarySection {
 	summary := "unknown"
 	sharedPID := "unknown"
 
@@ -209,10 +188,9 @@ func buildPIDNamespaceSection(config *runtime.ContainerConfig) summarySection {
 		}
 	}
 
-	return summarySection{
-		Title:    "PID Namespace",
-		Summary:  summary,
-		Expanded: true,
-		Rows:     []string{"Shared PID: " + sharedPID},
+	return processSummarySection{
+		Title:   "PID Namespace",
+		Summary: summary,
+		Rows:    []string{"Shared PID: " + sharedPID},
 	}
 }

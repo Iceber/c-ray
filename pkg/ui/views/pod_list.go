@@ -49,7 +49,7 @@ func NewPodListView(app *tview.Application, rt runtime.Runtime) *PodListView {
 	}
 	v.table = components.NewTable(podColumns)
 	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
-	v.table.AddRow("[gray]Loading pods...[-]", "", "", "")
+	v.table.AddRow(components.Muted("Loading pods..."), "", "", "")
 
 	v.Flex.AddItem(v.table, 0, 1, true)
 	v.Flex.AddItem(v.statusBar, 1, 0, false)
@@ -70,7 +70,7 @@ func (v *PodListView) Refresh(ctx context.Context) error {
 		v.pods = nil
 		queueUpdateDraw(v.app, func() {
 			v.table.ClearData()
-			v.table.AddRow(fmt.Sprintf("[red]Failed to load pods: %v[-]", err), "", "", "")
+			v.table.AddRow(fmt.Sprintf("[%s]Failed to load pods: %v[-]", components.ColorName(components.ColorFgError), err), "", "", "")
 		})
 		return err
 	}
@@ -158,7 +158,9 @@ func (v *PodListView) updateStatusBar() {
 		totalContainers += len(pe.containers)
 	}
 	v.statusBar.SetText(fmt.Sprintf(
-		" [white]Pods: [green]%d[white] total, %d containers  |  [yellow]r[white]:refresh",
-		len(v.pods), totalContainers,
+		" %s  %s  |  %s",
+		components.KV("Pods ", fmt.Sprintf("%d", len(v.pods))),
+		components.KV("Containers ", fmt.Sprintf("%d", totalContainers)),
+		components.KeyHint("r", "refresh"),
 	))
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/runtime"
+	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/rivo/tview"
 )
 
@@ -33,8 +34,8 @@ func NewRuntimeInfoView(app *tview.Application) *RuntimeInfoView {
 	v.tree = tview.NewTreeView()
 	v.tree.SetBorder(false)
 	v.tree.SetGraphics(true)
-	v.tree.SetGraphicsColor(tcell.ColorDarkCyan)
-	v.tree.SetRoot(tview.NewTreeNode("[gray]No runtime data[-]").SetSelectable(false))
+	v.tree.SetGraphicsColor(components.ColorFgBorder)
+	v.tree.SetRoot(tview.NewTreeNode(components.Muted("No runtime data")).SetSelectable(false))
 	v.tree.SetSelectedFunc(func(node *tview.TreeNode) {
 		if node != nil {
 			node.SetExpanded(!node.IsExpanded())
@@ -85,8 +86,8 @@ func (v *RuntimeInfoView) Refresh(ctx context.Context) error {
 
 func (v *RuntimeInfoView) renderError(err error) {
 	queueUpdateDraw(v.app, func() {
-		root := tview.NewTreeNode("[aqua::b]Runtime[-:-:-]").SetSelectable(false).SetExpanded(true)
-		root.AddChild(tview.NewTreeNode(fmt.Sprintf("[red]Failed to load runtime: %v[-]", err)).SetSelectable(false))
+		root := tview.NewTreeNode(components.Accent("Runtime")).SetSelectable(false).SetExpanded(true)
+		root.AddChild(tview.NewTreeNode(fmt.Sprintf("[%s]Failed to load runtime: %v[-]", components.ColorName(components.ColorFgError), err)).SetSelectable(false))
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(root)
 	})
@@ -124,18 +125,18 @@ func (v *RuntimeInfoView) GetFocusPrimitive() tview.Primitive {
 
 func (v *RuntimeInfoView) renderEmpty() {
 	queueUpdateDraw(v.app, func() {
-		root := tview.NewTreeNode("[aqua::b]Runtime[-:-:-]").SetSelectable(false).SetExpanded(true)
-		root.AddChild(tview.NewTreeNode("[gray]Refresh to resolve shim, OCI runtime and namespace metadata[-]").SetSelectable(false))
+		root := tview.NewTreeNode(components.Accent("Runtime")).SetSelectable(false).SetExpanded(true)
+		root.AddChild(tview.NewTreeNode(components.Muted("Refresh to resolve shim, OCI runtime and namespace metadata")).SetSelectable(false))
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(root)
 	})
 }
 
 func (v *RuntimeInfoView) render(rt *runtime.RuntimeProfile, config *runtime.ContainerConfig, state *runtime.ContainerState) {
-	root := tview.NewTreeNode("[aqua::b]Runtime[-:-:-]").SetSelectable(false).SetExpanded(true)
+	root := tview.NewTreeNode(components.Accent("Runtime")).SetSelectable(false).SetExpanded(true)
 
 	if rt == nil {
-		root.AddChild(tview.NewTreeNode("[gray]Runtime metadata unresolved[-]").SetSelectable(false))
+		root.AddChild(tview.NewTreeNode(components.Muted("Runtime metadata unresolved")).SetSelectable(false))
 	} else {
 		root.AddChild(buildShimNodeV1(rt, state))
 		root.AddChild(buildOCINodeV1(rt))
@@ -167,11 +168,16 @@ func (v *RuntimeInfoView) expandAll() {
 }
 
 func (v *RuntimeInfoView) updateStatusBar() {
-	v.statusBar.SetText(" [white]Runtime:[-] shim, OCI runtime and namespace anchors  |  [yellow]e[white]:toggle  [yellow]a[white]:expand/collapse all")
+	v.statusBar.SetText(fmt.Sprintf(
+		" %s  |  %s  %s",
+		components.Muted("Runtime: shim, OCI runtime and namespace anchors"),
+		components.KeyHint("e", "toggle"),
+		components.KeyHint("a", "expand/collapse"),
+	))
 }
 
 func buildShimNodeV1(runtime *runtime.RuntimeProfile, state *runtime.ContainerState) *tview.TreeNode {
-	node := tview.NewTreeNode("[yellow::b]Shim[-:-:-]").SetSelectable(true).SetExpanded(true)
+	node := tview.NewTreeNode(fmt.Sprintf("[%s::b]Shim[-:-:-]", components.ColorName(components.ColorFgAccentAlt))).SetSelectable(true).SetExpanded(true)
 
 	rows := []string{}
 	if state != nil {
@@ -219,16 +225,16 @@ func buildShimNodeV1(runtime *runtime.RuntimeProfile, state *runtime.ContainerSt
 		rows = append(rows, "Shim metadata unresolved")
 	}
 	for _, row := range rows {
-		node.AddChild(tview.NewTreeNode("[gray]  " + row + "[-]").SetSelectable(false))
+		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s", components.Muted(row))).SetSelectable(false))
 	}
 	return node
 }
 
 func buildOCINodeV1(runtime *runtime.RuntimeProfile) *tview.TreeNode {
-	node := tview.NewTreeNode("[aqua::b]OCI Runtime[-:-:-]").SetSelectable(true).SetExpanded(true)
+	node := tview.NewTreeNode(components.Accent("OCI Runtime")).SetSelectable(true).SetExpanded(true)
 	oci := runtime.OCI
 	if oci == nil {
-		node.AddChild(tview.NewTreeNode("[gray]  OCI runtime metadata unresolved[-]").SetSelectable(false))
+		node.AddChild(tview.NewTreeNode(components.Muted("  OCI runtime metadata unresolved")).SetSelectable(false))
 		return node
 	}
 
@@ -252,15 +258,15 @@ func buildOCINodeV1(runtime *runtime.RuntimeProfile) *tview.TreeNode {
 		rows = append(rows, "OCI runtime metadata unresolved")
 	}
 	for _, row := range rows {
-		node.AddChild(tview.NewTreeNode("[gray]  " + row + "[-]").SetSelectable(false))
+		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s", components.Muted(row))).SetSelectable(false))
 	}
 	return node
 }
 
 func buildNamespaceNodeV1(config *runtime.ContainerConfig) *tview.TreeNode {
-	node := tview.NewTreeNode("[aqua::b]Namespace[-:-:-]").SetSelectable(true).SetExpanded(true)
+	node := tview.NewTreeNode(components.Accent("Namespace")).SetSelectable(true).SetExpanded(true)
 	if config == nil || len(config.Namespaces) == 0 {
-		node.AddChild(tview.NewTreeNode("[gray]  Namespace metadata unresolved[-]").SetSelectable(false))
+		node.AddChild(tview.NewTreeNode(components.Muted("  Namespace metadata unresolved")).SetSelectable(false))
 		return node
 	}
 
@@ -270,7 +276,7 @@ func buildNamespaceNodeV1(config *runtime.ContainerConfig) *tview.TreeNode {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		node.AddChild(tview.NewTreeNode(fmt.Sprintf("[gray]  %s: [white]%s[-]", k, config.Namespaces[k])).SetSelectable(false))
+		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted(k+":"), components.Bright(config.Namespaces[k]))).SetSelectable(false))
 	}
 	return node
 }

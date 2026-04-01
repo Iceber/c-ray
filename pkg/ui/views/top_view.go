@@ -72,8 +72,8 @@ func NewTopView(app *tview.Application, ctx context.Context) *TopView {
 	}
 
 	v.netBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
-	v.netBar.SetBackgroundColor(tcell.ColorDarkSlateGray)
-	v.netBar.SetText(" [gray]Network: waiting for data...[-]")
+	v.netBar.SetBackgroundColor(components.ColorBgHeader)
+	v.netBar.SetText(fmt.Sprintf(" %s", components.Muted("Network: waiting for data...")))
 
 	v.table = components.NewTable(topColumns)
 	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
@@ -114,7 +114,7 @@ func (v *TopView) Refresh(ctx context.Context) error {
 		v.mu.Unlock()
 		queueUpdateDraw(v.app, func() {
 			v.table.ClearData()
-			v.table.AddRow(fmt.Sprintf("[red]Error: %v[-]", err), "", "", "", "", "", "", "", "", "", "")
+			v.table.AddRow(fmt.Sprintf("[%s]Error: %v[-]", components.ColorName(components.ColorFgError), err), "", "", "", "", "", "", "", "", "", "")
 			v.updateStatusBar()
 		})
 		return err
@@ -292,14 +292,14 @@ func (v *TopView) updateNetBar(netIO []*runtime.NetworkStats) {
 	var parts []string
 	for _, ns := range netIO {
 		parts = append(parts, fmt.Sprintf(
-			"[gray]%s [green]↓[white]%s[gray](%s) [red]↑[white]%s[gray](%s)[-]",
-			ns.Interface,
-			formatRate(ns.RxBytesPerSec), formatBytes(int64(ns.RxBytes)),
-			formatRate(ns.TxBytesPerSec), formatBytes(int64(ns.TxBytes)),
+			"%s [%s]↓[-]%s%s [%s]↑[-]%s%s",
+			components.Muted(ns.Interface),
+			components.ColorName(components.ColorFgOk), components.Bright(formatRate(ns.RxBytesPerSec)), components.Dim("("+formatBytes(int64(ns.RxBytes))+")"),
+			components.ColorName(components.ColorFgError), components.Bright(formatRate(ns.TxBytesPerSec)), components.Dim("("+formatBytes(int64(ns.TxBytes))+")"),
 		))
 	}
 	if len(parts) == 0 {
-		v.netBar.SetText(" [gray]Network: no active interfaces[-]")
+		v.netBar.SetText(fmt.Sprintf(" %s", components.Muted("Network: no active interfaces")))
 		return
 	}
 	v.netBar.SetText(" " + strings.Join(parts, "  "))
@@ -321,7 +321,12 @@ func (v *TopView) updateStatusBar() {
 		sortLabel = "I/O"
 	}
 	v.statusBar.SetText(fmt.Sprintf(
-		" [white]Top: [green]%d[white]  |  [aqua]hotspot sort[-]: %s  |  [yellow]c[white]:cpu [yellow]m[white]:mem [yellow]p[white]:pid [yellow]i[white]:io",
-		count, sortLabel,
+		" %s  |  %s  |  %s  %s  %s  %s",
+		components.KV("Top ", fmt.Sprintf("%d", count)),
+		components.KV("sort ", sortLabel),
+		components.KeyHint("c", "cpu"),
+		components.KeyHint("m", "mem"),
+		components.KeyHint("p", "pid"),
+		components.KeyHint("i", "io"),
 	))
 }

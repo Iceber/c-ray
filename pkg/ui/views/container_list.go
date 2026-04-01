@@ -7,6 +7,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/runtime"
+	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/rivo/tview"
 )
 
@@ -50,12 +51,12 @@ func NewContainerTreeView(app *tview.Application, rt runtime.Runtime) *Container
 		rt:   rt,
 	}
 
-	root := tview.NewTreeNode("Containers").SetColor(tcell.ColorAqua).SetSelectable(false)
-	root.AddChild(tview.NewTreeNode("[gray]Loading containers...[-]").SetSelectable(false))
+	root := tview.NewTreeNode("Containers").SetColor(components.ColorFgAccent).SetSelectable(false)
+	root.AddChild(tview.NewTreeNode(components.Muted("Loading containers...")).SetSelectable(false))
 
 	v.tree = tview.NewTreeView().SetRoot(root).SetCurrentNode(root)
-	v.tree.SetBorder(true).SetBorderColor(tcell.ColorDarkSlateGray)
-	v.tree.SetTitle(" [Containers] ").SetTitleColor(tcell.ColorAqua)
+	v.tree.SetBorder(true).SetBorderColor(components.ColorFgBorder)
+	v.tree.SetTitle(fmt.Sprintf(" %s ", components.Accent("Containers"))).SetTitleColor(components.ColorFgAccent)
 
 	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
 
@@ -108,7 +109,7 @@ func (v *ContainerTreeView) Refresh(ctx context.Context) error {
 		queueUpdateDraw(v.app, func() {
 			root := v.tree.GetRoot()
 			root.ClearChildren()
-			root.AddChild(tview.NewTreeNode(fmt.Sprintf("[red]Failed to load containers: %v[-]", err)).SetSelectable(false))
+			root.AddChild(tview.NewTreeNode(fmt.Sprintf("[%s]Failed to load containers: %v[-]", components.ColorName(components.ColorFgError), err)).SetSelectable(false))
 		})
 		return err
 	}
@@ -238,10 +239,11 @@ func (v *ContainerTreeView) createPodNode(pg *podGroup) *tview.TreeNode {
 	if pg.running == 0 {
 		runningColor = tcell.ColorRed
 	}
-	text := fmt.Sprintf("[::b][Pod][-] [::b]%s[-] [gray]%s[-]  [%s]%d[-]/[%s]%d[-]",
-		pg.name, pg.namespace,
-		getColorName(runningColor), pg.running,
-		getColorName(tcell.ColorWhite), pg.total,
+	text := fmt.Sprintf(
+		"[::b][Pod][-] [::b]%s[-] %s  [%s]%d[-]/[%s]%d[-]",
+		pg.name, components.Muted(pg.namespace),
+		components.ColorName(runningColor), pg.running,
+		components.ColorName(components.ColorFgBright), pg.total,
 	)
 	node := tview.NewTreeNode(text).SetColor(tcell.ColorWhite).SetSelectable(true).SetExpanded(true)
 	node.SetReference(&treeNodeData{nodeType: nodeTypePod, podUID: pg.uid})
@@ -267,8 +269,10 @@ func (v *ContainerTreeView) createContainerNode(e containerEntry, isInPod bool) 
 		nodeType = nodeTypeContainer
 	}
 
-	text := fmt.Sprintf("[%s]●[-] %s [gray](%s)[-] [gray]PID[-]:%s [gray]Age[-]:%s",
-		getColorName(statusColor), displayName, sid, pid, age)
+	text := fmt.Sprintf("[%s]●[-] %s %s %sPID%s:%s %sAge%s:%s",
+		components.ColorName(statusColor), displayName, components.Muted("("+sid+")"),
+		components.ColorName(components.ColorFgMuted), components.ColorName(components.ColorFgBright), pid,
+		components.ColorName(components.ColorFgMuted), components.ColorName(components.ColorFgBright), age)
 
 	node := tview.NewTreeNode(text).SetSelectable(true)
 	node.SetReference(&treeNodeData{nodeType: nodeType, container: e.handle, containerID: e.info.ID, podUID: e.info.PodUID})
@@ -379,8 +383,15 @@ func (v *ContainerTreeView) updateStatusBar(podCount, standaloneCount int) {
 		}
 	}
 	v.statusBar.SetText(fmt.Sprintf(
-		" [white]Containers: [green]%d[white] total, [green]%d[white] running, [aqua]%d[white] pods, [gray]%d[white] standalone  |  [yellow]Enter[white]:detail  [yellow]e[white]:toggle  [yellow]a[white]:all  [yellow]r[white]:refresh",
-		total, running, podCount, standaloneCount,
+		" %s  %s  %s  %s  |  %s  %s  %s  %s",
+		components.KV("Total ", fmt.Sprintf("%d", total)),
+		components.KV("Running ", fmt.Sprintf("%d", running)),
+		components.KV("Pods ", fmt.Sprintf("%d", podCount)),
+		components.KV("Standalone ", fmt.Sprintf("%d", standaloneCount)),
+		components.KeyHint("Enter", "detail"),
+		components.KeyHint("e", "toggle"),
+		components.KeyHint("a", "all"),
+		components.KeyHint("r", "refresh"),
 	))
 }
 

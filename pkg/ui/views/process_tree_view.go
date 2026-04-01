@@ -10,6 +10,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/runtime"
+	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/rivo/tview"
 )
 
@@ -35,8 +36,8 @@ func NewProcessTreeView(app *tview.Application) *ProcessTreeView {
 	v.tree = tview.NewTreeView()
 	v.tree.SetBorder(false)
 	v.tree.SetGraphics(true)
-	v.tree.SetGraphicsColor(tcell.ColorDarkCyan)
-	v.tree.SetRoot(tview.NewTreeNode("[gray]No data[-]"))
+	v.tree.SetGraphicsColor(components.ColorFgBorder)
+	v.tree.SetRoot(tview.NewTreeNode(components.Muted("No data")))
 
 	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
 
@@ -70,7 +71,7 @@ func (v *ProcessTreeView) Refresh(ctx context.Context) error {
 		v.processes = nil
 		v.mu.Unlock()
 		queueUpdateDraw(v.app, func() {
-			root := tview.NewTreeNode(fmt.Sprintf("[red]Failed to load processes: %v[-]", err)).SetSelectable(false)
+			root := tview.NewTreeNode(fmt.Sprintf("%s %s", components.Accent("Error"), components.Muted(err.Error()))).SetSelectable(false)
 			v.tree.SetRoot(root)
 			v.tree.SetCurrentNode(root)
 			v.updateStatusBar()
@@ -128,8 +129,8 @@ func (v *ProcessTreeView) render(ctx context.Context) {
 
 func buildProcessNode(p *runtime.Process, childMap map[int][]*runtime.Process) *tview.TreeNode {
 	stateColor := processStateColor(p.State)
-	label := fmt.Sprintf("[white::b]%s[-:-:-] [gray][pid:%d][-] [%s](%s)[-] %s",
-		processName(p), p.PID, stateColor, p.State, processCmd(p))
+	label := fmt.Sprintf("%s [%s][pid:%d][-] [%s](%s)[-] %s",
+		components.Bright(processName(p)), components.ColorName(components.ColorFgMuted), p.PID, stateColor, p.State, components.Muted(processCmd(p)))
 
 	node := tview.NewTreeNode(label).SetSelectable(true).SetExpanded(true).SetReference(p)
 
@@ -161,8 +162,7 @@ func buildChildNodes(children []*runtime.Process, childMap map[int][]*runtime.Pr
 			nodes = append(nodes, buildProcessNode(group[0], childMap))
 			continue
 		}
-		agg := tview.NewTreeNode(fmt.Sprintf("[aqua]%d ×[-] %s [gray][same command][-]", len(group), processCmd(group[0]))).
-			SetSelectable(true).SetExpanded(false)
+		agg := tview.NewTreeNode(fmt.Sprintf("%s %s %s", components.Accent(fmt.Sprintf("%d ×", len(group))), processCmd(group[0]), components.Muted("[same command]"))).SetSelectable(true).SetExpanded(false)
 		for _, child := range group {
 			agg.AddChild(buildProcessNode(child, childMap))
 		}
@@ -226,8 +226,11 @@ func (v *ProcessTreeView) updateStatusBar() {
 	count := len(v.processes)
 	v.mu.Unlock()
 	v.statusBar.SetText(fmt.Sprintf(
-		" [white]Tree: [green]%d[white]  |  [aqua]root[-]: shim -> container process tree  |  [yellow]e[white]:toggle expand  [yellow]a[white]:expand/collapse all",
-		count,
+		" %s  |  %s  |  %s  %s",
+		components.KV("Tree ", fmt.Sprintf("%d", count)),
+		components.Muted("root: shim → container process tree"),
+		components.KeyHint("e", "toggle"),
+		components.KeyHint("a", "expand/collapse"),
 	))
 }
 
@@ -249,9 +252,9 @@ func processTreeRootLabel(c runtime.Container, ctx context.Context) string {
 		}
 	}
 	if shimPID > 0 {
-		return fmt.Sprintf("[aqua::b]Shim[-:-:-] [gray](%s, not in container)[-] [white][pid:%d][-]", shimName, shimPID)
+		return fmt.Sprintf("%s %s %s", components.Accent("Shim"), components.Muted(fmt.Sprintf("(%s, not in container)", shimName)), components.Bright(fmt.Sprintf("[pid:%d]", shimPID)))
 	}
-	return fmt.Sprintf("[aqua::b]Shim[-:-:-] [gray](%s, not in container)[-]", shimName)
+	return fmt.Sprintf("%s %s", components.Accent("Shim"), components.Muted(fmt.Sprintf("(%s, not in container)", shimName)))
 }
 
 func processName(p *runtime.Process) string {

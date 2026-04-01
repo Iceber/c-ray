@@ -170,22 +170,3 @@ func fallbackValue(value string, fallback string) string {
 	}
 	return value
 }
-
-func getColorName(c tcell.Color) string {
-	switch c {
-	case tcell.ColorGreen:
-		return "green"
-	case tcell.ColorRed:
-		return "red"
-	case tcell.ColorYellow:
-		return "yellow"
-	case tcell.ColorAqua:
-		return "aqua"
-	case tcell.ColorWhite:
-		return "white"
-	case tcell.ColorGray:
-		return "gray"
-	default:
-		return "white"
-	}
-}
