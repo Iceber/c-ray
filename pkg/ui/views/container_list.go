@@ -269,7 +269,7 @@ func (v *ContainerTreeView) createContainerNode(e containerEntry, isInPod bool) 
 		nodeType = nodeTypeContainer
 	}
 
-	text := fmt.Sprintf("[%s]●[-] %s %s %sPID%s:%s %sAge%s:%s",
+	text := fmt.Sprintf("[%s]●[-] %s %s [%s]PID[-][%s]:%s[-] [%s]Age[-][%s]:%s[-]",
 		components.ColorName(statusColor), displayName, components.Muted("("+sid+")"),
 		components.ColorName(components.ColorFgMuted), components.ColorName(components.ColorFgBright), pid,
 		components.ColorName(components.ColorFgMuted), components.ColorName(components.ColorFgBright), age)

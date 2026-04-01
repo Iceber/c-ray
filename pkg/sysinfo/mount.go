@@ -34,7 +34,7 @@ type MountReader struct {
 // NewMountReader creates a new mount reader
 func NewMountReader() *MountReader {
 	return &MountReader{procRoot: "/proc"}
-	}
+}
 
 // NewMountReaderWithRoot creates a mount reader with a custom proc root.
 func NewMountReaderWithRoot(root string) *MountReader {
