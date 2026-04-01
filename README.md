@@ -1,6 +1,6 @@
 # c-ray
 
-一个基于 containerd 的容器管理 TUI 工具，提供深度容器运行时 introspection 能力。
+一个容器管理 TUI 工具，提供深度运行时 introspection 能力。支持 **containerd**、**CRI-O**、**Docker**（Classic / containerd image store）以及 **Docker Desktop on macOS**。
 
 ## 功能特性
 
@@ -42,6 +42,64 @@
 - **挂载状态**: `declared+live` / `declared-only` / `live-only`
 - **CNI 网络详情**: 接口、路由、DNS、端口映射
 - **进程资源监控**: CPU 使用率、内存 RSS、内存百分比
+
+## 支持的运行时
+
+c-ray 通过统一抽象层对接多种容器运行时，自动探测可用的 socket 并选择对应后端：
+
+| 运行时 | Socket 路径 | 数据来源 | 说明 |
+|--------|------------|---------|------|
+| **containerd** | `/run/containerd/containerd.sock` | containerd API + CRI | 原生 containerd，支持 namespace 隔离，适用于 Kubernetes 节点 |
+| **CRI-O** | `/run/crio/crio.sock` | containers/storage + CRI | 使用 containers/storage 库直读存储元数据，CRI 补充运行时状态 |
+| **Docker (Classic)** | `/var/run/docker.sock` | Docker Engine API | 传统 Docker graphdriver 模式（overlay2 等） |
+| **Docker (containerd)** | `/var/run/docker.sock` | Docker Engine API + containerd | 检测到 containerd snapshotter 时自动委托镜像操作给 containerd |
+| **Docker Desktop (macOS)** | N/A（通过 launcher 桥接） | Docker Desktop VM 内的 Docker socket | macOS 上通过 launcher 在 Docker 容器内 chroot 执行 Linux 二进制 |
+
+### 运行时详情
+
+#### containerd
+
+原生对接 containerd gRPC API，是 c-ray 最初支持的运行时。通过 Kubernetes CRI 获取 Pod、挂载、网络等元数据，配合 `/proc`、`/sys/fs/cgroup` 等系统文件实现进程和资源监控。
+
+```bash
+cray -socket /run/containerd/containerd.sock -namespace k8s.io
+```
+
+#### CRI-O
+
+CRI-O 模式以 [containers/storage](https://github.com/containers/storage) 作为主要数据源，直接读取存储后端获取容器、镜像和层的元数据，无需依赖 CRI API 即可获取存储层面的完整信息。CRI API 仅用于补充运行时状态（PID、生命周期、标签、Pod 关联、网络元数据）。
+
+支持 CRI-O 的 split store（`/var/lib/containers/storage` + `/run/containers/storage`）和 transient store 配置。
+
+```bash
+cray -socket /run/crio/crio.sock
+```
+
+#### Docker
+
+通过 Docker Engine API 管理容器。连接时自动探测镜像存储模式：
+
+- **Classic**：传统 graphdriver（overlay2、btrfs 等），镜像操作通过 Docker API 完成
+- **Containerd**：检测到 `io.containerd.snapshotter.v1` 时，镜像操作自动委托给 containerd 后端（Docker Desktop 4.34+ / Docker Engine 29.0+ 默认）
+
+```bash
+cray -socket /var/run/docker.sock
+```
+
+#### Docker Desktop on macOS
+
+macOS 没有原生 Linux 容器运行时，因此 c-ray 提供了一个 launcher 包装器：
+
+1. launcher 是一个 Darwin 原生二进制，内嵌静态链接的 Linux c-ray 二进制
+2. 运行时自动启动一个特权 Docker 容器，将宿主机 `/` 挂载为 `/vm`
+3. 将内嵌的二进制复制到 VM 文件系统后通过 `chroot /vm` 执行
+4. 默认连接 VM 内的 `/var/run/docker.sock`
+
+前置条件：Docker Desktop 必须处于运行状态。
+
+```bash
+cray   # macOS 上自动使用 launcher
+```
 
 ## 安装
 
@@ -88,17 +146,20 @@ GOOS=linux GOARCH=arm64 go build -o bin/cray-linux ./cmd/cray
 ### TUI 模式
 
 ```bash
-# 启动 TUI（默认）
+# 启动 TUI（默认，自动探测运行时）
 cray
 
 # 或显式指定
 cray tui
 
-# 自定义 containerd socket 路径
-CONTAINERD_SOCKET=/run/containerd/containerd.sock cray
+# 指定 containerd
+cray -socket /run/containerd/containerd.sock -namespace k8s.io
 
-# 自定义 namespace
-CONTAINERD_NAMESPACE=k8s.io cray
+# 指定 CRI-O
+cray -socket /run/crio/crio.sock
+
+# 指定 Docker
+cray -socket /var/run/docker.sock
 
 # 完整参数
 cray -socket /run/containerd/containerd.sock -namespace k8s.io -timeout 30
@@ -160,13 +221,14 @@ docker exec kind-control-plane cray test list-containers
 ```
 .
 ├── cmd/
-│   └── cray/               # 主程序入口
+│   ├── cray/               # 主程序入口（Linux 原生）
+│   └── cray-launcher/      # macOS launcher（内嵌 Linux 二进制，通过 Docker 容器 chroot 执行）
 ├── pkg/
 │   ├── models/             # 数据模型（容器、镜像、Pod、网络）
 │   ├── runtime/            # 运行时抽象层
 │   │   ├── containerd/     # containerd 实现
-│   │   │   ├── client.go   # 核心客户端
-│   │   │   └── mounts.go   # 挂载信息收集
+│   │   ├── crio/           # CRI-O 实现（containers/storage + CRI）
+│   │   ├── docker/         # Docker 实现（Engine API，自动探测 classic/containerd image store）
 │   │   └── cri/            # CRI 元数据客户端
 │   ├── sysinfo/            # 系统信息采集
 │   │   ├── procfs/         # 进程信息
@@ -202,7 +264,8 @@ docker exec kind-control-plane cray test list-containers
 - **语言**: Go 1.24.3+
 - **TUI 框架**: [tview](https://github.com/rivo/tview)
 - **终端库**: [tcell](https://github.com/gdamore/tcell)
-- **容器运行时**: [containerd](https://github.com/containerd/containerd)
+- **容器运行时**: [containerd](https://github.com/containerd/containerd) / [CRI-O](https://github.com/cri-o/cri-o) / [Docker](https://github.com/docker/docker)
+- **存储库**: [containers/storage](https://github.com/containers/storage)（CRI-O 模式）
 - **CRI 接口**: Kubernetes CRI API
 
 ## 架构设计
@@ -235,6 +298,9 @@ type Runtime interface {
 
 - [x] 项目架构设计
 - [x] containerd 运行时集成
+- [x] CRI-O 运行时集成（containers/storage + CRI）
+- [x] Docker 运行时集成（Classic / containerd image store 自动探测）
+- [x] Docker Desktop on macOS 支持（launcher + chroot）
 - [x] 容器列表与详情
 - [x] 镜像管理与层分析
 - [x] Pod 列表与关联
