@@ -231,7 +231,7 @@ func (v *ImageLayersView) render() {
 	} else if storage == nil {
 		root.AddChild(tview.NewTreeNode(components.Muted("Refresh to resolve snapshotter, rootfs path and image layers")).SetSelectable(false))
 	} else {
-		root.AddChild(buildRWLayerNodeV1(config, rwStats, storage.RWLayerPath))
+		root.AddChild(buildRWLayerNodeV1(config, storage, rwStats, storage.RWLayerPath))
 		root.AddChild(buildReadOnlyLayersNodeV1(storage.ReadOnlyLayers))
 	}
 
@@ -468,7 +468,7 @@ func buildLayerHeaderV1(config *runtime.ContainerConfig, runtime *runtime.Runtim
 	)
 }
 
-func buildRWLayerNodeV1(config *runtime.ContainerConfig, rwStats *runtime.ContainerRWLayerStats, rwLayerPath string) *tview.TreeNode {
+func buildRWLayerNodeV1(config *runtime.ContainerConfig, storage *runtime.ContainerStorage, rwStats *runtime.ContainerRWLayerStats, rwLayerPath string) *tview.TreeNode {
 	node := tview.NewTreeNode(fmt.Sprintf("[%s::b]RW Layer[-:-:-]", components.ColorName(components.ColorFgAccentAlt))).SetSelectable(true).SetExpanded(true)
 
 	snapshotKey := "unknown"
@@ -479,6 +479,14 @@ func buildRWLayerNodeV1(config *runtime.ContainerConfig, rwStats *runtime.Contai
 		}
 		if config.WritableLayerPath != "" {
 			path = config.WritableLayerPath
+		}
+	}
+	if storage != nil {
+		if snapshotKey == "unknown" && storage.RWSnapshotKey != "" {
+			snapshotKey = storage.RWSnapshotKey
+		}
+		if path == "unknown" && storage.RWLayerPath != "" {
+			path = storage.RWLayerPath
 		}
 	}
 
@@ -519,25 +527,103 @@ func buildReadOnlyLayersNodeV1(layers []*runtime.ImageLayer) *tview.TreeNode {
 
 	for _, layer := range sorted {
 		snapshotKey := ""
-		contentPath := ""
 		if layer.Containerd != nil {
 			snapshotKey = layer.Containerd.SnapshotKey
-			contentPath = layer.Containerd.ContentPath
 		}
 		label := fmt.Sprintf("Layer %d: %s", layer.Index, shortenLayerIDV1(snapshotKey, layer.UncompressedDigest, layer.CompressedDigest))
 		layerNode := tview.NewTreeNode(label).SetSelectable(true).SetExpanded(false)
 		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Rootfs Diff ID:"), components.Bright(fallbackLayerField(layer.UncompressedDigest)))).SetSelectable(false))
-		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Snapshot Key:"), components.Bright(fallbackLayerField(snapshotKey)))).SetSelectable(false))
 		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Snapshot Path:"), components.Bright(fallbackLayerField(layer.Path)))).SetSelectable(false))
-		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Content Path:"), components.Bright(fallbackLayerField(contentPath)))).SetSelectable(false))
 		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Content Size:"), components.Bright(formatLayerSize(layer)))).SetSelectable(false))
 		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Disk Usage:"), components.Bright(formatLayerDiskUsage(layer)))).SetSelectable(false))
+		for _, detailsNode := range buildLayerBackendDetailsV1(layer) {
+			layerNode.AddChild(detailsNode)
+		}
 		if layer.Path != "" {
 			layerNode.SetReference(&layerBrowserEntry{path: layer.Path, isDir: true})
 		}
 		node.AddChild(layerNode)
 	}
 	return node
+}
+
+func buildLayerBackendDetailsV1(layer *runtime.ImageLayer) []*tview.TreeNode {
+	if layer == nil {
+		return nil
+	}
+
+	var nodes []*tview.TreeNode
+	if layer.Containerd != nil {
+		rows := make([]string, 0, 2)
+		if layer.Containerd.SnapshotKey != "" {
+			rows = append(rows, "Snapshot Key: "+layer.Containerd.SnapshotKey)
+		}
+		if layer.Containerd.ContentPath != "" {
+			rows = append(rows, "Content Path: "+layer.Containerd.ContentPath)
+		}
+		if len(rows) > 0 {
+			node := tview.NewTreeNode(fmt.Sprintf("  %s", components.Accent("Containerd"))).SetSelectable(false).SetExpanded(true)
+			for _, row := range rows {
+				node.AddChild(tview.NewTreeNode(fmt.Sprintf("    %s", components.Muted(row))).SetSelectable(false))
+			}
+			nodes = append(nodes, node)
+		}
+	}
+
+	if layer.Docker != nil {
+		rows := make([]string, 0, 4)
+		if layer.Docker.CacheID != "" {
+			rows = append(rows, "Cache ID: "+layer.Docker.CacheID)
+		}
+		if layer.Docker.ShortLinkID != "" {
+			rows = append(rows, "Short Link ID: "+layer.Docker.ShortLinkID)
+		}
+		if layer.Docker.ShortLinkPath != "" {
+			rows = append(rows, "Short Link Path: "+layer.Docker.ShortLinkPath)
+		}
+		if layer.Docker.GraphDriver != "" {
+			rows = append(rows, "Graph Driver: "+layer.Docker.GraphDriver)
+		}
+		if len(rows) > 0 {
+			node := tview.NewTreeNode(fmt.Sprintf("  %s", components.Accent("Docker"))).SetSelectable(false).SetExpanded(true)
+			for _, row := range rows {
+				node.AddChild(tview.NewTreeNode(fmt.Sprintf("    %s", components.Muted(row))).SetSelectable(false))
+			}
+			nodes = append(nodes, node)
+		}
+	}
+
+	if layer.Crio != nil {
+		rows := make([]string, 0, 2+len(layer.Crio.Names)+len(layer.Crio.Metadata))
+		if layer.Crio.ID != "" {
+			rows = append(rows, "Layer ID: "+layer.Crio.ID)
+		}
+		if len(layer.Crio.Names) > 0 {
+			rows = append(rows, "Names: "+strings.Join(layer.Crio.Names, ", "))
+		}
+		if layer.Crio.OverlayLinkID != "" {
+			rows = append(rows, "Overlay Link ID: "+layer.Crio.OverlayLinkID)
+		}
+		if len(layer.Crio.Metadata) > 0 {
+			keys := make([]string, 0, len(layer.Crio.Metadata))
+			for key := range layer.Crio.Metadata {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				rows = append(rows, fmt.Sprintf("Metadata[%s]: %s", key, layer.Crio.Metadata[key]))
+			}
+		}
+		if len(rows) > 0 {
+			node := tview.NewTreeNode(fmt.Sprintf("  %s", components.Accent("CRI-O"))).SetSelectable(false).SetExpanded(true)
+			for _, row := range rows {
+				node.AddChild(tview.NewTreeNode(fmt.Sprintf("    %s", components.Muted(row))).SetSelectable(false))
+			}
+			nodes = append(nodes, node)
+		}
+	}
+
+	return nodes
 }
 
 func shortenLayerIDV1(values ...string) string {

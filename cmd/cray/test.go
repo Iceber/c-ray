@@ -459,8 +459,13 @@ func containerStorage(ctx context.Context, rt runtime.Runtime, id string) {
 			if l.Path != "" {
 				fmt.Printf("         Path: %s\n", l.Path)
 			}
-			if l.Crio != nil && len(l.Crio.Names) > 0 {
-				fmt.Printf("         Names: %s\n", strings.Join(l.Crio.Names, ", "))
+			if l.Crio != nil {
+				if len(l.Crio.Names) > 0 {
+					fmt.Printf("         Names: %s\n", strings.Join(l.Crio.Names, ", "))
+				}
+				if l.Crio.OverlayLinkID != "" {
+					fmt.Printf("         Link:  %s\n", l.Crio.OverlayLinkID)
+				}
 			}
 		}
 	}
@@ -637,8 +642,13 @@ func imageLayers(ctx context.Context, rt runtime.Runtime, ref, snapshotter strin
 				fmt.Printf("  Snapshot Key:  %s\n", l.Containerd.SnapshotKey)
 			}
 		}
-		if l.Crio != nil && len(l.Crio.Names) > 0 {
-			fmt.Printf("  Names:         %s\n", strings.Join(l.Crio.Names, ", "))
+		if l.Crio != nil {
+			if len(l.Crio.Names) > 0 {
+				fmt.Printf("  Names:         %s\n", strings.Join(l.Crio.Names, ", "))
+			}
+			if l.Crio.OverlayLinkID != "" {
+				fmt.Printf("  Link:          %s\n", l.Crio.OverlayLinkID)
+			}
 		}
 		fmt.Println()
 	}
