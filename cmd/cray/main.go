@@ -34,9 +34,7 @@ func isTerminal() bool {
 }
 
 const (
-	defaultSocketPath = "/run/containerd/containerd.sock"
-	defaultNamespace  = "k8s.io"
-	defaultTimeout    = 30
+	defaultTimeout = 30
 )
 
 var (
@@ -48,8 +46,8 @@ var (
 )
 
 func main() {
-	flag.StringVar(&socketPath, "socket", getEnvOrDefault("CRAY_SOCKET", getEnvOrDefault("CONTAINERD_SOCKET", defaultSocketPath)), "runtime socket path (containerd, CRI-O, or Docker)")
-	flag.StringVar(&namespace, "namespace", getEnvOrDefault("CONTAINERD_NAMESPACE", defaultNamespace), "containerd namespace")
+	flag.StringVar(&socketPath, "socket", os.Getenv("CRAY_SOCKET"), "runtime socket path (auto-detected when empty)")
+	flag.StringVar(&namespace, "namespace", os.Getenv("CONTAINERD_NAMESPACE"), "containerd namespace (auto: k8s.io for CRI-enabled containerd, default for plain containerd)")
 	flag.IntVar(&timeout, "timeout", defaultTimeout, "connection timeout in seconds")
 	flag.Parse()
 
@@ -162,7 +160,11 @@ func runTUI() {
 	}
 
 	config := newConfig()
-	rt := newRuntime(config)
+	rt, err := newRuntime(config)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	app := ui.NewApp(rt)
 
 	if err := app.Run(); err != nil {

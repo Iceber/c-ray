@@ -98,7 +98,9 @@ type Config struct {
 	// Socket path for the runtime (e.g., /run/containerd/containerd.sock)
 	SocketPath string
 
-	// Namespace for containerd (default: "k8s.io")
+	// Namespace for containerd.
+	// If unset, cmd/cray chooses k8s.io for CRI-enabled containerd and default
+	// for plain containerd.
 	Namespace string
 
 	// Timeout for operations

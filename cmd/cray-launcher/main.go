@@ -18,7 +18,6 @@ var embeddedBinary []byte
 
 const (
 	defaultHelperImage = "alpine:3.22"
-	defaultVMDockerSock = "/var/run/docker.sock"
 	vmRoot             = "/vm"
 )
 
@@ -76,7 +75,6 @@ func main() {
 
 	// Pass through relevant environment variables.
 	passEnv(&dockerArgs)
-	passDefaultRuntimeSocket(&dockerArgs)
 
 	dockerArgs = append(dockerArgs, helperImage)
 
@@ -180,15 +178,6 @@ func passEnv(args *[]string) {
 			*args = append(*args, "-e", env)
 		}
 	}
-}
-
-// passDefaultRuntimeSocket pins the default runtime socket inside the VM to
-// Docker when the user did not already specify one via environment.
-func passDefaultRuntimeSocket(args *[]string) {
-	if os.Getenv("CRAY_SOCKET") != "" || os.Getenv("CONTAINERD_SOCKET") != "" {
-		return
-	}
-	*args = append(*args, "-e", "CRAY_SOCKET="+defaultVMDockerSock)
 }
 
 // joinShellArgs quotes and joins arguments for safe use in sh -c.

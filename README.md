@@ -45,7 +45,7 @@
 
 ## 支持的运行时
 
-c-ray 通过统一抽象层对接多种容器运行时，自动探测可用的 socket 并选择对应后端：
+c-ray 通过统一抽象层对接多种容器运行时，自动探测可用的 socket 并按以下顺序选择对应后端：CRI-O，支持 CRI 的 containerd，Docker，最后尝试普通 containerd。若全部探测失败，会直接报错，并提示使用 `-socket` 或 `CRAY_SOCKET` 显式指定。
 
 | 运行时 | Socket 路径 | 数据来源 | 说明 |
 |--------|------------|---------|------|
@@ -60,6 +60,11 @@ c-ray 通过统一抽象层对接多种容器运行时，自动探测可用的 s
 #### containerd
 
 原生对接 containerd gRPC API，是 c-ray 最初支持的运行时。通过 Kubernetes CRI 获取 Pod、挂载、网络等元数据，配合 `/proc`、`/sys/fs/cgroup` 等系统文件实现进程和资源监控。
+
+当未显式传入 `-namespace` 或 `CONTAINERD_NAMESPACE` 时，c-ray 会按探测结果自动选择 namespace：
+
+- 支持 CRI 的 containerd：默认 `k8s.io`
+- 纯 containerd：默认 `default`
 
 ```bash
 cray -socket /run/containerd/containerd.sock -namespace k8s.io
@@ -93,7 +98,7 @@ macOS 没有原生 Linux 容器运行时，因此 c-ray 提供了一个 launcher
 1. launcher 是一个 Darwin 原生二进制，内嵌静态链接的 Linux c-ray 二进制
 2. 运行时自动启动一个特权 Docker 容器，将宿主机 `/` 挂载为 `/vm`
 3. 将内嵌的二进制复制到 VM 文件系统后通过 `chroot /vm` 执行
-4. 默认连接 VM 内的 `/var/run/docker.sock`
+4. 在 VM 内按统一策略自动探测可用 socket，通常会解析到 Docker 的 `/var/run/docker.sock`
 
 前置条件：Docker Desktop 必须处于运行状态。
 
@@ -152,8 +157,14 @@ cray
 # 或显式指定
 cray tui
 
+# 自动探测失败时，显式指定 socket
+cray -socket /run/containerd/containerd.sock
+
 # 指定 containerd
 cray -socket /run/containerd/containerd.sock -namespace k8s.io
+
+# 纯 containerd 环境常见写法
+cray -socket /run/containerd/containerd.sock -namespace default
 
 # 指定 CRI-O
 cray -socket /run/crio/crio.sock

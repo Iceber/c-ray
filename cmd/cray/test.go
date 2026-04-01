@@ -13,64 +13,40 @@ import (
 	runtimedocker "github.com/icebergu/c-ray/pkg/runtime/docker"
 )
 
-// Well-known runtime socket paths for auto-detection.
-var knownSockets = []struct {
-	path    string
-	runtime string
-}{
-	{"/run/containerd/containerd.sock", "containerd"},
-	{"/run/crio/crio.sock", "crio"},
-	{"/var/run/containerd/containerd.sock", "containerd"},
-	{"/var/run/crio/crio.sock", "crio"},
-	{"/var/run/docker.sock", "docker"},
-	{"/run/docker.sock", "docker"},
-}
+const (
+	defaultCRIContainerdNamespace   = "k8s.io"
+	defaultPlainContainerdNamespace = "default"
+)
 
-// detectRuntime determines the runtime type from the socket path string.
-// It returns "containerd" or "crio" based on path content, falling back to
-// probing known socket paths on the filesystem.
-func detectRuntime(sock string) (string, string) {
-	// If a socket path is explicitly provided, infer runtime from it.
-	if sock != "" {
-		if strings.Contains(sock, "crio") {
-			return "crio", sock
-		}
-		if strings.Contains(sock, "docker") {
-			return "docker", sock
-		}
-		if strings.Contains(sock, "containerd") {
-			return "containerd", sock
-		}
-		// Path given but unrecognised — try it as containerd (legacy default).
-		return "containerd", sock
+func resolveContainerdNamespace(configuredNamespace, socketPath string, supportsCRI func(string) bool) string {
+	if configuredNamespace != "" {
+		return configuredNamespace
 	}
-
-	// No explicit path: probe well-known locations.
-	for _, ks := range knownSockets {
-		if fi, err := os.Stat(ks.path); err == nil && fi.Mode().Type() == os.ModeSocket {
-			return ks.runtime, ks.path
-		}
+	if supportsCRI != nil && supportsCRI(socketPath) {
+		return defaultCRIContainerdNamespace
 	}
-
-	// Nothing found — fall back to the compiled-in default.
-	return "containerd", defaultSocketPath
+	return defaultPlainContainerdNamespace
 }
 
 // newRuntime creates a runtime.Runtime using the detected runtime type.
-func newRuntime(config *runtime.Config) runtime.Runtime {
-	runtimeType, resolvedSocket := detectRuntime(config.SocketPath)
+func newRuntime(config *runtime.Config) (runtime.Runtime, error) {
+	runtimeType, resolvedSocket, err := detectRuntime(config.SocketPath)
+	if err != nil {
+		return nil, err
+	}
 	config.SocketPath = resolvedSocket
 
 	switch runtimeType {
 	case "crio":
 		fmt.Fprintf(os.Stderr, "[runtime] detected CRI-O (socket: %s)\n", resolvedSocket)
-		return runtimecrio.New(config)
+		return runtimecrio.New(config), nil
 	case "docker":
 		fmt.Fprintf(os.Stderr, "[runtime] detected Docker (socket: %s)\n", resolvedSocket)
-		return runtimedocker.New(config)
+		return runtimedocker.New(config), nil
 	default:
-		fmt.Fprintf(os.Stderr, "[runtime] detected containerd (socket: %s)\n", resolvedSocket)
-		return runtimecontainerd.New(config)
+		config.Namespace = resolveContainerdNamespace(config.Namespace, resolvedSocket, probeCRISocket)
+		fmt.Fprintf(os.Stderr, "[runtime] detected containerd (socket: %s, namespace: %s)\n", resolvedSocket, config.Namespace)
+		return runtimecontainerd.New(config), nil
 	}
 }
 
@@ -112,7 +88,11 @@ func runTests(args []string) {
 		Timeout:    timeout,
 	}
 
-	rt := newRuntime(config)
+	rt, err := newRuntime(config)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to detect runtime: %v\n", err)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 	if err := rt.Connect(ctx); err != nil {
