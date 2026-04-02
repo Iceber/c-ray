@@ -521,6 +521,8 @@ func containerImage(ctx context.Context, rt runtime.Runtime, id string) {
 
 	info, err := img.Info(ctx)
 	exitOnErr("Image.Info", err)
+	cfg, err := img.Config(ctx)
+	exitOnErr("Image.Config", err)
 
 	fmt.Printf("=== Container Image: %s ===\n", shortID(id))
 	fmt.Printf("Ref:       %s\n", img.Ref())
@@ -528,6 +530,16 @@ func containerImage(ctx context.Context, rt runtime.Runtime, id string) {
 	fmt.Printf("Digest:    %s\n", info.Digest)
 	fmt.Printf("Size:      %s\n", formatBytes(info.Size))
 	fmt.Printf("Created:   %s\n", info.CreatedAt.Format("2006-01-02 15:04:05"))
+
+	if cfg == nil {
+		return
+	}
+
+	fmt.Println("\n--- Image Config ---")
+	fmt.Printf("Content Path:    %s\n", cfg.ContentPath)
+	fmt.Printf("Target Media:    %s\n", cfg.TargetMediaType)
+	fmt.Printf("Target Kind:     %s\n", cfg.TargetKind)
+	fmt.Printf("Schema:          %s\n", cfg.Schema)
 }
 
 func containerAll(ctx context.Context, rt runtime.Runtime, id string) {

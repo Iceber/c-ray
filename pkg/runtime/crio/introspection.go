@@ -410,46 +410,87 @@ func (h *imageHandle) loadImageBigDataDetails(store cstorage.Store, img *cstorag
 		return nil, nil, nil, nil
 	}
 
+	// Pre-load all big-data content to avoid repeated store reads.
+	dataByName := make(map[string][]byte, len(items))
+	for _, item := range items {
+		data, err := store.ImageBigData(img.ID, item.Name)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		dataByName[item.Name] = data
+	}
+
 	var manifests []ManifestInfo
 	var configs []ConfigInfo
 	var signatures []SignatureInfo
 	var others []BigDataItem
 
+	// Pass 1: parse manifest-keyed items ("manifest" and "manifest-sha256:*").
+	// Some manifest-sha256:* entries may be indices (manifest lists).
+	manifestKeys := make(map[string]struct{})
+	configDigests := make(map[string]struct{}) // config digests referenced by manifests
 	for _, item := range items {
-		data, err := store.ImageBigData(img.ID, item.Name)
-		if err != nil || len(data) == 0 {
+		if !isManifestBigDataName(item.Name) {
+			continue
+		}
+		data, ok := dataByName[item.Name]
+		if !ok {
+			continue
+		}
+		manifest, ok := parseManifestInfo(item, data)
+		if !ok {
+			continue
+		}
+		manifests = append(manifests, manifest)
+		manifestKeys[item.Name] = struct{}{}
+		if manifest.Config != nil {
+			if d := normalizeDigest(manifest.Config.Digest); d != "" {
+				configDigests[d] = struct{}{}
+			}
+		}
+	}
+
+	// Pass 2: classify remaining items.
+	// Config keys in CRI-O are typically "sha256:<hash>" (no prefix).
+	// Match by: key name == config digest from manifest, OR item digest == config digest,
+	// AND content must parse as a valid image config (arch, os, rootfs, etc.).
+	for _, item := range items {
+		if _, done := manifestKeys[item.Name]; done {
+			continue
+		}
+		data, ok := dataByName[item.Name]
+		if !ok {
 			others = append(others, item)
 			continue
 		}
 
-		switch {
-		case isManifestBigDataName(item.Name):
-			manifest, ok := parseManifestInfo(item, data)
-			if ok {
-				manifests = append(manifests, manifest)
-			} else {
-				others = append(others, item)
-			}
-		case isConfigBigDataName(item.Name):
-			config, ok := parseConfigInfo(item, data)
-			if ok {
-				configs = append(configs, config)
-			} else {
-				others = append(others, item)
-			}
-		case isSignatureBigDataName(item.Name):
+		if isSignatureBigDataName(item.Name) {
 			signatures = append(signatures, parseSignatureInfo(item, data))
-		default:
+			continue
+		}
+
+		// Config detection: match key name or item digest against manifest config digests.
+		keyNorm := normalizeDigest(item.Name)
+		itemDigestNorm := normalizeDigest(item.Digest)
+		_, keyMatch := configDigests[keyNorm]
+		_, digestMatch := configDigests[itemDigestNorm]
+		if keyMatch || digestMatch {
 			if config, ok := parseConfigInfo(item, data); ok {
 				configs = append(configs, config)
 				continue
 			}
-			if manifest, ok := parseManifestInfo(item, data); ok {
-				manifests = append(manifests, manifest)
-				continue
-			}
-			others = append(others, item)
 		}
+
+		// Fallback: content-based detection for non-standard layouts.
+		if config, ok := parseConfigInfo(item, data); ok {
+			configs = append(configs, config)
+			continue
+		}
+		if manifest, ok := parseManifestInfo(item, data); ok {
+			manifests = append(manifests, manifest)
+			continue
+		}
+		others = append(others, item)
 	}
 
 	return manifests, configs, signatures, others
@@ -553,10 +594,6 @@ func buildBigDataItems(names []string, sizes map[string]int64, digests map[strin
 
 func isManifestBigDataName(name string) bool {
 	return name == "manifest" || strings.HasPrefix(name, "manifest-")
-}
-
-func isConfigBigDataName(name string) bool {
-	return name == "config" || strings.HasPrefix(name, "config-")
 }
 
 func isSignatureBigDataName(name string) bool {
@@ -970,17 +1007,6 @@ func digestToString(value digest.Digest) string {
 	return value.String()
 }
 
-func normalizeCompressionType(value any) string {
-	if value == nil {
-		return ""
-	}
-	text := fmt.Sprint(value)
-	if text == "0" || strings.EqualFold(text, "uncompressed") {
-		return ""
-	}
-	return text
-}
-
 func bestPathFromDriverMetadata(metadata map[string]string, graphRoot, driverName, layerID string) string {
 	if len(metadata) == 0 {
 		return ""
@@ -994,84 +1020,6 @@ func bestPathFromDriverMetadata(metadata map[string]string, graphRoot, driverNam
 		return filepath.Join(graphRoot, driverName, layerID, "diff")
 	}
 	return ""
-}
-
-func containsString(values []string, target string) bool {
-	if target == "" {
-		return false
-	}
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
-}
-
-func digestMatches(img cstorage.Image, candidates []string) bool {
-	if len(candidates) == 0 {
-		return false
-	}
-	ds := digestsToStrings(img.Digests)
-	if img.Digest != "" {
-		ds = append(ds, img.Digest.String())
-	}
-	for _, candidate := range candidates {
-		if candidate != "" && containsString(ds, candidate) {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *Runtime) buildLayerReferenceIndex(store cstorage.Store) (map[string][]string, map[string][]string) {
-	imageRefs := make(map[string][]string)
-	containerRefs := make(map[string][]string)
-
-	images, err := store.Images()
-	if err == nil {
-		for _, img := range images {
-			label := img.ID
-			if len(img.Names) > 0 {
-				label = img.Names[0]
-			}
-			for layerID := img.TopLayer; layerID != ""; {
-				imageRefs[layerID] = appendIfMissing(imageRefs[layerID], label)
-				layer, err := store.Layer(layerID)
-				if err != nil {
-					break
-				}
-				layerID = layer.Parent
-			}
-		}
-	}
-
-	containers, err := store.Containers()
-	if err == nil {
-		for _, ctr := range containers {
-			label := ctr.ID
-			if len(ctr.Names) > 0 {
-				label = ctr.Names[0]
-			}
-			for layerID := ctr.LayerID; layerID != ""; {
-				containerRefs[layerID] = appendIfMissing(containerRefs[layerID], label)
-				layer, err := store.Layer(layerID)
-				if err != nil {
-					break
-				}
-				layerID = layer.Parent
-			}
-		}
-	}
-
-	return imageRefs, containerRefs
-}
-
-func appendIfMissing(values []string, value string) []string {
-	if value == "" || slices.Contains(values, value) {
-		return values
-	}
-	return append(values, value)
 }
 
 func (r *Runtime) convertStorageLayerToRuntime(store cstorage.Store, layer *cstorage.Layer) *runtime.ImageLayer {

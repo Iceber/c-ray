@@ -2,7 +2,11 @@ package crio
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -81,13 +85,185 @@ func (h *imageHandle) Config(_ context.Context) (*runtime.ImageConfigInfo, error
 	if len(h.digests) > 0 {
 		digest = h.digests[0]
 	}
-	return &runtime.ImageConfigInfo{
-		TargetMediaType: "application/vnd.oci.image.manifest.v1+json",
-		TargetKind:      "Manifest",
-		Schema:          "OCI",
-		ContentPath:     digest,
-		StorageBackend:  runtime.ImageBackendCRIO,
-	}, nil
+
+	info := &runtime.ImageConfigInfo{
+		ContentPath:    digest,
+		StorageBackend: runtime.ImageBackendCRIO,
+	}
+
+	if store, err := h.rt.getStore(); err == nil {
+		if img, err := h.lookupStorageImage(store); err == nil {
+			resolved := resolveImageConfigInfo(store, img)
+			if resolved.contentPath != "" {
+				info.ContentPath = resolved.contentPath
+			}
+			info.TargetMediaType = resolved.mediaType
+			info.TargetKind = resolved.kind
+			info.Schema = resolved.schema
+		}
+	}
+
+	return info, nil
+}
+
+// imageConfigResolution holds the results of resolving image config from big-data.
+type imageConfigResolution struct {
+	contentPath string
+	mediaType   string
+	kind        string
+	schema      string
+}
+
+func resolveImageConfigInfo(store cstorage.Store, img *cstorage.Image) imageConfigResolution {
+	if store == nil || img == nil {
+		return imageConfigResolution{}
+	}
+
+	imageDir := imageBigDataDir(store, img.ID)
+
+	// CRI-O big-data layout:
+	//   "manifest"                  → current platform's manifest (always has Config + Layers)
+	//   "manifest-sha256:<hash>"    → index or other platform manifests
+	//   "sha256:<hash>"             → config blob (key = config digest from manifest)
+	//
+	// Since "manifest" is always the current platform's manifest, it reliably
+	// provides the config digest for path resolution.
+
+	var indexManifest *ManifestInfo
+	var platformManifest *ManifestInfo
+	configDigests := make(map[string]struct{})
+
+	for _, name := range img.BigDataNames {
+		if !isManifestBigDataName(name) {
+			continue
+		}
+		data, err := store.ImageBigData(img.ID, name)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		item := makeBigDataItem(img, name)
+		manifest, ok := parseManifestInfo(item, data)
+		if !ok {
+			continue
+		}
+		if manifest.Kind == "index" {
+			if indexManifest == nil {
+				indexManifest = &manifest
+			}
+			continue
+		}
+		if manifest.Config != nil {
+			if d := normalizeDigest(manifest.Config.Digest); d != "" {
+				configDigests[d] = struct{}{}
+			}
+			// "manifest" (no suffix) is the current platform's manifest.
+			if name == "manifest" || platformManifest == nil {
+				platformManifest = &manifest
+			}
+		}
+	}
+	res := imageConfigResolution{}
+	if indexManifest != nil {
+		res.mediaType = indexManifest.MediaType
+		res.kind = "Index"
+	} else if platformManifest != nil {
+		res.mediaType = platformManifest.MediaType
+		res.kind = "Manifest"
+	}
+	res.schema = deriveSchema(res.mediaType)
+
+	if imageDir == "" || len(configDigests) == 0 {
+		return res
+	}
+
+	// Find the config key by matching key name or item digest against
+	// config digests extracted from the platform manifest.
+	keys := append([]string(nil), img.BigDataNames...)
+	sort.Strings(keys)
+	for _, name := range keys {
+		if isManifestBigDataName(name) || isSignatureBigDataName(name) {
+			continue
+		}
+		keyNorm := normalizeDigest(name)
+		itemDigestNorm := ""
+		if d, ok := img.BigDataDigests[name]; ok {
+			itemDigestNorm = normalizeDigest(d.String())
+		}
+		_, keyMatch := configDigests[keyNorm]
+		_, digestMatch := configDigests[itemDigestNorm]
+		if !keyMatch && !digestMatch {
+			continue
+		}
+		if path := resolveConfigPath(store, img, name, imageDir); path != "" {
+			res.contentPath = path
+			return res
+		}
+	}
+
+	return res
+}
+
+// resolveConfigPath checks if a big-data key is a valid image config and returns
+// its on-disk path, or empty string if not.
+func resolveConfigPath(store cstorage.Store, img *cstorage.Image, name, imageDir string) string {
+	data, err := store.ImageBigData(img.ID, name)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	item := makeBigDataItem(img, name)
+	if _, ok := parseConfigInfo(item, data); !ok {
+		return ""
+	}
+	path := filepath.Join(imageDir, imageBigDataBaseName(name))
+	if existingPath(path) != "" {
+		return path
+	}
+	return ""
+}
+
+func imageBigDataDir(store cstorage.Store, imageID string) string {
+	if store == nil || imageID == "" {
+		return ""
+	}
+	imageDir, err := store.ImageDirectory(imageID)
+	if err != nil || imageDir == "" {
+		return ""
+	}
+	return filepath.Dir(imageDir)
+}
+
+// deriveSchema maps a manifest mediaType to a schema label.
+func deriveSchema(mediaType string) string {
+	switch {
+	case strings.Contains(mediaType, "docker"):
+		return "Docker"
+	case strings.Contains(mediaType, "oci"):
+		return "OCI"
+	default:
+		return ""
+	}
+}
+
+// makeBigDataItem builds a BigDataItem from image metadata for a given key.
+func makeBigDataItem(img *cstorage.Image, name string) BigDataItem {
+	item := BigDataItem{Name: name, Size: -1}
+	if size, ok := img.BigDataSizes[name]; ok {
+		item.Size = size
+	}
+	if dgst, ok := img.BigDataDigests[name]; ok {
+		item.Digest = dgst.String()
+	}
+	return item
+}
+
+func imageBigDataBaseName(key string) string {
+	for _, ch := range key {
+		if ch == '.' || (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') {
+			continue
+		}
+		return "=" + base64.StdEncoding.EncodeToString([]byte(key))
+	}
+	return key
 }
 
 func (h *imageHandle) Layers(ctx context.Context, _ runtime.LayerQuery) ([]*runtime.ImageLayer, error) {
