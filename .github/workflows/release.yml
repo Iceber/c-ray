@@ -57,7 +57,7 @@ jobs:
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
-          CGO_ENABLED: 0
+          CGO_ENABLED: ${{ matrix.os == 'darwin' && '1' || '0' }}
         run: |
           output_name="cray-${{ matrix.os }}-${{ matrix.arch }}"
           if [ "${{ matrix.os }}" = "windows" ]; then
@@ -70,17 +70,13 @@ jobs:
 
           go build -trimpath -ldflags "${ldflags}" -o "${output_name}" ./cmd/cray
 
-          # Create tarball
-          tar czf "${output_name}.tar.gz" "${output_name}"
-
           echo "OUTPUT_NAME=${output_name}" >> $GITHUB_ENV
-          echo "ARCHIVE_NAME=${output_name}.tar.gz" >> $GITHUB_ENV
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.OUTPUT_NAME }}
-          path: ${{ env.ARCHIVE_NAME }}
+          path: ${{ env.OUTPUT_NAME }}
           retention-days: 1
 
   release:
@@ -112,7 +108,7 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.VERSION }}
           name: Release ${{ steps.version.outputs.VERSION }}
-          files: artifacts/*.tar.gz
+          files: artifacts/*
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(steps.version.outputs.VERSION, '-') }}
