@@ -16,23 +16,23 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.os }}-${{ matrix.arch }}
+    name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
         include:
-          - os: linux
-            arch: amd64
+          - target: linux-amd64
             runner: ubuntu-latest
-          - os: linux
-            arch: arm64
+            make_target: build-linux-static-amd64
+          - target: linux-arm64
             runner: ubuntu-latest
-          - os: darwin
-            arch: amd64
+            make_target: build-linux-static-arm64
+          - target: darwin-amd64
             runner: macos-latest
-          - os: darwin
-            arch: arm64
+            make_target: build-darwin-amd64
+          - target: darwin-arm64
             runner: macos-latest
+            make_target: build-darwin-arm64
 
     steps:
       - name: Checkout code
@@ -55,28 +55,16 @@ jobs:
 
       - name: Build binary
         env:
-          GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.arch }}
-          CGO_ENABLED: ${{ matrix.os == 'darwin' && '1' || '0' }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          COMMIT: ${{ github.sha }}
         run: |
-          output_name="cray-${{ matrix.os }}-${{ matrix.arch }}"
-          if [ "${{ matrix.os }}" = "windows" ]; then
-            output_name="${output_name}.exe"
-          fi
-
-          ldflags="-s -w -X main.version=${{ steps.version.outputs.VERSION }}"
-          ldflags="${ldflags} -X main.commit=${{ github.sha }}"
-          ldflags="${ldflags} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-          go build -trimpath -ldflags "${ldflags}" -o "${output_name}" ./cmd/cray
-
-          echo "OUTPUT_NAME=${output_name}" >> $GITHUB_ENV
+          make ${{ matrix.make_target }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.OUTPUT_NAME }}
-          path: ${{ env.OUTPUT_NAME }}
+          name: cray-${{ matrix.target }}
+          path: bin/cray-${{ matrix.target }}
           retention-days: 1
 
   release:
