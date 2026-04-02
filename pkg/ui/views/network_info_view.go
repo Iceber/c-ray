@@ -196,14 +196,14 @@ func buildSandboxNodeV1(network *runtime.PodNetworkInfo) *tview.TreeNode {
 		"Hostname: " + fallbackNetField(network.Hostname),
 	}
 	for _, row := range rows {
-		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s", components.Muted(row))).SetSelectable(false))
+		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s", components.Muted(row))).SetSelectable(true))
 	}
 	if len(network.PortMappings) > 0 {
 		portsNode := tview.NewTreeNode(fmt.Sprintf("%s", components.Accent(fmt.Sprintf("  Port Mappings (%d)", len(network.PortMappings))))).
 			SetSelectable(true).SetExpanded(false)
 		for _, port := range network.PortMappings {
 			portsNode.AddChild(tview.NewTreeNode(fmt.Sprintf("    %s",
-				components.Muted(fmt.Sprintf("%s:%d -> %d/%s", fallbackNetField(port.HostIP), port.HostPort, port.ContainerPort, strings.ToLower(port.Protocol))))).SetSelectable(false))
+				components.Muted(fmt.Sprintf("%s:%d -> %d/%s", fallbackNetField(port.HostIP), port.HostPort, port.ContainerPort, strings.ToLower(port.Protocol))))).SetSelectable(true))
 		}
 		node.AddChild(portsNode)
 	}
@@ -211,7 +211,7 @@ func buildSandboxNodeV1(network *runtime.PodNetworkInfo) *tview.TreeNode {
 		warningsNode := tview.NewTreeNode(fmt.Sprintf("[%s::b]  Warnings (%d)[-:-:-]", components.ColorName(components.ColorFgWarn), len(network.Warnings))).
 			SetSelectable(true).SetExpanded(false)
 		for _, warning := range network.Warnings {
-			warningsNode.AddChild(tview.NewTreeNode(fmt.Sprintf("    %s", components.Muted(warning))).SetSelectable(false))
+			warningsNode.AddChild(tview.NewTreeNode(fmt.Sprintf("    %s", components.Muted(warning))).SetSelectable(true))
 		}
 		node.AddChild(warningsNode)
 	}
@@ -231,7 +231,7 @@ func buildDNSNodeV1(title string, dns *runtime.DNSConfig, expanded bool) *tview.
 		"Options: " + strings.Join(nonEmptyOrDashV1(dns.Options), ", "),
 	}
 	for _, row := range rows {
-		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s", components.Muted(row))).SetSelectable(false))
+		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s", components.Muted(row))).SetSelectable(true))
 	}
 	return node
 }
@@ -269,19 +269,19 @@ func buildCNIInterfacesNodeV1(interfaces []*runtime.CNIInterface) *tview.TreeNod
 	})
 	for _, iface := range sorted {
 		ifaceNode := tview.NewTreeNode(iface.Name).SetSelectable(true).SetExpanded(false)
-		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Source:"), components.Bright("cni"))).SetSelectable(false))
-		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("MAC:"), components.Bright(fallbackNetField(iface.MAC)))).SetSelectable(false))
-		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Sandbox:"), components.Bright(fallbackNetField(iface.Sandbox)))).SetSelectable(false))
-		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("PCI:"), components.Bright(fallbackNetField(iface.PciID)))).SetSelectable(false))
-		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Socket:"), components.Bright(fallbackNetField(iface.SocketPath)))).SetSelectable(false))
+		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Source:"), components.Bright("cni"))).SetSelectable(true))
+		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("MAC:"), components.Bright(fallbackNetField(iface.MAC)))).SetSelectable(true))
+		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Sandbox:"), components.Bright(fallbackNetField(iface.Sandbox)))).SetSelectable(true))
+		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("PCI:"), components.Bright(fallbackNetField(iface.PciID)))).SetSelectable(true))
+		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Socket:"), components.Bright(fallbackNetField(iface.SocketPath)))).SetSelectable(true))
 		if len(iface.Addresses) == 0 {
-			ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Addresses:"), components.Bright("-"))).SetSelectable(false))
+			ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Addresses:"), components.Bright("-"))).SetSelectable(true))
 		} else {
 			for _, addr := range iface.Addresses {
 				ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s  %s %s  %s %s",
 					components.Muted("Address:"), components.Bright(fallbackNetField(addr.CIDR)),
 					components.Muted("Gateway:"), components.Bright(fallbackNetField(addr.Gateway)),
-					components.Muted("Family:"), components.Bright(fallbackNetField(addr.Family)))).SetSelectable(false))
+					components.Muted("Family:"), components.Bright(fallbackNetField(addr.Family)))).SetSelectable(true))
 			}
 		}
 		node.AddChild(ifaceNode)
@@ -299,15 +299,15 @@ func buildObservedInterfacesNodeV1(interfaces []*runtime.NetworkStats) *tview.Tr
 	})
 	for _, iface := range observed {
 		ifaceNode := tview.NewTreeNode(iface.Interface).SetSelectable(true).SetExpanded(false)
-		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Source:"), components.Bright("procfs"))).SetSelectable(false))
+		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Source:"), components.Bright("procfs"))).SetSelectable(true))
 		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s %s",
 			components.Muted("RX:"), components.Bright(formatBytes(int64(iface.RxBytes))),
-			components.Muted(fmt.Sprintf("(%d packets, %s)", iface.RxPackets, formatRate(iface.RxBytesPerSec))))).SetSelectable(false))
+			components.Muted(fmt.Sprintf("(%d packets, %s)", iface.RxPackets, formatRate(iface.RxBytesPerSec))))).SetSelectable(true))
 		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s %s",
 			components.Muted("TX:"), components.Bright(formatBytes(int64(iface.TxBytes))),
-			components.Muted(fmt.Sprintf("(%d packets, %s)", iface.TxPackets, formatRate(iface.TxBytesPerSec))))).SetSelectable(false))
+			components.Muted(fmt.Sprintf("(%d packets, %s)", iface.TxPackets, formatRate(iface.TxBytesPerSec))))).SetSelectable(true))
 		ifaceNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s",
-			components.Muted("Errors:"), components.Bright(fmt.Sprintf("rx=%d tx=%d", iface.RxErrors, iface.TxErrors)))).SetSelectable(false))
+			components.Muted("Errors:"), components.Bright(fmt.Sprintf("rx=%d tx=%d", iface.RxErrors, iface.TxErrors)))).SetSelectable(true))
 		node.AddChild(ifaceNode)
 	}
 	return node
@@ -332,7 +332,7 @@ func buildRoutesNodeV1(cni *runtime.CNIResultInfo) *tview.TreeNode {
 	}
 	for _, route := range cni.Routes {
 		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s",
-			components.Muted(fmt.Sprintf("%s -> %s", fallbackNetField(route.Destination), fallbackNetField(route.Gateway))))).SetSelectable(false))
+			components.Muted(fmt.Sprintf("%s -> %s", fallbackNetField(route.Destination), fallbackNetField(route.Gateway))))).SetSelectable(true))
 	}
 	return node
 }

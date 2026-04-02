@@ -276,9 +276,13 @@ func buildImageRuntimePanel(info *runtime.ContainerInfo, config *runtime.Contain
 	sandboxID := resolveSandboxID(rt)
 	lines = append(lines, summaryKV("Sandbox ID", fallbackValue(sandboxID, "unknown")))
 
-	// Snapshotter
+	// Layer backend
 	if config != nil {
-		lines = append(lines, summaryKV("Snapshotter", fallbackValue(config.Snapshotter, "unknown")))
+		backend := "unknown"
+		if config.Backend != nil {
+			backend = formatLayerBackendV1(config.Backend)
+		}
+		lines = append(lines, summaryKV("Layer Backend", backend))
 		lines = append(lines, summaryKV("Snapshot Key", fallbackValue(config.SnapshotKey, "unknown")))
 	}
 

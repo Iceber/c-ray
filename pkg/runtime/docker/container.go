@@ -159,13 +159,33 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 		cfg.CGroupVersion = int(h.rt.cgroupReader.GetVersion())
 	}
 
-	// Snapshotter / graph driver info.
-	cfg.Snapshotter = i.Driver
+	if h.rt != nil && h.rt.imageStoreMode == ImageStoreModeContainerd {
+		if i.Driver != "" {
+			cfg.Backend = &runtime.LayerBackend{
+				Kind: runtime.LayerBackendContainerdSnapshotter,
+				Name: i.Driver,
+			}
+		}
+	} else {
+		backendName := h.inspect.GraphDriver.Name
+		if backendName == "" {
+			backendName = i.Driver
+		}
+		if backendName != "" {
+			cfg.Backend = &runtime.LayerBackend{
+				Kind: runtime.LayerBackendDockerGraphDriver,
+				Name: backendName,
+			}
+		}
+	}
 
 	// RW layer path from GraphDriver data.
-	if gd := i.GraphDriver; gd.Name != "" {
+	if gd := i.GraphDriver; len(gd.Data) > 0 {
 		if upper, ok := gd.Data["UpperDir"]; ok {
 			cfg.WritableLayerPath = upper
+			if cfg.SnapshotKey == "" {
+				cfg.SnapshotKey = dockerSnapshotKeyFromPath(upper)
+			}
 		}
 		if lower, ok := gd.Data["LowerDir"]; ok {
 			parts := strings.Split(lower, ":")
@@ -389,35 +409,79 @@ func (h *containerHandle) Storage(ctx context.Context) (*runtime.ContainerStorag
 	}
 
 	storage := &runtime.ContainerStorage{}
+	live := h.resolveLiveRootPaths()
 
 	gd := h.inspect.GraphDriver
-	storage.GraphDriver = gd.Name
-	if storage.GraphDriver == "" {
-		storage.GraphDriver = h.inspect.Driver
-	}
-	storage.Snapshotter = h.inspect.Driver
 
 	// RW layer path.
 	if upper, ok := gd.Data["UpperDir"]; ok {
 		storage.RWLayerPath = upper
 	}
-	if storage.RWLayerPath == "" {
-		if live := h.resolveLiveRootPaths(); live != nil {
-			storage.RWSnapshotKey = live.rwSnapshotKey
-			storage.RWLayerPath = live.upperdir
+	if storage.RWLayerPath == "" && live != nil {
+		storage.RWLayerPath = live.upperdir
+	}
+
+	dockerStorage := &runtime.DockerContainerStorage{}
+	if h.rt != nil && h.rt.imageStoreMode == ImageStoreModeContainerd {
+		dockerStorage.Snapshotter = h.inspect.Driver
+		if dockerStorage.Snapshotter != "" {
+			storage.Backend = &runtime.LayerBackend{
+				Kind: runtime.LayerBackendContainerdSnapshotter,
+				Name: dockerStorage.Snapshotter,
+			}
 		}
+		if upper, ok := gd.Data["UpperDir"]; ok {
+			dockerStorage.RWSnapshotKey = dockerSnapshotKeyFromPath(upper)
+		}
+		if dockerStorage.RWSnapshotKey == "" && live != nil {
+			dockerStorage.RWSnapshotKey = live.rwSnapshotKey
+		}
+	} else {
+		dockerStorage.GraphDriver = gd.Name
+		if dockerStorage.GraphDriver == "" {
+			dockerStorage.GraphDriver = h.inspect.Driver
+		}
+		if dockerStorage.GraphDriver != "" {
+			storage.Backend = &runtime.LayerBackend{
+				Kind: runtime.LayerBackendDockerGraphDriver,
+				Name: dockerStorage.GraphDriver,
+			}
+		}
+		if upper, ok := gd.Data["UpperDir"]; ok {
+			dockerStorage.RWLayerID = dockerRWIDFromPath(upper)
+		}
+		if dockerStorage.RWLayerID == "" && live != nil {
+			dockerStorage.RWLayerID = dockerRWIDFromPath(live.upperdir)
+		}
+	}
+	if dockerStorage.GraphDriver != "" || dockerStorage.Snapshotter != "" || dockerStorage.RWSnapshotKey != "" || dockerStorage.RWLayerID != "" {
+		storage.Docker = dockerStorage
 	}
 
 	// Resolve read-only image layers.
 	img, err := h.Image(ctx)
 	if err == nil {
-		layers, err := img.Layers(ctx, runtime.LayerQuery{})
+		layers, err := img.Layers(ctx, h.readOnlyLayerQuery(storage))
 		if err == nil {
 			storage.ReadOnlyLayers = layers
 		}
 	}
 
 	return storage, nil
+}
+
+func (h *containerHandle) readOnlyLayerQuery(storage *runtime.ContainerStorage) runtime.LayerQuery {
+	query := runtime.LayerQuery{}
+	if h.rt == nil || h.rt.imageStoreMode != ImageStoreModeContainerd || storage == nil {
+		return query
+	}
+	if storage.Backend != nil && storage.Backend.Kind == runtime.LayerBackendContainerdSnapshotter {
+		query.Snapshotter = storage.Backend.Name
+	}
+	if storage.Docker != nil {
+		query.RWSnapshotKey = storage.Docker.RWSnapshotKey
+	}
+	return query
 }
 
 // ---------------------------------------------------------------------------
@@ -660,6 +724,17 @@ func dockerSnapshotKeyFromPath(path string) string {
 				return next
 			}
 		}
+	}
+	return ""
+}
+
+func dockerRWIDFromPath(path string) string {
+	if snapshotKey := dockerSnapshotKeyFromPath(path); snapshotKey != "" {
+		return snapshotKey
+	}
+	cleaned := filepath.Clean(path)
+	if filepath.Base(cleaned) == "diff" || filepath.Base(cleaned) == "fs" {
+		return filepath.Base(filepath.Dir(cleaned))
 	}
 	return ""
 }

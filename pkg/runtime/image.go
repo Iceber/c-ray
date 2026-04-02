@@ -26,6 +26,7 @@ type ImageLayer struct {
 	Size               int64
 	CompressionType    string
 
+	// Path is the resolved filesystem path for this layer when the runtime can determine it.
 	Path        string
 	UsageSize   int64
 	UsageInodes int64
@@ -56,13 +57,43 @@ type ImageCRIOLayer struct {
 	OverlayLinkID string
 }
 
+type LayerBackendKind string
+
+const (
+	LayerBackendDockerGraphDriver     LayerBackendKind = "docker-graphdriver"
+	LayerBackendContainerdSnapshotter LayerBackendKind = "containerd-snapshotter"
+	LayerBackendContainersStorage     LayerBackendKind = "containers-storage"
+)
+
+type LayerBackend struct {
+	Kind LayerBackendKind
+	Name string
+}
+
 type ContainerStorage struct {
 	ReadOnlyLayers []*ImageLayer
 
+	RWLayerPath string
+	Backend     *LayerBackend
+
+	Containerd *ContainerdContainerStorage
+	Docker     *DockerContainerStorage
+	Crio       *CRIOContainerStorage
+}
+
+type ContainerdContainerStorage struct {
 	Snapshotter   string
 	RWSnapshotKey string
-	RWLayerPath   string
+}
 
-	// GraphDriver is the name of the storage driver (e.g. "overlay2", "overlayfs").
-	GraphDriver string
+type DockerContainerStorage struct {
+	GraphDriver   string
+	Snapshotter   string
+	RWSnapshotKey string
+	RWLayerID     string
+}
+
+type CRIOContainerStorage struct {
+	StorageDriver string
+	RWLayerID     string
 }

@@ -164,9 +164,14 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 
 	cfg := &runtime.ContainerConfig{
 		ImageName:   info.Image,
-		Snapshotter: info.Snapshotter,
 		SnapshotKey: info.SnapshotKey,
 		Namespaces:  buildNamespaceMap(spec),
+	}
+	if info.Snapshotter != "" {
+		cfg.Backend = &runtime.LayerBackend{
+			Kind: runtime.LayerBackendContainerdSnapshotter,
+			Name: info.Snapshotter,
+		}
 	}
 
 	if spec.Linux != nil && spec.Linux.CgroupsPath != "" {
@@ -288,8 +293,18 @@ func (h *containerHandle) Storage(ctx context.Context) (*runtime.ContainerStorag
 	}
 
 	storage := &runtime.ContainerStorage{}
-	storage.Snapshotter = info.Snapshotter
-	storage.RWSnapshotKey = info.SnapshotKey
+	if info.Snapshotter != "" {
+		storage.Backend = &runtime.LayerBackend{
+			Kind: runtime.LayerBackendContainerdSnapshotter,
+			Name: info.Snapshotter,
+		}
+	}
+	if info.Snapshotter != "" || info.SnapshotKey != "" {
+		storage.Containerd = &runtime.ContainerdContainerStorage{
+			Snapshotter:   info.Snapshotter,
+			RWSnapshotKey: info.SnapshotKey,
+		}
+	}
 
 	// RW layer path.
 	if path, err := rwLayerPathFromMounts(ctx, snapshotter, info.SnapshotKey); err == nil {

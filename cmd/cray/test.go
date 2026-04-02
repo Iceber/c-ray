@@ -235,7 +235,7 @@ func containerConfig(ctx context.Context, rt runtime.Runtime, id string) {
 
 	fmt.Printf("=== Container Config: %s ===\n", shortID(id))
 	fmt.Printf("Image:          %s\n", cfg.ImageName)
-	fmt.Printf("Snapshotter:    %s\n", cfg.Snapshotter)
+	fmt.Printf("Layer Backend:  %s\n", formatLayerBackend(cfg.Backend))
 	fmt.Printf("SnapshotKey:    %s\n", cfg.SnapshotKey)
 	if cfg.CGroupPath != "" {
 		fmt.Printf("CGroup Path:    %s\n", cfg.CGroupPath)
@@ -1165,6 +1165,23 @@ func emptyDash(value string) string {
 		return "-"
 	}
 	return value
+}
+
+func formatLayerBackend(backend *runtime.LayerBackend) string {
+	if backend == nil {
+		return "-"
+	}
+	name := emptyDash(backend.Name)
+	switch backend.Kind {
+	case runtime.LayerBackendDockerGraphDriver:
+		return "Docker Graph Driver / " + name
+	case runtime.LayerBackendContainerdSnapshotter:
+		return "Containerd Snapshotter / " + name
+	case runtime.LayerBackendContainersStorage:
+		return "Containers Storage Driver / " + name
+	default:
+		return name
+	}
 }
 
 func formatPlatform(osName, arch, variant string) string {

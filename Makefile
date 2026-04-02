@@ -38,7 +38,7 @@ run: build
 	@echo "Running $(BINARY_NAME)..."
 	./$(BUILD_DIR)/$(BINARY_NAME)
 
-test:
+test: ensure-embed-placeholder
 	@echo "Running tests..."
 	$(GOTEST) -v ./...
 
@@ -93,14 +93,14 @@ build-darwin-arm64: build-linux-static-arm64
 	@mkdir -p $(LAUNCHER_EMBED_DIR)
 	@cp $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 $(LAUNCHER_EMBED_DIR)/cray-linux
 	GOOS=darwin GOARCH=arm64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 ./$(LAUNCHER_DIR)
-	@rm -f $(LAUNCHER_EMBED_DIR)/cray-linux
+	@printf '#!/bin/sh\necho "error: placeholder binary - rebuild with: make build-darwin"\nexit 1\n' > $(LAUNCHER_EMBED_DIR)/cray-linux
 
 build-darwin-amd64: build-linux-static-amd64
 	@echo "Building Darwin amd64 launcher (embedded Linux amd64)..."
 	@mkdir -p $(LAUNCHER_EMBED_DIR)
 	@cp $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 $(LAUNCHER_EMBED_DIR)/cray-linux
 	GOOS=darwin GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 ./$(LAUNCHER_DIR)
-	@rm -f $(LAUNCHER_EMBED_DIR)/cray-linux
+	@printf '#!/bin/sh\necho "error: placeholder binary - rebuild with: make build-darwin"\nexit 1\n' > $(LAUNCHER_EMBED_DIR)/cray-linux
 
 # Build the raw (non-launcher) Darwin binary, for testing only.
 build-darwin-native:
@@ -112,7 +112,7 @@ build-darwin-native:
 # even when the real embedded binary has not been built yet.
 ensure-embed-placeholder:
 	@mkdir -p $(LAUNCHER_EMBED_DIR)
-	@test -f $(LAUNCHER_EMBED_DIR)/cray-linux || printf '#!/bin/sh\necho "error: placeholder binary — rebuild with: make build-darwin"\nexit 1\n' > $(LAUNCHER_EMBED_DIR)/cray-linux
+	@test -f $(LAUNCHER_EMBED_DIR)/cray-linux || printf '#!/bin/sh\necho "error: placeholder binary - rebuild with: make build-darwin"\nexit 1\n' > $(LAUNCHER_EMBED_DIR)/cray-linux
 
 build-all: build-linux build-linux-arm64 build-darwin-arm64 build-darwin-amd64
 

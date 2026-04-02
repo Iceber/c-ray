@@ -259,7 +259,7 @@ func calculateChainIDs(diffIDs []digest.Digest) []digest.Digest {
 }
 
 func contentPath(rootDir string, dgst digest.Digest) string {
-	return fmt.Sprintf("%s/io.containerd.content.runtime.content/blobs/%s/%s",
+	return fmt.Sprintf("%s/io.containerd.content.v1.content/blobs/%s/%s",
 		rootDir, dgst.Algorithm(), dgst.Encoded())
 }
 

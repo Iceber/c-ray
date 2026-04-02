@@ -225,7 +225,7 @@ func buildShimNodeV1(runtime *runtime.RuntimeProfile, state *runtime.ContainerSt
 		rows = append(rows, "Shim metadata unresolved")
 	}
 	for _, row := range rows {
-		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s", components.Muted(row))).SetSelectable(false))
+		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s", components.Muted(row))).SetSelectable(true))
 	}
 	return node
 }
@@ -258,7 +258,7 @@ func buildOCINodeV1(runtime *runtime.RuntimeProfile) *tview.TreeNode {
 		rows = append(rows, "OCI runtime metadata unresolved")
 	}
 	for _, row := range rows {
-		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s", components.Muted(row))).SetSelectable(false))
+		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s", components.Muted(row))).SetSelectable(true))
 	}
 	return node
 }
@@ -276,7 +276,7 @@ func buildNamespaceNodeV1(config *runtime.ContainerConfig) *tview.TreeNode {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted(k+":"), components.Bright(config.Namespaces[k]))).SetSelectable(false))
+		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted(k+":"), components.Bright(config.Namespaces[k]))).SetSelectable(true))
 	}
 	return node
 }

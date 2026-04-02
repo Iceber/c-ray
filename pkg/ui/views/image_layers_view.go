@@ -75,7 +75,7 @@ func NewImageLayersView(app *tview.Application, ctx context.Context) *ImageLayer
 
 	v.browserInfo = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
 	v.browserInfo.SetBorder(true).SetBorderColor(components.ColorFgBorder).SetTitle(fmt.Sprintf(" %s ", components.Accent("Layer Browser")))
-	v.browserInfo.SetText(fmt.Sprintf(" %s", components.Muted("Select a layer and press i to inspect its snapshot path")))
+	v.browserInfo.SetText(fmt.Sprintf(" %s", components.Muted("Select a layer and press i to inspect its path")))
 
 	v.browserTree = tview.NewTreeView()
 	v.browserTree.SetBorder(false)
@@ -223,7 +223,7 @@ func (v *ImageLayersView) render() {
 	lastError := v.lastError
 	v.mu.Unlock()
 
-	headerText := buildLayerHeaderV1(config, rt, imgConfig)
+	headerText := buildLayerHeaderV1(config, storage, rt, imgConfig)
 
 	root := tview.NewTreeNode(components.Accent("Rootfs Layers")).SetSelectable(false).SetExpanded(true)
 	if lastError != nil {
@@ -330,7 +330,7 @@ func (v *ImageLayersView) closeBrowser() {
 	v.browserRoot = ""
 	v.focusPane = 0
 	v.mu.Unlock()
-	v.browserInfo.SetText(fmt.Sprintf(" %s", components.Muted("Select a layer and press i to inspect its snapshot path")))
+	v.browserInfo.SetText(fmt.Sprintf(" %s", components.Muted("Select a layer and press i to inspect its path")))
 	v.preview.SetText(fmt.Sprintf(" %s", components.Muted("No file selected")))
 	v.browserTree.SetRoot(tview.NewTreeNode(components.Muted("No layer browser data")).SetSelectable(false))
 	v.refreshBodyLayout()
@@ -443,15 +443,17 @@ func (v *ImageLayersView) renderPreview(node *tview.TreeNode) {
 
 // --- Builder helpers ---
 
-func buildLayerHeaderV1(config *runtime.ContainerConfig, runtime *runtime.RuntimeProfile, _ *runtime.ImageConfigInfo) string {
-	snapshotter := "-"
+func buildLayerHeaderV1(config *runtime.ContainerConfig, storage *runtime.ContainerStorage, runtime *runtime.RuntimeProfile, _ *runtime.ImageConfigInfo) string {
+	backend := "-"
 	rootfsPath := "-"
 	readonly := "yes"
 
+	if storage != nil && storage.Backend != nil {
+		backend = formatLayerBackendV1(storage.Backend)
+	} else if config != nil && config.Backend != nil {
+		backend = formatLayerBackendV1(config.Backend)
+	}
 	if config != nil {
-		if config.Snapshotter != "" {
-			snapshotter = config.Snapshotter
-		}
 		if config.SnapshotKey != "" || config.WritableLayerPath != "" {
 			readonly = "no"
 		}
@@ -462,28 +464,61 @@ func buildLayerHeaderV1(config *runtime.ContainerConfig, runtime *runtime.Runtim
 
 	return fmt.Sprintf(
 		" %s\n %s\n %s",
-		components.KV("Snapshotter: ", snapshotter),
+		components.KV("Layer Backend: ", backend),
 		components.KV("Rootfs Directory: ", rootfsPath),
 		components.KV("Readonly: ", readonly),
 	)
 }
 
+func formatLayerBackendV1(backend *runtime.LayerBackend) string {
+	if backend == nil {
+		return "-"
+	}
+	name := fallbackValue(backend.Name, "unknown")
+	switch backend.Kind {
+	case runtime.LayerBackendDockerGraphDriver:
+		return "Docker Graph Driver / " + name
+	case runtime.LayerBackendContainerdSnapshotter:
+		return "Containerd Snapshotter / " + name
+	case runtime.LayerBackendContainersStorage:
+		return "Containers Storage Driver / " + name
+	default:
+		return name
+	}
+}
+
 func buildRWLayerNodeV1(config *runtime.ContainerConfig, storage *runtime.ContainerStorage, rwStats *runtime.ContainerRWLayerStats, rwLayerPath string) *tview.TreeNode {
 	node := tview.NewTreeNode(fmt.Sprintf("[%s::b]RW Layer[-:-:-]", components.ColorName(components.ColorFgAccentAlt))).SetSelectable(true).SetExpanded(true)
 
-	snapshotKey := "unknown"
+	identifierLabel := "Identifier"
+	identifierValue := "unknown"
 	path := fallbackValue(rwLayerPath, "unknown")
 	if config != nil {
 		if config.SnapshotKey != "" {
-			snapshotKey = config.SnapshotKey
+			identifierLabel = "Snapshot Key"
+			identifierValue = config.SnapshotKey
 		}
 		if config.WritableLayerPath != "" {
 			path = config.WritableLayerPath
 		}
 	}
 	if storage != nil {
-		if snapshotKey == "unknown" && storage.RWSnapshotKey != "" {
-			snapshotKey = storage.RWSnapshotKey
+		if storage.Containerd != nil && storage.Containerd.RWSnapshotKey != "" {
+			identifierLabel = "Snapshot Key"
+			identifierValue = storage.Containerd.RWSnapshotKey
+		}
+		if storage.Docker != nil {
+			if storage.Docker.RWSnapshotKey != "" {
+				identifierLabel = "Snapshot Key"
+				identifierValue = storage.Docker.RWSnapshotKey
+			} else if storage.Docker.RWLayerID != "" {
+				identifierLabel = "Layer ID"
+				identifierValue = storage.Docker.RWLayerID
+			}
+		}
+		if storage.Crio != nil && storage.Crio.RWLayerID != "" {
+			identifierLabel = "Layer ID"
+			identifierValue = storage.Crio.RWLayerID
 		}
 		if path == "unknown" && storage.RWLayerPath != "" {
 			path = storage.RWLayerPath
@@ -491,7 +526,7 @@ func buildRWLayerNodeV1(config *runtime.ContainerConfig, storage *runtime.Contai
 	}
 
 	rows := []string{
-		"Snapshot Key: " + snapshotKey,
+		identifierLabel + ": " + identifierValue,
 		"Path: " + path,
 	}
 	if rwStats != nil && (rwStats.RWLayerUsage > 0 || rwStats.RWLayerInodes > 0) {
@@ -501,7 +536,7 @@ func buildRWLayerNodeV1(config *runtime.ContainerConfig, storage *runtime.Contai
 	}
 
 	for _, row := range rows {
-		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s", components.Muted(row))).SetSelectable(false))
+		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s", components.Muted(row))).SetSelectable(true))
 	}
 
 	// Store path for browser.
@@ -532,10 +567,10 @@ func buildReadOnlyLayersNodeV1(layers []*runtime.ImageLayer) *tview.TreeNode {
 		}
 		label := fmt.Sprintf("Layer %d: %s", layer.Index, shortenLayerIDV1(snapshotKey, layer.UncompressedDigest, layer.CompressedDigest))
 		layerNode := tview.NewTreeNode(label).SetSelectable(true).SetExpanded(false)
-		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Rootfs Diff ID:"), components.Bright(fallbackLayerField(layer.UncompressedDigest)))).SetSelectable(false))
-		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Snapshot Path:"), components.Bright(fallbackLayerField(layer.Path)))).SetSelectable(false))
-		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Content Size:"), components.Bright(formatLayerSize(layer)))).SetSelectable(false))
-		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Disk Usage:"), components.Bright(formatLayerDiskUsage(layer)))).SetSelectable(false))
+		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Rootfs Diff ID:"), components.Bright(fallbackLayerField(layer.UncompressedDigest)))).SetSelectable(true))
+		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Path:"), components.Bright(fallbackLayerField(layer.Path)))).SetSelectable(true))
+		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Content Size:"), components.Bright(formatLayerSize(layer)))).SetSelectable(true))
+		layerNode.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Disk Usage:"), components.Bright(formatLayerDiskUsage(layer)))).SetSelectable(true))
 		for _, detailsNode := range buildLayerBackendDetailsV1(layer) {
 			layerNode.AddChild(detailsNode)
 		}
@@ -562,9 +597,9 @@ func buildLayerBackendDetailsV1(layer *runtime.ImageLayer) []*tview.TreeNode {
 			rows = append(rows, "Content Path: "+layer.Containerd.ContentPath)
 		}
 		if len(rows) > 0 {
-			node := tview.NewTreeNode(fmt.Sprintf("  %s", components.Accent("Containerd"))).SetSelectable(false).SetExpanded(true)
+			node := tview.NewTreeNode(fmt.Sprintf("  %s", components.Accent("Containerd"))).SetSelectable(true).SetExpanded(true)
 			for _, row := range rows {
-				node.AddChild(tview.NewTreeNode(fmt.Sprintf("    %s", components.Muted(row))).SetSelectable(false))
+				node.AddChild(tview.NewTreeNode(fmt.Sprintf("    %s", components.Muted(row))).SetSelectable(true))
 			}
 			nodes = append(nodes, node)
 		}
@@ -585,16 +620,16 @@ func buildLayerBackendDetailsV1(layer *runtime.ImageLayer) []*tview.TreeNode {
 			rows = append(rows, "Graph Driver: "+layer.Docker.GraphDriver)
 		}
 		if len(rows) > 0 {
-			node := tview.NewTreeNode(fmt.Sprintf("  %s", components.Accent("Docker"))).SetSelectable(false).SetExpanded(true)
+			node := tview.NewTreeNode(fmt.Sprintf("  %s", components.Accent("Docker"))).SetSelectable(true).SetExpanded(true)
 			for _, row := range rows {
-				node.AddChild(tview.NewTreeNode(fmt.Sprintf("    %s", components.Muted(row))).SetSelectable(false))
+				node.AddChild(tview.NewTreeNode(fmt.Sprintf("    %s", components.Muted(row))).SetSelectable(true))
 			}
 			nodes = append(nodes, node)
 		}
 	}
 
 	if layer.Crio != nil {
-		rows := make([]string, 0, 2+len(layer.Crio.Names)+len(layer.Crio.Metadata))
+		rows := make([]string, 0, 3)
 		if layer.Crio.ID != "" {
 			rows = append(rows, "Layer ID: "+layer.Crio.ID)
 		}
@@ -604,20 +639,10 @@ func buildLayerBackendDetailsV1(layer *runtime.ImageLayer) []*tview.TreeNode {
 		if layer.Crio.OverlayLinkID != "" {
 			rows = append(rows, "Overlay Link ID: "+layer.Crio.OverlayLinkID)
 		}
-		if len(layer.Crio.Metadata) > 0 {
-			keys := make([]string, 0, len(layer.Crio.Metadata))
-			for key := range layer.Crio.Metadata {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-			for _, key := range keys {
-				rows = append(rows, fmt.Sprintf("Metadata[%s]: %s", key, layer.Crio.Metadata[key]))
-			}
-		}
 		if len(rows) > 0 {
-			node := tview.NewTreeNode(fmt.Sprintf("  %s", components.Accent("CRI-O"))).SetSelectable(false).SetExpanded(true)
+			node := tview.NewTreeNode(fmt.Sprintf("  %s", components.Accent("CRI-O"))).SetSelectable(true).SetExpanded(true)
 			for _, row := range rows {
-				node.AddChild(tview.NewTreeNode(fmt.Sprintf("    %s", components.Muted(row))).SetSelectable(false))
+				node.AddChild(tview.NewTreeNode(fmt.Sprintf("    %s", components.Muted(row))).SetSelectable(true))
 			}
 			nodes = append(nodes, node)
 		}

@@ -63,7 +63,7 @@ type ContainerConfig struct {
 
 	ImageName string
 
-	Snapshotter       string
+	Backend           *LayerBackend
 	SnapshotKey       string
 	ReadOnlyLayerPath string
 	WritableLayerPath string

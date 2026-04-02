@@ -228,10 +228,16 @@ func (h *containerHandle) Info(ctx context.Context) (*runtime.ContainerInfo, err
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig, error) {
-	h.ensureSpoofedSupplement(ctx)
-	h.ensureSpec(ctx)
-
 	cfg := &runtime.ContainerConfig{}
+	if store, err := h.rt.getStore(); err == nil {
+		driverName := store.GraphDriverName()
+		if driverName != "" {
+			cfg.Backend = &runtime.LayerBackend{
+				Kind: runtime.LayerBackendContainersStorage,
+				Name: driverName,
+			}
+		}
+	}
 
 	if h.cri != nil && h.cri.image != "" {
 		cfg.ImageName = h.cri.image
@@ -392,6 +398,25 @@ func (h *containerHandle) buildPodNetwork(ctx context.Context) *runtime.PodNetwo
 func (h *containerHandle) Storage(ctx context.Context) (*runtime.ContainerStorage, error) {
 	storage := &runtime.ContainerStorage{
 		RWLayerPath: h.resolveRWLayerPath(),
+	}
+	if store, err := h.rt.getStore(); err == nil {
+		driverName := store.GraphDriverName()
+		if driverName != "" {
+			storage.Backend = &runtime.LayerBackend{
+				Kind: runtime.LayerBackendContainersStorage,
+				Name: driverName,
+			}
+		}
+		if driverName != "" || h.layerID != "" {
+			storage.Crio = &runtime.CRIOContainerStorage{
+				StorageDriver: driverName,
+				RWLayerID:     h.layerID,
+			}
+		}
+	} else if h.layerID != "" {
+		storage.Crio = &runtime.CRIOContainerStorage{
+			RWLayerID: h.layerID,
+		}
 	}
 
 	// Read-only layers from storage metadata.

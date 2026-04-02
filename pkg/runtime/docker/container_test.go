@@ -19,8 +19,14 @@ func TestContainerConfigFallsBackToLiveMountPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Config() error: %v", err)
 	}
-	if cfg.Snapshotter != "overlayfs" {
-		t.Fatalf("Snapshotter = %s, want overlayfs", cfg.Snapshotter)
+	if cfg.Backend == nil {
+		t.Fatal("Backend = nil, want non-nil")
+	}
+	if cfg.Backend.Kind != pkgruntime.LayerBackendDockerGraphDriver {
+		t.Fatalf("Backend.Kind = %s, want %s", cfg.Backend.Kind, pkgruntime.LayerBackendDockerGraphDriver)
+	}
+	if cfg.Backend.Name != "overlayfs" {
+		t.Fatalf("Backend.Name = %s, want overlayfs", cfg.Backend.Name)
 	}
 	if cfg.SnapshotKey != "1102" {
 		t.Fatalf("SnapshotKey = %s, want 1102", cfg.SnapshotKey)
@@ -40,14 +46,23 @@ func TestContainerStorageFallsBackToLiveMountRWPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Storage() error: %v", err)
 	}
-	if storage.GraphDriver != "overlayfs" {
-		t.Fatalf("GraphDriver = %s, want overlayfs", storage.GraphDriver)
+	if storage.Backend == nil {
+		t.Fatal("Backend = nil, want non-nil")
 	}
-	if storage.Snapshotter != "overlayfs" {
-		t.Fatalf("Snapshotter = %s, want overlayfs", storage.Snapshotter)
+	if storage.Backend.Kind != pkgruntime.LayerBackendDockerGraphDriver {
+		t.Fatalf("Backend.Kind = %s, want %s", storage.Backend.Kind, pkgruntime.LayerBackendDockerGraphDriver)
 	}
-	if storage.RWSnapshotKey != "1102" {
-		t.Fatalf("RWSnapshotKey = %s, want 1102", storage.RWSnapshotKey)
+	if storage.Backend.Name != "overlayfs" {
+		t.Fatalf("Backend.Name = %s, want overlayfs", storage.Backend.Name)
+	}
+	if storage.Docker == nil {
+		t.Fatal("Docker storage details = nil, want non-nil")
+	}
+	if storage.Docker.GraphDriver != "overlayfs" {
+		t.Fatalf("Docker.GraphDriver = %s, want overlayfs", storage.Docker.GraphDriver)
+	}
+	if storage.Docker.RWLayerID != "1102" {
+		t.Fatalf("Docker.RWLayerID = %s, want 1102", storage.Docker.RWLayerID)
 	}
 	if storage.RWLayerPath != upperDir {
 		t.Fatalf("RWLayerPath = %s, want %s", storage.RWLayerPath, upperDir)
@@ -85,6 +100,97 @@ func TestContainerRWLayerStatsFallsBackToLiveMountPath(t *testing.T) {
 	}
 	if stats.RWLayerInodes == 0 {
 		t.Fatal("RWLayerInodes = 0, want > 0")
+	}
+}
+
+func TestReadOnlyLayerQueryUsesSnapshotContextInDockerContainerdMode(t *testing.T) {
+	h, _, _ := newTestDockerContainerHandle(t)
+	h.rt.imageStoreMode = ImageStoreModeContainerd
+
+	query := h.readOnlyLayerQuery(&pkgruntime.ContainerStorage{
+		Backend: &pkgruntime.LayerBackend{
+			Kind: pkgruntime.LayerBackendContainerdSnapshotter,
+			Name: "overlayfs",
+		},
+		Docker: &pkgruntime.DockerContainerStorage{
+			Snapshotter:   "overlayfs",
+			RWSnapshotKey: "1102",
+		},
+	})
+
+	if query.Snapshotter != "overlayfs" {
+		t.Fatalf("Snapshotter = %s, want overlayfs", query.Snapshotter)
+	}
+	if query.RWSnapshotKey != "1102" {
+		t.Fatalf("RWSnapshotKey = %s, want 1102", query.RWSnapshotKey)
+	}
+}
+
+func TestReadOnlyLayerQueryIsEmptyOutsideDockerContainerdMode(t *testing.T) {
+	h, _, _ := newTestDockerContainerHandle(t)
+
+	query := h.readOnlyLayerQuery(&pkgruntime.ContainerStorage{
+		Backend: &pkgruntime.LayerBackend{
+			Kind: pkgruntime.LayerBackendContainerdSnapshotter,
+			Name: "overlayfs",
+		},
+		Docker: &pkgruntime.DockerContainerStorage{
+			Snapshotter:   "overlayfs",
+			RWSnapshotKey: "1102",
+		},
+	})
+
+	if query.Snapshotter != "" || query.RWSnapshotKey != "" {
+		t.Fatalf("query = %+v, want empty query outside docker-containerd mode", query)
+	}
+}
+
+func TestContainerConfigDerivesSnapshotKeyFromGraphDriverUpperDir(t *testing.T) {
+	h, upperDir, baseLayer := newTestDockerContainerHandleWithoutProc(t)
+
+	cfg, err := h.Config(context.Background())
+	if err != nil {
+		t.Fatalf("Config() error: %v", err)
+	}
+	if cfg.SnapshotKey != "1102" {
+		t.Fatalf("SnapshotKey = %s, want 1102", cfg.SnapshotKey)
+	}
+	if cfg.WritableLayerPath != upperDir {
+		t.Fatalf("WritableLayerPath = %s, want %s", cfg.WritableLayerPath, upperDir)
+	}
+	if cfg.ReadOnlyLayerPath != baseLayer {
+		t.Fatalf("ReadOnlyLayerPath = %s, want %s", cfg.ReadOnlyLayerPath, baseLayer)
+	}
+}
+
+func TestContainerStorageDerivesSnapshotKeyFromGraphDriverUpperDir(t *testing.T) {
+	h, upperDir, _ := newTestDockerContainerHandleWithoutProc(t)
+	h.rt.imageStoreMode = ImageStoreModeContainerd
+
+	storage, err := h.Storage(context.Background())
+	if err != nil {
+		t.Fatalf("Storage() error: %v", err)
+	}
+	if storage.Backend == nil {
+		t.Fatal("Backend = nil, want non-nil")
+	}
+	if storage.Backend.Kind != pkgruntime.LayerBackendContainerdSnapshotter {
+		t.Fatalf("Backend.Kind = %s, want %s", storage.Backend.Kind, pkgruntime.LayerBackendContainerdSnapshotter)
+	}
+	if storage.Backend.Name != "overlayfs" {
+		t.Fatalf("Backend.Name = %s, want overlayfs", storage.Backend.Name)
+	}
+	if storage.Docker == nil {
+		t.Fatal("Docker storage details = nil, want non-nil")
+	}
+	if storage.Docker.Snapshotter != "overlayfs" {
+		t.Fatalf("Docker.Snapshotter = %s, want overlayfs", storage.Docker.Snapshotter)
+	}
+	if storage.Docker.RWSnapshotKey != "1102" {
+		t.Fatalf("Docker.RWSnapshotKey = %s, want 1102", storage.Docker.RWSnapshotKey)
+	}
+	if storage.RWLayerPath != upperDir {
+		t.Fatalf("RWLayerPath = %s, want %s", storage.RWLayerPath, upperDir)
 	}
 }
 
@@ -129,6 +235,47 @@ func newTestDockerContainerHandle(t *testing.T) (*containerHandle, string, strin
 			HostConfig: &containertypes.HostConfig{Runtime: "runc"},
 			GraphDriver: dockertypes.GraphDriverData{
 				Data: map[string]string{},
+			},
+		},
+		Config: &containertypes.Config{
+			Image: "alpine:3.22",
+			Env:   []string{"PATH=/usr/bin"},
+		},
+	}
+
+	return rt.newContainerHandleFromInspect(inspect), upperDir, baseLayer
+}
+
+func newTestDockerContainerHandleWithoutProc(t *testing.T) (*containerHandle, string, string) {
+	t.Helper()
+
+	tmp := t.TempDir()
+	upperDir := filepath.Join(tmp, "snapshots", "1102", "fs")
+	lowerTop := filepath.Join(tmp, "snapshots", "1101", "fs")
+	baseLayer := filepath.Join(tmp, "snapshots", "887", "fs")
+	for _, path := range []string{upperDir, lowerTop, baseLayer} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("failed to create %s: %v", path, err)
+		}
+	}
+
+	rt := &Runtime{config: &pkgruntime.Config{}}
+	inspect := &dockertypes.ContainerJSON{
+		ContainerJSONBase: &dockertypes.ContainerJSONBase{
+			ID:     "container-id",
+			Image:  "sha256:test-image",
+			Driver: "overlayfs",
+			State: &dockertypes.ContainerState{
+				Pid:     0,
+				Status:  "running",
+				Running: true,
+			},
+			HostConfig: &containertypes.HostConfig{Runtime: "runc"},
+			GraphDriver: dockertypes.GraphDriverData{
+				Data: map[string]string{
+					"UpperDir": upperDir,
+					"LowerDir": lowerTop + ":" + baseLayer,
+				},
 			},
 		},
 		Config: &containertypes.Config{
