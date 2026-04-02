@@ -1,13 +1,9 @@
 package crio
 
 import (
-	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
-	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/icebergu/c-ray/pkg/runtime/cri"
 	"github.com/icebergu/c-ray/pkg/sysinfo"
@@ -60,10 +56,7 @@ func buildSupplementFromSpecAnnotations(spec *runtimespec.Spec) *criContainerSup
 }
 
 func existingPath(path string) string {
-	if _, err := os.Stat(path); err == nil {
-		return path
-	}
-	return ""
+	return runtime.ExistingPath(path)
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +161,7 @@ func buildNamespaceMap(spec *runtimespec.Spec) map[string]string {
 
 func buildEnvironment(spec *runtimespec.Spec, criStatus *cri.ContainerStatus) []runtime.EnvVar {
 	if spec != nil && spec.Process != nil && len(spec.Process.Env) > 0 {
-		return parseSpecEnv(spec.Process.Env)
+		return runtime.ParseEnvVars(spec.Process.Env)
 	}
 	if criStatus != nil && len(criStatus.Envs) > 0 {
 		envs := make([]runtime.EnvVar, 0, len(criStatus.Envs))
@@ -176,7 +169,7 @@ func buildEnvironment(spec *runtimespec.Spec, criStatus *cri.ContainerStatus) []
 			envs = append(envs, runtime.EnvVar{
 				Key:          e.Key,
 				Value:        e.Value,
-				IsKubernetes: isKubernetesEnvKey(e.Key),
+				IsKubernetes: runtime.IsKubernetesEnvKey(e.Key),
 			})
 		}
 		return envs
@@ -184,145 +177,24 @@ func buildEnvironment(spec *runtimespec.Spec, criStatus *cri.ContainerStatus) []
 	return nil
 }
 
-func parseSpecEnv(envEntries []string) []runtime.EnvVar {
-	envs := make([]runtime.EnvVar, 0, len(envEntries))
-	for _, entry := range envEntries {
-		key, value, found := strings.Cut(entry, "=")
-		if !found || key == "" {
-			continue
-		}
-		envs = append(envs, runtime.EnvVar{
-			Key:          key,
-			Value:        value,
-			IsKubernetes: isKubernetesEnvKey(key),
-		})
-	}
-	return envs
-}
-
-func isKubernetesEnvKey(key string) bool {
-	return strings.HasPrefix(key, "KUBERNETES_") ||
-		strings.HasPrefix(key, "POD_") ||
-		strings.HasPrefix(key, "SERVICE_")
-}
-
 func inferCGroupDriver(path string) string {
-	if strings.Contains(path, ".slice") {
-		return "systemd"
-	}
-	return "cgroupfs"
+	return runtime.InferCGroupDriver(path)
 }
 
-func nsPathFromSpec(spec *runtimespec.Spec, nsType string) string {
-	if spec == nil || spec.Linux == nil {
-		return ""
-	}
-	for _, ns := range spec.Linux.Namespaces {
-		if string(ns.Type) == nsType {
-			return ns.Path
-		}
-	}
-	return ""
-}
-
-// ---------------------------------------------------------------------------
-// Process conversion (models.Process → runtime.Process / runtime.ProcessStats)
-// ---------------------------------------------------------------------------
-
-func convertProcesses(procs []*models.Process) []*runtime.Process {
-	if len(procs) == 0 {
-		return nil
-	}
-	out := make([]*runtime.Process, 0, len(procs))
-	for _, p := range procs {
-		out = append(out, &runtime.Process{
-			PID:     p.PID,
-			PPID:    p.PPID,
-			Command: p.Command,
-			Args:    append([]string(nil), p.Args...),
-			State:   p.State,
-		})
-	}
-	return out
-}
-
-func convertProcessStats(p *models.Process) *runtime.ProcessStats {
-	if p == nil {
-		return nil
-	}
-	ps := &runtime.ProcessStats{
-		Process: runtime.Process{
-			PID:     p.PID,
-			PPID:    p.PPID,
-			Command: p.Command,
-			Args:    append([]string(nil), p.Args...),
-			State:   p.State,
-		},
-		CPUPercent:       p.CPUPercent,
-		MemoryPercent:    p.MemoryPercent,
-		MemoryRSS:        p.MemoryRSS,
-		ReadBytes:        p.ReadBytes,
-		WriteBytes:       p.WriteBytes,
-		ReadBytesPerSec:  p.ReadBytesPerSec,
-		WriteBytesPerSec: p.WriteBytesPerSec,
-	}
-	if len(p.Children) > 0 {
-		ps.Children = make([]*runtime.ProcessStats, 0, len(p.Children))
-		for _, child := range p.Children {
-			ps.Children = append(ps.Children, convertProcessStats(child))
-		}
-	}
-	return ps
-}
+var nsPathFromSpec = runtime.NsPathFromSpec
 
 // ---------------------------------------------------------------------------
 // Network conversion
 // ---------------------------------------------------------------------------
 
-func convertNetworkStats(stats []*models.NetworkStats) []*runtime.NetworkStats {
-	if len(stats) == 0 {
-		return nil
-	}
-	out := make([]*runtime.NetworkStats, 0, len(stats))
-	for _, s := range stats {
-		out = append(out, &runtime.NetworkStats{
-			Interface:     s.Interface,
-			RxBytes:       s.RxBytes,
-			TxBytes:       s.TxBytes,
-			RxPackets:     s.RxPackets,
-			TxPackets:     s.TxPackets,
-			RxErrors:      s.RxErrors,
-			TxErrors:      s.TxErrors,
-			RxBytesPerSec: s.RxBytesPerSec,
-			TxBytesPerSec: s.TxBytesPerSec,
-		})
-	}
-	return out
-}
+var convertNetworkStats = runtime.ConvertNetworkStats
 
 // ---------------------------------------------------------------------------
 // Disk usage helper
 // ---------------------------------------------------------------------------
 
 func dirUsage(path string) runtime.ContainerRWLayerStats {
-	var stat syscall.Stat_t
-	var size int64
-	var inodes int64
-	_ = filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if !info.IsDir() {
-			if err := syscall.Stat(filepath.Join(path, info.Name()), &stat); err == nil {
-				size += info.Size()
-				inodes++
-			} else {
-				size += info.Size()
-				inodes++
-			}
-		}
-		return nil
-	})
+	size, inodes := runtime.DirDiskUsage(path)
 	return runtime.ContainerRWLayerStats{
 		RWLayerUsage:  size,
 		RWLayerInodes: inodes,
@@ -378,5 +250,3 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
-
-var _ = fmt.Sprintf // suppress unused import if needed

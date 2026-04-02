@@ -568,14 +568,7 @@ func (h *containerHandle) Processes(ctx context.Context) ([]*runtime.Process, er
 	if err != nil {
 		return nil, err
 	}
-	if h.rt.processCollector == nil {
-		return nil, fmt.Errorf("process collector not initialized")
-	}
-	procs, err := h.rt.processCollector.CollectContainerProcesses(pid)
-	if err != nil {
-		return nil, err
-	}
-	return convertProcesses(procs), nil
+	return runtime.CollectProcesses(h.rt.processCollector, pid)
 }
 
 func (h *containerHandle) ProcessStats(ctx context.Context) (*runtime.ProcessStats, error) {
@@ -583,19 +576,7 @@ func (h *containerHandle) ProcessStats(ctx context.Context) (*runtime.ProcessSta
 	if err != nil {
 		return nil, err
 	}
-	if h.rt.processCollector == nil {
-		return nil, fmt.Errorf("process collector not initialized")
-	}
-
-	cgroupPath := h.cgroupPath()
-	top, err := h.rt.processCollector.CollectProcessTop(pid, cgroupPath)
-	if err != nil {
-		return nil, err
-	}
-	if len(top.Processes) == 0 {
-		return nil, nil
-	}
-	return convertProcessStats(top.Processes[0]), nil
+	return runtime.CollectProcessStats(h.rt.processCollector, pid, h.cgroupPath())
 }
 
 func (h *containerHandle) GetProcessStats(ctx context.Context, pid string) (*runtime.ProcessStats, error) {
@@ -603,24 +584,7 @@ func (h *containerHandle) GetProcessStats(ctx context.Context, pid string) (*run
 	if err != nil {
 		return nil, err
 	}
-	if h.rt.processCollector == nil {
-		return nil, fmt.Errorf("process collector not initialized")
-	}
-
-	targetPID, err := strconv.Atoi(pid)
-	if err != nil || targetPID <= 0 {
-		return nil, fmt.Errorf("invalid process pid %s", pid)
-	}
-
-	cgroupPath := h.cgroupPath()
-	top, err := h.rt.processCollector.CollectProcessTop(containerPID, cgroupPath, targetPID)
-	if err != nil {
-		return nil, err
-	}
-	if len(top.Processes) > 0 {
-		return convertProcessStats(top.Processes[0]), nil
-	}
-	return nil, fmt.Errorf("process %s not found", pid)
+	return runtime.CollectSingleProcessStats(h.rt.processCollector, containerPID, h.cgroupPath(), pid)
 }
 
 // ---------------------------------------------------------------------------

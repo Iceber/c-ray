@@ -2,6 +2,7 @@ package views
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -165,7 +166,7 @@ func truncateForCard(value string, width int) string {
 }
 
 func fallbackValue(value string, fallback string) string {
-	if value == "" {
+	if strings.TrimSpace(value) == "" {
 		return fallback
 	}
 	return value

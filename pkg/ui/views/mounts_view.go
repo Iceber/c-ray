@@ -35,9 +35,7 @@ func NewMountsView(app *tview.Application) *MountsView {
 	}
 
 	v.tree = tview.NewTreeView()
-	v.tree.SetBorder(false)
-	v.tree.SetGraphics(true)
-	v.tree.SetGraphicsColor(components.ColorFgBorder)
+	components.InitTreeView(v.tree)
 	v.tree.SetRoot(tview.NewTreeNode(components.Muted("No mount metadata")).SetSelectable(false))
 	v.tree.SetSelectedFunc(func(node *tview.TreeNode) {
 		if node != nil {
@@ -109,29 +107,9 @@ func (v *MountsView) Refresh(ctx context.Context) error {
 
 // HandleInput processes tree interaction.
 func (v *MountsView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
-	if event == nil || event.Key() == tcell.KeyCtrlC {
-		return event
-	}
-	switch event.Key() {
-	case tcell.KeyEnter:
-		if node := v.tree.GetCurrentNode(); node != nil {
-			node.SetExpanded(!node.IsExpanded())
-			v.renderSelectionDetail(node)
-		}
-		return nil
-	}
-	switch event.Rune() {
-	case 'e', 'E':
-		if node := v.tree.GetCurrentNode(); node != nil {
-			node.SetExpanded(!node.IsExpanded())
-			v.renderSelectionDetail(node)
-		}
-		return nil
-	case 'a', 'A':
-		v.expandAll()
-		return nil
-	}
-	return event
+	return components.HandleTreeInput(event, v.tree, v.expandAll, func(node *tview.TreeNode) {
+		v.renderSelectionDetail(node)
+	})
 }
 
 // GetFocusPrimitive returns the tree focus target.
@@ -199,19 +177,7 @@ func (v *MountsView) renderSelectionDetail(node *tview.TreeNode) {
 
 func (v *MountsView) expandAll() {
 	root := v.tree.GetRoot()
-	if root == nil {
-		return
-	}
-	expand := !root.IsExpanded()
-	var walk func(node *tview.TreeNode)
-	walk = func(node *tview.TreeNode) {
-		node.SetExpanded(expand)
-		for _, child := range node.GetChildren() {
-			walk(child)
-		}
-	}
-	walk(root)
-	root.SetExpanded(true)
+	components.ExpandAllNodes(root)
 	v.tree.SetCurrentNode(root)
 	v.renderSelectionDetail(root)
 }
@@ -328,10 +294,7 @@ func displaySource(m *runtime.Mount, runtimePath string) string {
 }
 
 func fallbackMountField(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return "-"
-	}
-	return value
+	return fallbackValue(value, "-")
 }
 
 func cropColumn(value string, width int) string {

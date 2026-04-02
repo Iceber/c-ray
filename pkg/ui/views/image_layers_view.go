@@ -63,9 +63,7 @@ func NewImageLayersView(app *tview.Application, ctx context.Context) *ImageLayer
 	v.header.SetBorder(true).SetBorderColor(components.ColorFgBorder).SetTitle(fmt.Sprintf(" %s ", components.Accent("Rootfs Context")))
 
 	v.tree = tview.NewTreeView()
-	v.tree.SetBorder(false)
-	v.tree.SetGraphics(true)
-	v.tree.SetGraphicsColor(components.ColorFgBorder)
+	components.InitTreeView(v.tree)
 	v.tree.SetRoot(tview.NewTreeNode(components.Muted("No rootfs layer data")).SetSelectable(false))
 	v.tree.SetSelectedFunc(func(node *tview.TreeNode) {
 		if node != nil {
@@ -78,9 +76,7 @@ func NewImageLayersView(app *tview.Application, ctx context.Context) *ImageLayer
 	v.browserInfo.SetText(fmt.Sprintf(" %s", components.Muted("Select a layer and press i to inspect its path")))
 
 	v.browserTree = tview.NewTreeView()
-	v.browserTree.SetBorder(false)
-	v.browserTree.SetGraphics(true)
-	v.browserTree.SetGraphicsColor(components.ColorFgBorder)
+	components.InitTreeView(v.browserTree)
 	v.browserTree.SetRoot(tview.NewTreeNode(components.Muted("No layer browser data")).SetSelectable(false))
 	v.browserTree.SetSelectedFunc(func(node *tview.TreeNode) { v.toggleBrowserNode(node) })
 	v.browserTree.SetChangedFunc(func(node *tview.TreeNode) { v.renderPreview(node) })
@@ -249,19 +245,7 @@ func (v *ImageLayersView) expandAll() {
 		target = v.browserTree
 	}
 	root := target.GetRoot()
-	if root == nil {
-		return
-	}
-	expand := !root.IsExpanded()
-	var walk func(node *tview.TreeNode)
-	walk = func(node *tview.TreeNode) {
-		node.SetExpanded(expand)
-		for _, child := range node.GetChildren() {
-			walk(child)
-		}
-	}
-	walk(root)
-	root.SetExpanded(true)
+	components.ExpandAllNodes(root)
 	target.SetCurrentNode(root)
 }
 
@@ -667,10 +651,7 @@ func shortenLayerIDV1(values ...string) string {
 }
 
 func fallbackLayerField(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return "unresolved"
-	}
-	return value
+	return fallbackValue(value, "unresolved")
 }
 
 func formatLayerSize(layer *runtime.ImageLayer) string {

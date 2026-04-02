@@ -34,9 +34,7 @@ func NewProcessTreeView(app *tview.Application) *ProcessTreeView {
 	}
 
 	v.tree = tview.NewTreeView()
-	v.tree.SetBorder(false)
-	v.tree.SetGraphics(true)
-	v.tree.SetGraphicsColor(components.ColorFgBorder)
+	components.InitTreeView(v.tree)
 	v.tree.SetRoot(tview.NewTreeNode(components.Muted("No data")))
 
 	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
@@ -173,27 +171,7 @@ func buildChildNodes(children []*runtime.Process, childMap map[int][]*runtime.Pr
 
 // HandleInput processes key events.
 func (v *ProcessTreeView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
-	if event.Key() == tcell.KeyCtrlC {
-		return event
-	}
-	switch event.Key() {
-	case tcell.KeyEnter:
-		if node := v.tree.GetCurrentNode(); node != nil {
-			node.SetExpanded(!node.IsExpanded())
-		}
-		return nil
-	}
-	switch event.Rune() {
-	case 'e', 'E':
-		if node := v.tree.GetCurrentNode(); node != nil {
-			node.SetExpanded(!node.IsExpanded())
-		}
-		return nil
-	case 'a', 'A':
-		v.expandAll()
-		return nil
-	}
-	return event
+	return components.HandleTreeInput(event, v.tree, v.expandAll, nil)
 }
 
 func (v *ProcessTreeView) expandAll() {

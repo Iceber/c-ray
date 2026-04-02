@@ -32,9 +32,7 @@ func NewNetworkInfoView(app *tview.Application) *NetworkInfoView {
 	}
 
 	v.tree = tview.NewTreeView()
-	v.tree.SetBorder(false)
-	v.tree.SetGraphics(true)
-	v.tree.SetGraphicsColor(components.ColorFgBorder)
+	components.InitTreeView(v.tree)
 	v.tree.SetRoot(tview.NewTreeNode(components.Muted("No network data")).SetSelectable(false))
 	v.tree.SetSelectedFunc(func(node *tview.TreeNode) {
 		if node != nil {
@@ -92,27 +90,7 @@ func (v *NetworkInfoView) renderError(err error) {
 
 // HandleInput processes tree interaction.
 func (v *NetworkInfoView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
-	if event == nil || event.Key() == tcell.KeyCtrlC {
-		return event
-	}
-	switch event.Key() {
-	case tcell.KeyEnter:
-		if node := v.tree.GetCurrentNode(); node != nil {
-			node.SetExpanded(!node.IsExpanded())
-		}
-		return nil
-	}
-	switch event.Rune() {
-	case 'e', 'E':
-		if node := v.tree.GetCurrentNode(); node != nil {
-			node.SetExpanded(!node.IsExpanded())
-		}
-		return nil
-	case 'a', 'A':
-		v.expandAll()
-		return nil
-	}
-	return event
+	return components.HandleTreeInput(event, v.tree, v.expandAll, nil)
 }
 
 // GetFocusPrimitive returns the tree focus target.
@@ -156,19 +134,7 @@ func (v *NetworkInfoView) render(netState *runtime.ContainerNetworkState) {
 
 func (v *NetworkInfoView) expandAll() {
 	root := v.tree.GetRoot()
-	if root == nil {
-		return
-	}
-	expand := !root.IsExpanded()
-	var walk func(node *tview.TreeNode)
-	walk = func(node *tview.TreeNode) {
-		node.SetExpanded(expand)
-		for _, child := range node.GetChildren() {
-			walk(child)
-		}
-	}
-	walk(root)
-	root.SetExpanded(true)
+	components.ExpandAllNodes(root)
 	v.tree.SetCurrentNode(root)
 }
 
@@ -345,10 +311,7 @@ func cniDNSV1(cni *runtime.CNIResultInfo) *runtime.DNSConfig {
 }
 
 func fallbackNetField(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return "-"
-	}
-	return value
+	return fallbackValue(value, "-")
 }
 
 func nonEmptyOrDashV1(values []string) []string {

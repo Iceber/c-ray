@@ -10,11 +10,9 @@ import (
 	"strings"
 
 	"github.com/containerd/containerd/v2/core/containers"
-	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/icebergu/c-ray/pkg/runtime/cri"
 	"github.com/icebergu/c-ray/pkg/sysinfo"
-	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
 )
 
 // ---------------------------------------------------------------------------
@@ -139,62 +137,7 @@ func computeShimSocketAddress(stateDir, namespace, id string) string {
 	return fmt.Sprintf("unix:///%s/s/%x", stateDir, sum)
 }
 
-func existingPathCheck(path string) string {
-	if _, err := os.Stat(path); err == nil {
-		return path
-	}
-	return ""
-}
-
-// ---------------------------------------------------------------------------
-// Process conversion (models.Process → runtime.Process / runtime.ProcessStats)
-// ---------------------------------------------------------------------------
-
-func convertProcesses(procs []*models.Process) []*runtime.Process {
-	if len(procs) == 0 {
-		return nil
-	}
-	out := make([]*runtime.Process, 0, len(procs))
-	for _, p := range procs {
-		out = append(out, &runtime.Process{
-			PID:     p.PID,
-			PPID:    p.PPID,
-			Command: p.Command,
-			Args:    append([]string(nil), p.Args...),
-			State:   p.State,
-		})
-	}
-	return out
-}
-
-func convertProcessStats(p *models.Process) *runtime.ProcessStats {
-	if p == nil {
-		return nil
-	}
-	ps := &runtime.ProcessStats{
-		Process: runtime.Process{
-			PID:     p.PID,
-			PPID:    p.PPID,
-			Command: p.Command,
-			Args:    append([]string(nil), p.Args...),
-			State:   p.State,
-		},
-		CPUPercent:       p.CPUPercent,
-		MemoryPercent:    p.MemoryPercent,
-		MemoryRSS:        p.MemoryRSS,
-		ReadBytes:        p.ReadBytes,
-		WriteBytes:       p.WriteBytes,
-		ReadBytesPerSec:  p.ReadBytesPerSec,
-		WriteBytesPerSec: p.WriteBytesPerSec,
-	}
-	if len(p.Children) > 0 {
-		ps.Children = make([]*runtime.ProcessStats, 0, len(p.Children))
-		for _, child := range p.Children {
-			ps.Children = append(ps.Children, convertProcessStats(child))
-		}
-	}
-	return ps
-}
+var existingPathCheck = runtime.ExistingPath
 
 // ---------------------------------------------------------------------------
 // Pod network building
@@ -259,35 +202,6 @@ func (h *containerHandle) buildPodNetwork(ctx context.Context, info containers.C
 	return nil
 }
 
-func nsPathFromSpec(spec *runtimespec.Spec, nsType string) string {
-	if spec == nil || spec.Linux == nil {
-		return ""
-	}
-	for _, ns := range spec.Linux.Namespaces {
-		if string(ns.Type) == nsType {
-			return ns.Path
-		}
-	}
-	return ""
-}
+var nsPathFromSpec = runtime.NsPathFromSpec
 
-func convertNetworkStats(stats []*models.NetworkStats) []*runtime.NetworkStats {
-	if len(stats) == 0 {
-		return nil
-	}
-	out := make([]*runtime.NetworkStats, 0, len(stats))
-	for _, s := range stats {
-		out = append(out, &runtime.NetworkStats{
-			Interface:     s.Interface,
-			RxBytes:       s.RxBytes,
-			TxBytes:       s.TxBytes,
-			RxPackets:     s.RxPackets,
-			TxPackets:     s.TxPackets,
-			RxErrors:      s.RxErrors,
-			TxErrors:      s.TxErrors,
-			RxBytesPerSec: s.RxBytesPerSec,
-			TxBytesPerSec: s.TxBytesPerSec,
-		})
-	}
-	return out
-}
+var convertNetworkStats = runtime.ConvertNetworkStats

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -532,14 +531,7 @@ func (h *containerHandle) Processes(ctx context.Context) ([]*runtime.Process, er
 	if pid == 0 {
 		return nil, fmt.Errorf("container is not running")
 	}
-	if h.rt.processCollector == nil {
-		return nil, fmt.Errorf("process collector not initialized")
-	}
-	procs, err := h.rt.processCollector.CollectContainerProcesses(pid)
-	if err != nil {
-		return nil, err
-	}
-	return convertProcesses(procs), nil
+	return runtime.CollectProcesses(h.rt.processCollector, pid)
 }
 
 func (h *containerHandle) ProcessStats(ctx context.Context) (*runtime.ProcessStats, error) {
@@ -547,24 +539,12 @@ func (h *containerHandle) ProcessStats(ctx context.Context) (*runtime.ProcessSta
 	if pid == 0 {
 		return nil, fmt.Errorf("container is not running")
 	}
-	if h.rt.processCollector == nil {
-		return nil, fmt.Errorf("process collector not initialized")
-	}
-
 	h.ensureSpec(ctx)
 	var cgroupPath string
 	if h.spec != nil && h.spec.Linux != nil {
 		cgroupPath = h.spec.Linux.CgroupsPath
 	}
-
-	top, err := h.rt.processCollector.CollectProcessTop(pid, cgroupPath)
-	if err != nil {
-		return nil, err
-	}
-	if len(top.Processes) == 0 {
-		return nil, nil
-	}
-	return convertProcessStats(top.Processes[0]), nil
+	return runtime.CollectProcessStats(h.rt.processCollector, pid, cgroupPath)
 }
 
 func (h *containerHandle) GetProcessStats(ctx context.Context, pidStr string) (*runtime.ProcessStats, error) {
@@ -572,29 +552,12 @@ func (h *containerHandle) GetProcessStats(ctx context.Context, pidStr string) (*
 	if pid == 0 {
 		return nil, fmt.Errorf("container is not running")
 	}
-	if h.rt.processCollector == nil {
-		return nil, fmt.Errorf("process collector not initialized")
-	}
-
 	h.ensureSpec(ctx)
 	var cgroupPath string
 	if h.spec != nil && h.spec.Linux != nil {
 		cgroupPath = h.spec.Linux.CgroupsPath
 	}
-
-	targetPID, err := strconv.Atoi(pidStr)
-	if err != nil || targetPID <= 0 {
-		return nil, fmt.Errorf("invalid process pid %s", pidStr)
-	}
-
-	top, err := h.rt.processCollector.CollectProcessTop(pid, cgroupPath, targetPID)
-	if err != nil {
-		return nil, err
-	}
-	if len(top.Processes) > 0 {
-		return convertProcessStats(top.Processes[0]), nil
-	}
-	return nil, fmt.Errorf("process %s not found", pidStr)
+	return runtime.CollectSingleProcessStats(h.rt.processCollector, pid, cgroupPath, pidStr)
 }
 
 // ---------------------------------------------------------------------------
