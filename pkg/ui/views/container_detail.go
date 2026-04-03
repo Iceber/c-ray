@@ -365,7 +365,7 @@ func (v *ContainerDetailView) updateFooter() {
 	}
 	switch v.activeTab {
 	case DetailTabSummary:
-		hints = append(hints, components.FooterHint{Key: "p/f", Action: "focus panes"}, components.FooterHint{Key: "e", Action: "toggle"})
+		hints = append(hints, components.FooterHint{Key: "p/f/i", Action: "focus panes"}, components.FooterHint{Key: "e", Action: "toggle"})
 	case DetailTabProcesses:
 		hints = append(hints, components.FooterHint{Key: "s/g/t", Action: "process tabs"}, components.FooterHint{Key: "[/]", Action: "cycle"})
 	case DetailTabFilesystem:

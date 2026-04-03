@@ -88,7 +88,7 @@ func NewDetailGridView(app *tview.Application) *DetailGridView {
 	v.processTree = tview.NewTreeView()
 	components.InitTreeView(v.processTree)
 	v.processTree.SetBorder(true).SetBorderColor(components.ColorFgBorder)
-	v.processTree.SetTitle(fmt.Sprintf(" %s ", components.Accent("Processes"))).SetTitleAlign(tview.AlignLeft)
+	v.processTree.SetTitle(fmt.Sprintf(" %s%s ", components.Accent("Processes"), components.Dim("(p)"))).SetTitleAlign(tview.AlignLeft)
 	v.processTree.SetBackgroundColor(components.ColorBg)
 	v.processTree.SetRoot(components.NewTreeNode(components.Muted("No data")))
 	v.processTree.SetChangedFunc(func(node *tview.TreeNode) {
@@ -99,7 +99,7 @@ func NewDetailGridView(app *tview.Application) *DetailGridView {
 	v.fsPanel = tview.NewTreeView()
 	components.InitTreeView(v.fsPanel)
 	v.fsPanel.SetBorder(true).SetBorderColor(components.ColorFgBorder)
-	v.fsPanel.SetTitle(fmt.Sprintf(" %s ", components.Accent("Filesystem"))).SetTitleAlign(tview.AlignLeft)
+	v.fsPanel.SetTitle(fmt.Sprintf(" %s%s ", components.Accent("Filesystem"), components.Dim("(f)"))).SetTitleAlign(tview.AlignLeft)
 	v.fsPanel.SetBackgroundColor(components.ColorBg)
 	v.fsPanel.SetRoot(components.NewTreeNode(components.Muted("No data")))
 	v.fsPanel.SetChangedFunc(func(node *tview.TreeNode) {
@@ -118,7 +118,7 @@ func NewDetailGridView(app *tview.Application) *DetailGridView {
 	v.imagePanel = tview.NewTreeView()
 	components.InitTreeView(v.imagePanel)
 	v.imagePanel.SetBorder(true).SetBorderColor(components.ColorFgBorder)
-	v.imagePanel.SetTitle(fmt.Sprintf(" %s ", components.Accent("Image"))).SetTitleAlign(tview.AlignLeft)
+	v.imagePanel.SetTitle(fmt.Sprintf(" %s%s ", components.Accent("Image"), components.Dim("(i)"))).SetTitleAlign(tview.AlignLeft)
 	v.imagePanel.SetBackgroundColor(components.ColorBg)
 	v.imagePanel.SetRoot(components.NewTreeNode(components.Muted("No data")))
 	v.imagePanel.SetChangedFunc(func(node *tview.TreeNode) {
@@ -240,8 +240,9 @@ func (v *DetailGridView) Refresh(ctx context.Context) {
 		v.imagePanel.SetCurrentNode(currentImageNode)
 		v.processTree.SetRoot(processRoot)
 		v.processTree.SetCurrentNode(processRoot)
-		v.processTree.SetTitle(fmt.Sprintf(" %s %s ",
+		v.processTree.SetTitle(fmt.Sprintf(" %s%s %s ",
 			components.Accent("Processes"),
+			components.Dim("(p)"),
 			components.Muted(fmt.Sprintf("%d total", count))))
 		if v.focusPane == detailGridFocusFilesystem {
 			v.updateDetailPanelForNode(detailGridFocusFilesystem, currentFSNode)
