@@ -21,11 +21,12 @@ type containerEntry struct {
 type ContainerTreeView struct {
 	*tview.Flex
 
-	app       *tview.Application
-	rt        runtime.Runtime
-	tree      *tview.TreeView
-	statusBar *tview.TextView
-	entries   []containerEntry
+	app           *tview.Application
+	rt            runtime.Runtime
+	tree          *tview.TreeView
+	statusBar     *tview.TextView
+	entries       []containerEntry
+	collapsedPods map[string]bool // podUIDs that are currently collapsed
 
 	onSelect func(c runtime.Container)
 }
@@ -46,9 +47,10 @@ const (
 // NewContainerTreeView creates a new tree-based container list view.
 func NewContainerTreeView(app *tview.Application, rt runtime.Runtime) *ContainerTreeView {
 	v := &ContainerTreeView{
-		Flex: tview.NewFlex().SetDirection(tview.FlexRow),
-		app:  app,
-		rt:   rt,
+		Flex:          tview.NewFlex().SetDirection(tview.FlexRow),
+		app:           app,
+		rt:            rt,
+		collapsedPods: make(map[string]bool),
 	}
 
 	root := components.NewTreeNode("Containers").SetColor(components.ColorFgAccent).SetSelectable(false)
@@ -80,14 +82,25 @@ func NewContainerTreeView(app *tview.Application, rt runtime.Runtime) *Container
 		if event.Key() == tcell.KeyCtrlC {
 			return event
 		}
-		switch event.Rune() {
-		case 'e', 'E':
-			if node := v.tree.GetCurrentNode(); node != nil {
-				node.SetExpanded(!node.IsExpanded())
+		if event.Key() == tcell.KeyRune {
+			switch event.Rune() {
+			case 'e':
+				v.toggleCurrentNode()
+				return nil
+			case 'E':
+				v.collapseAllPods()
+				return nil
+			case 'a', 'A':
+				v.toggleAllNodes()
+				return nil
 			}
+		}
+		if event.Key() == tcell.KeyRune && event.Rune() == ' ' {
+			v.toggleCurrentNode()
 			return nil
-		case 'a', 'A':
-			v.toggleAllNodes()
+		}
+		if event.Key() == tcell.KeyNUL { // Space on some terminals
+			v.toggleCurrentNode()
 			return nil
 		}
 		return event
@@ -127,8 +140,10 @@ func (v *ContainerTreeView) Refresh(ctx context.Context) error {
 
 	v.entries = entries
 	queueUpdateDraw(v.app, func() {
+		v.snapshotCollapsedPods()
 		v.render()
 		v.restoreSelection(savedData)
+		components.ApplyTreeFocusStyle(v.tree, true)
 	})
 	return nil
 }
@@ -190,10 +205,11 @@ func (v *ContainerTreeView) render() {
 		return standalone[i].info.Name < standalone[j].info.Name
 	})
 
-	// Add pod nodes.
+	// Add pod nodes, restoring their collapsed state.
 	for _, uid := range podUIDs {
 		pg := pods[uid]
 		podNode := v.createPodNode(pg)
+		podNode.SetExpanded(!v.collapsedPods[uid])
 		root.AddChild(podNode)
 
 		podContainers := v.podContainers(uid)
@@ -208,11 +224,6 @@ func (v *ContainerTreeView) render() {
 	}
 
 	root.SetExpanded(true)
-	for _, node := range root.GetChildren() {
-		if data, ok := node.GetReference().(*treeNodeData); ok && data.nodeType == nodeTypePod {
-			node.SetExpanded(true)
-		}
-	}
 
 	if v.tree.GetCurrentNode() == nil {
 		v.selectFirstNode()
@@ -279,6 +290,51 @@ func (v *ContainerTreeView) createContainerNode(e containerEntry, isInPod bool) 
 	return node
 }
 
+func (v *ContainerTreeView) toggleCurrentNode() {
+	node := v.tree.GetCurrentNode()
+	if node == nil {
+		return
+	}
+	newExpanded := !node.IsExpanded()
+	node.SetExpanded(newExpanded)
+	if data, ok := node.GetReference().(*treeNodeData); ok && data != nil && data.nodeType == nodeTypePod {
+		if newExpanded {
+			delete(v.collapsedPods, data.podUID)
+		} else {
+			v.collapsedPods[data.podUID] = true
+		}
+	}
+}
+
+func (v *ContainerTreeView) collapseAllPods() {
+	root := v.tree.GetRoot()
+	if root == nil {
+		return
+	}
+	for _, child := range root.GetChildren() {
+		if data, ok := child.GetReference().(*treeNodeData); ok && data != nil && data.nodeType == nodeTypePod {
+			child.SetExpanded(false)
+			v.collapsedPods[data.podUID] = true
+		}
+	}
+}
+
+func (v *ContainerTreeView) snapshotCollapsedPods() {
+	root := v.tree.GetRoot()
+	if root == nil {
+		return
+	}
+	for _, child := range root.GetChildren() {
+		if data, ok := child.GetReference().(*treeNodeData); ok && data != nil && data.nodeType == nodeTypePod {
+			if !child.IsExpanded() {
+				v.collapsedPods[data.podUID] = true
+			} else {
+				delete(v.collapsedPods, data.podUID)
+			}
+		}
+	}
+}
+
 func (v *ContainerTreeView) toggleAllNodes() {
 	root := v.tree.GetRoot()
 	if root == nil {
@@ -293,6 +349,13 @@ func (v *ContainerTreeView) toggleAllNodes() {
 	}
 	for _, child := range root.GetChildren() {
 		child.SetExpanded(!expanded)
+		if data, ok := child.GetReference().(*treeNodeData); ok && data != nil && data.nodeType == nodeTypePod {
+			if !expanded {
+				delete(v.collapsedPods, data.podUID)
+			} else {
+				v.collapsedPods[data.podUID] = true
+			}
+		}
 	}
 }
 
@@ -383,13 +446,14 @@ func (v *ContainerTreeView) updateStatusBar(podCount, standaloneCount int) {
 		}
 	}
 	v.statusBar.SetText(fmt.Sprintf(
-		" %s  %s  %s  %s  |  %s  %s  %s  %s",
+		" %s  %s  %s  %s  |  %s  %s  %s  %s  %s",
 		components.KV("Total ", fmt.Sprintf("%d", total)),
 		components.KV("Running ", fmt.Sprintf("%d", running)),
 		components.KV("Pods ", fmt.Sprintf("%d", podCount)),
 		components.KV("Standalone ", fmt.Sprintf("%d", standaloneCount)),
 		components.KeyHint("Enter", "detail"),
-		components.KeyHint("e", "toggle"),
+		components.KeyHint("e/Space", "toggle"),
+		components.KeyHint("E", "collapse all"),
 		components.KeyHint("a", "all"),
 		components.KeyHint("r", "refresh"),
 	))

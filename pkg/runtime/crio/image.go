@@ -96,10 +96,14 @@ func (h *imageHandle) Config(_ context.Context) (*runtime.ImageConfigInfo, error
 			info.TargetMediaType = resolved.mediaType
 			info.TargetKind = resolved.kind
 			info.Schema = resolved.schema
+			info.IndexPath = resolved.indexPath
 			info.Manifest = &runtime.ImageManifest{
+				Digest:     resolved.manifestDigest,
 				Platform:   resolved.platform,
+				Path:       resolved.manifestPath,
 				ConfigPath: resolved.contentPath,
 			}
+			info.Manifests = resolved.manifests
 		}
 	}
 	if info.Manifest == nil {
@@ -116,6 +120,15 @@ type imageConfigResolution struct {
 	mediaType   string
 	kind        string
 	schema      string
+
+	// indexPath is the on-disk path of the image index blob (empty for single-platform).
+	indexPath string
+	// manifestDigest is the digest of the current platform manifest blob.
+	manifestDigest string
+	// manifestPath is the on-disk path of the current platform manifest blob.
+	manifestPath string
+	// manifests lists all platform manifests when the image is an index.
+	manifests []*runtime.ImageManifest
 }
 
 func resolveImageConfigInfo(store cstorage.Store, img *cstorage.Image) imageConfigResolution {
@@ -175,6 +188,36 @@ func resolveImageConfigInfo(store cstorage.Store, img *cstorage.Image) imageConf
 		res.kind = "Manifest"
 	}
 	res.schema = deriveSchema(res.mediaType)
+
+	// Resolve index on-disk path.
+	if indexManifest != nil && imageDir != "" {
+		indexBlobPath := filepath.Join(imageDir, imageBigDataBaseName(indexManifest.Name))
+		if runtime.ExistingPath(indexBlobPath) != "" {
+			res.indexPath = indexBlobPath
+		}
+	}
+
+	// Resolve platform manifest digest and on-disk path.
+	if platformManifest != nil {
+		res.manifestDigest = platformManifest.Digest
+		if imageDir != "" {
+			manifestBlobPath := filepath.Join(imageDir, imageBigDataBaseName(platformManifest.Name))
+			if runtime.ExistingPath(manifestBlobPath) != "" {
+				res.manifestPath = manifestBlobPath
+			}
+		}
+	}
+
+	// Build all platform manifests from index descriptors.
+	if indexManifest != nil && len(indexManifest.Manifests) > 0 {
+		for _, desc := range indexManifest.Manifests {
+			platform := formatPlatform(desc.OS, desc.Architecture, desc.Variant)
+			res.manifests = append(res.manifests, &runtime.ImageManifest{
+				Digest:   desc.Digest,
+				Platform: platform,
+			})
+		}
+	}
 
 	if len(configDigests) == 0 {
 		return res

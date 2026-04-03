@@ -400,6 +400,12 @@ func (h *containerHandle) Storage(ctx context.Context) (*runtime.ContainerStorag
 	storage := &runtime.ContainerStorage{
 		RWLayerPath: h.resolveRWLayerPath(),
 	}
+
+	// ReadOnly from OCI spec.
+	h.ensureSpec(ctx)
+	if h.spec != nil && h.spec.Root != nil && h.spec.Root.Readonly {
+		storage.ReadOnly = true
+	}
 	if store, err := h.rt.getStore(); err == nil {
 		driverName := store.GraphDriverName()
 		if driverName != "" {

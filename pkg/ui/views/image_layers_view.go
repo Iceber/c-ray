@@ -957,7 +957,13 @@ func buildLayerHeaderV1(config *runtime.ContainerConfig, storage *runtime.Contai
 	} else if config != nil && config.Backend != nil {
 		backend = formatLayerBackendV1(config.Backend)
 	}
-	if config != nil {
+	if storage != nil {
+		if storage.ReadOnly {
+			readonly = "yes"
+		} else {
+			readonly = "no"
+		}
+	} else if config != nil {
 		if config.SnapshotKey != "" || config.WritableLayerPath != "" {
 			readonly = "no"
 		}
@@ -1048,6 +1054,13 @@ func buildRWLayerNodeV1(config *runtime.ContainerConfig, storage *runtime.Contai
 	rows := []string{
 		identifierLabel + ": " + identifierValue,
 		"Path: " + path,
+	}
+	if storage != nil {
+		if storage.ReadOnly {
+			rows = append(rows, "Read Only: yes")
+		} else {
+			rows = append(rows, "Read Only: no")
+		}
 	}
 	selection := &layerTreeSelection{path: path, title: "RW Layer"}
 	if rwStats != nil && (rwStats.RWLayerUsage > 0 || rwStats.RWLayerInodes > 0) {

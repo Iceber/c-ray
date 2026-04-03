@@ -90,6 +90,7 @@ type ContainerStorage struct {
 	ReadOnlyLayers []*ImageLayer
 
 	RWLayerPath string
+	ReadOnly    bool
 	Backend     *LayerBackend
 
 	Containerd *ContainerdContainerStorage

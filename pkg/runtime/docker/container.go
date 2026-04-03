@@ -75,7 +75,14 @@ func (h *containerHandle) OCISepc()   {}
 func (h *containerHandle) Info(ctx context.Context) (*runtime.ContainerInfo, error) {
 	// Fast path: use summary if available (avoids inspect for list views).
 	if h.summary != nil {
-		return h.infoFromSummary(), nil
+		ci := h.infoFromSummary()
+		// Supplement PID from inspect data so that detail views can read
+		// extended procfs info (threads, open FDs, listening ports).
+		h.ensureInspect(ctx)
+		if h.inspect != nil && h.inspect.State != nil {
+			ci.PID = uint32(h.inspect.State.Pid)
+		}
+		return ci, nil
 	}
 
 	h.ensureInspect(ctx)
@@ -409,6 +416,12 @@ func (h *containerHandle) Storage(ctx context.Context) (*runtime.ContainerStorag
 	}
 
 	storage := &runtime.ContainerStorage{}
+
+	// ReadOnly rootfs from HostConfig.
+	if h.inspect.HostConfig != nil && h.inspect.HostConfig.ReadonlyRootfs {
+		storage.ReadOnly = true
+	}
+
 	live := h.resolveLiveRootPaths()
 
 	gd := h.inspect.GraphDriver

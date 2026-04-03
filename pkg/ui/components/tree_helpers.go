@@ -38,7 +38,7 @@ func ApplyTreeFocusStyle(tree *tview.TreeView, focused bool) {
 	}
 	root.Walk(func(node, parent *tview.TreeNode) bool {
 		if focused {
-			node.SetSelectedTextStyle(StyleSelectRow)
+			node.SetSelectedTextStyle(StyleTreeSelect)
 		} else {
 			node.SetSelectedTextStyle(node.GetTextStyle())
 		}

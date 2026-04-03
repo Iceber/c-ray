@@ -164,10 +164,17 @@ func TestImageInfoReturnsAllNames(t *testing.T) {
 
 func TestImageConfigReturnsPlatform(t *testing.T) {
 	h := newLoadedDockerImageHandle(&dockertypes.ImageInspect{
+		ID:           "sha256:11223344556677889900aabbccddeeff",
 		Architecture: "arm64",
 		Variant:      "v8",
 		Os:           "linux",
+		RepoDigests:  []string{"alpine@sha256:abcdef1234567890"},
 	})
+	h.rt.daemonInfo = &daemonInfo{
+		DockerRootDir: "/var/lib/docker",
+		Driver:        "overlay2",
+	}
+	h.inspectRaw = []byte(`{"Descriptor":{"mediaType":"application/vnd.docker.distribution.manifest.v2+json","digest":"sha256:abcdef1234567890"}}`)
 
 	info, err := h.Config(context.Background())
 	if err != nil {
@@ -178,6 +185,77 @@ func TestImageConfigReturnsPlatform(t *testing.T) {
 	}
 	if info.Manifest.Platform != "linux/arm64/v8" {
 		t.Fatalf("Config().Manifest.Platform = %q, want linux/arm64/v8", info.Manifest.Platform)
+	}
+	if info.TargetKind != "Manifest" {
+		t.Fatalf("Config().TargetKind = %q, want Manifest", info.TargetKind)
+	}
+	if info.Schema != "Docker" {
+		t.Fatalf("Config().Schema = %q, want Docker", info.Schema)
+	}
+	if info.Manifest.Digest != "sha256:abcdef1234567890" {
+		t.Fatalf("Config().Manifest.Digest = %q, want sha256:abcdef1234567890", info.Manifest.Digest)
+	}
+	if info.Manifest.Path != "/var/lib/docker/content/data/blobs/sha256/abcdef1234567890" {
+		t.Fatalf("Config().Manifest.Path = %q, want docker classic manifest content path", info.Manifest.Path)
+	}
+	if info.Manifest.ConfigPath != "/var/lib/docker/image/overlay2/imagedb/content/sha256/11223344556677889900aabbccddeeff" {
+		t.Fatalf("Config().Manifest.ConfigPath = %q, want docker classic config path", info.Manifest.ConfigPath)
+	}
+	if len(info.Manifests) != 1 {
+		t.Fatalf("len(Config().Manifests) = %d, want 1", len(info.Manifests))
+	}
+}
+
+func TestImageConfigDescriptorIndexDoesNotMasqueradeAsPlatformManifest(t *testing.T) {
+	h := newLoadedDockerImageHandle(&dockertypes.ImageInspect{
+		ID:           "sha256:11223344556677889900aabbccddeeff",
+		Architecture: "arm64",
+		Variant:      "v8",
+		Os:           "linux",
+		RepoDigests:  []string{"alpine@sha256:55ae5d250caebc548793f321534bc6a8ef1d116f334f18f4ada1b2daad3251b2"},
+	})
+	h.rt.daemonInfo = &daemonInfo{
+		DockerRootDir: "/var/lib/docker",
+		Driver:        "overlay2",
+	}
+	h.inspectRaw = []byte(`{"Descriptor":{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"sha256:55ae5d250caebc548793f321534bc6a8ef1d116f334f18f4ada1b2daad3251b2"}}`)
+
+	info, err := h.Config(context.Background())
+	if err != nil {
+		t.Fatalf("Config() error: %v", err)
+	}
+	if info.TargetKind != "Index" {
+		t.Fatalf("Config().TargetKind = %q, want Index", info.TargetKind)
+	}
+	if info.Schema != "OCI" {
+		t.Fatalf("Config().Schema = %q, want OCI", info.Schema)
+	}
+	if info.Manifest == nil {
+		t.Fatal("Config().Manifest = nil, want non-nil")
+	}
+	if info.Manifest.Digest != "" {
+		t.Fatalf("Config().Manifest.Digest = %q, want empty for index target", info.Manifest.Digest)
+	}
+	if info.IndexPath != "/var/lib/docker/content/data/blobs/sha256/55ae5d250caebc548793f321534bc6a8ef1d116f334f18f4ada1b2daad3251b2" {
+		t.Fatalf("Config().IndexPath = %q, want docker classic index content path", info.IndexPath)
+	}
+	if len(info.Manifests) != 0 {
+		t.Fatalf("len(Config().Manifests) = %d, want 0 when Docker API only exposes index descriptor", len(info.Manifests))
+	}
+}
+
+func TestDockerClassicConfigPathRequiresDaemonRootAndDigestID(t *testing.T) {
+	if got := dockerClassicConfigPath(nil, "sha256:abc"); got != "" {
+		t.Fatalf("dockerClassicConfigPath(nil) = %q, want empty", got)
+	}
+	if got := dockerClassicConfigPath(&Runtime{daemonInfo: &daemonInfo{DockerRootDir: "/var/lib/docker", Driver: "overlay2"}}, "not-a-digest"); got != "" {
+		t.Fatalf("dockerClassicConfigPath(non-digest) = %q, want empty", got)
+	}
+	if got := dockerClassicContentPath(nil, "sha256:abc"); got != "" {
+		t.Fatalf("dockerClassicContentPath(nil) = %q, want empty", got)
+	}
+	if got := dockerClassicContentPath(&Runtime{daemonInfo: &daemonInfo{DockerRootDir: "/var/lib/docker"}}, "not-a-digest"); got != "" {
+		t.Fatalf("dockerClassicContentPath(non-digest) = %q, want empty", got)
 	}
 }
 

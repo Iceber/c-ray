@@ -77,6 +77,7 @@ func (v *ProcessTreeView) Refresh(ctx context.Context) error {
 			root := tview.NewTreeNode(fmt.Sprintf("%s %s", components.Accent("Error"), components.Muted(err.Error()))).SetSelectable(false)
 			v.tree.SetRoot(root)
 			v.tree.SetCurrentNode(root)
+			components.ApplyTreeFocusStyle(v.tree, true)
 			v.updateStatusBar()
 		})
 		return err
@@ -129,14 +130,27 @@ func (v *ProcessTreeView) render(ctx context.Context) {
 		}
 		v.tree.SetRoot(rootNode)
 		v.tree.SetCurrentNode(rootNode)
+		components.ApplyTreeFocusStyle(v.tree, true)
 		v.updateStatusBar()
 	})
 }
 
+func pidTag(p *runtime.Process) string {
+	if p.HostPID > 0 {
+		return fmt.Sprintf("%d:%d", p.HostPID, p.PID)
+	}
+	return fmt.Sprintf("%d", p.PID)
+}
+
 func buildProcessNode(p *runtime.Process, childMap map[int][]*runtime.Process) *tview.TreeNode {
 	stateColor := processStateColor(p.State)
-	label := fmt.Sprintf("%s [%s][pid:%d][-] [%s](%s)[-] %s",
-		components.Bright(processName(p)), components.ColorName(components.ColorFgMuted), p.PID, stateColor, p.State, components.Muted(processCmd(p)))
+	name := processName(p)
+	cmd := processCmd(p)
+	label := fmt.Sprintf("%s [%s][%s][-] [%s](%s)[-]",
+		components.Bright(name), components.ColorName(components.ColorFgMuted), pidTag(p), stateColor, p.State)
+	if cmd != name {
+		label += " " + components.Muted(cmd)
+	}
 
 	node := tview.NewTreeNode(label).SetSelectable(true).SetExpanded(true).SetReference(p)
 

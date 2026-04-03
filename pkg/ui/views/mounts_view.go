@@ -145,6 +145,7 @@ func (v *MountsView) render() {
 	queueUpdateDraw(v.app, func() {
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(current)
+		components.ApplyTreeFocusStyle(v.tree, true)
 		v.renderSelectionDetail(current)
 	})
 }

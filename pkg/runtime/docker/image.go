@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,17 +22,19 @@ type imageHandle struct {
 
 	inspectOnce sync.Once
 	inspect     *dockertypes.ImageInspect
+	inspectRaw  []byte
 	inspectErr  error
 }
 
 func (h *imageHandle) ensureInspect(ctx context.Context) {
 	h.inspectOnce.Do(func() {
-		resp, _, err := h.rt.dockerClient.ImageInspectWithRaw(ctx, h.ref)
+		resp, raw, err := h.rt.dockerClient.ImageInspectWithRaw(ctx, h.ref)
 		if err != nil {
 			h.inspectErr = err
 			return
 		}
 		h.inspect = &resp
+		h.inspectRaw = raw
 	})
 }
 
@@ -65,13 +68,114 @@ func (h *imageHandle) Config(ctx context.Context) (*runtime.ImageConfigInfo, err
 	if h.inspectErr != nil {
 		return nil, h.inspectErr
 	}
+	i := h.inspect
+	desc := dockerInspectDescriptor(h.inspectRaw)
+
 	info := &runtime.ImageConfigInfo{
 		StorageBackend: runtime.ImageBackendDockerClassic,
 	}
-	if platform := formatPlatform(h.inspect.Os, h.inspect.Architecture, h.inspect.Variant); platform != "" {
-		info.Manifest = &runtime.ImageManifest{Platform: platform}
+	if desc.MediaType != "" {
+		info.TargetMediaType = desc.MediaType
+		info.TargetKind, info.Schema = dockerDescribeImageTarget(desc.MediaType)
+	}
+	if info.TargetKind == "Index" && desc.Digest != "" {
+		info.IndexPath = dockerClassicContentPath(h.rt, desc.Digest)
+	}
+
+	manifest := &runtime.ImageManifest{
+		Platform:   formatPlatform(i.Os, i.Architecture, i.Variant),
+		ConfigPath: dockerClassicConfigPath(h.rt, i.ID),
+	}
+
+	// Descriptor digest refers to the target object returned by the daemon.
+	// For single-platform images this is the manifest digest; for indexes it is
+	// the index digest and should not be assigned to the current-platform manifest.
+	if info.TargetKind == "Manifest" && desc.Digest != "" {
+		manifest.Digest = desc.Digest
+		manifest.Path = dockerClassicContentPath(h.rt, desc.Digest)
+	} else if info.TargetKind == "" {
+		for _, rd := range i.RepoDigests {
+			if _, d, ok := strings.Cut(rd, "@"); ok && d != "" {
+				manifest.Digest = d
+				break
+			}
+		}
+	}
+
+	info.Manifest = manifest
+	if info.TargetKind != "Index" {
+		info.Manifests = []*runtime.ImageManifest{manifest}
 	}
 	return info, nil
+}
+
+type dockerRawImageInspect struct {
+	Descriptor dockerRawDescriptor `json:"Descriptor"`
+}
+
+type dockerRawDescriptor struct {
+	MediaType string `json:"mediaType"`
+	Digest    string `json:"digest"`
+}
+
+func dockerInspectDescriptor(raw []byte) dockerRawDescriptor {
+	if len(raw) == 0 {
+		return dockerRawDescriptor{}
+	}
+	var inspect dockerRawImageInspect
+	if err := json.Unmarshal(raw, &inspect); err != nil {
+		return dockerRawDescriptor{}
+	}
+	return inspect.Descriptor
+}
+
+func dockerDescribeImageTarget(mediaType string) (string, string) {
+	kind := ""
+	schema := ""
+	switch {
+	case strings.Contains(mediaType, "manifest.list") || strings.Contains(mediaType, "image.index"):
+		kind = "Index"
+	case strings.Contains(mediaType, "manifest"):
+		kind = "Manifest"
+	}
+	switch {
+	case strings.Contains(mediaType, ".oci."):
+		schema = "OCI"
+	case strings.Contains(mediaType, ".docker."):
+		schema = "Docker"
+	}
+	return kind, schema
+}
+
+func dockerClassicConfigPath(rt *Runtime, imageID string) string {
+	if rt == nil || rt.daemonInfo == nil {
+		return ""
+	}
+	rootDir := strings.TrimSpace(rt.daemonInfo.DockerRootDir)
+	driver := strings.TrimSpace(rt.daemonInfo.Driver)
+	if rootDir == "" || driver == "" {
+		return ""
+	}
+	algorithm, encoded, ok := strings.Cut(strings.TrimSpace(imageID), ":")
+	if !ok || algorithm == "" || encoded == "" {
+		return ""
+	}
+	return filepath.Join(rootDir, "image", driver, "imagedb", "content", algorithm, encoded)
+}
+
+func dockerClassicContentPath(rt *Runtime, digestValue string) string {
+	if rt == nil || rt.daemonInfo == nil {
+		return ""
+	}
+	rootDir := strings.TrimSpace(rt.daemonInfo.DockerRootDir)
+	if rootDir == "" {
+		return ""
+	}
+	algorithm, encoded, ok := strings.Cut(strings.TrimSpace(digestValue), ":")
+	if !ok || algorithm == "" || encoded == "" {
+		return ""
+	}
+	return filepath.Join(rootDir, "content", "data", "blobs", algorithm, encoded)
 }
 
 func formatPlatform(osName, arch, variant string) string {

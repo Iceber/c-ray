@@ -15,7 +15,7 @@ const (
 	ColorBgHeader  = tcell.Color235     // #262626 — subtle dark header band
 	ColorBgTabBar  = tcell.Color236     // #303030 — tab bar strip
 	ColorBgFooter  = tcell.Color235     // #262626 — footer strip
-	ColorBgSelect  = tcell.Color238     // #444444 — selected row / focus
+	ColorBgSelect  = tcell.Color240     // #585858 — selected row / focus
 	ColorBgTabOn   = tcell.Color30      // teal — active tab pill
 	ColorBgTabOff  = tcell.Color237     // #3a3a3a — inactive tab pill
 	ColorBgTagRun  = tcell.Color28      // dark green — running tag
@@ -55,7 +55,8 @@ var (
 	StyleDefault    = tcell.StyleDefault.Foreground(ColorFg).Background(ColorBg)
 	StyleHeader     = tcell.StyleDefault.Foreground(ColorFg).Background(ColorBgHeader)
 	StyleTableHead  = tcell.StyleDefault.Foreground(ColorFgAccent).Background(ColorBg).Bold(true)
-	StyleSelectRow  = tcell.StyleDefault.Foreground(ColorFgBright).Background(ColorBgSelect)
+	StyleSelectRow  = tcell.StyleDefault.Foreground(ColorFgBright).Background(ColorBgSelect).Bold(true)
+	StyleTreeSelect = tcell.StyleDefault.Background(ColorBgSelect).Bold(true) // tree: bg-only, preserves dynamic color tags
 	StyleTreeGraphs = tcell.StyleDefault.Foreground(ColorFgBorder)
 )
 

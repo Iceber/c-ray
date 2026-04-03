@@ -305,6 +305,12 @@ func (h *containerHandle) Storage(ctx context.Context) (*runtime.ContainerStorag
 		}
 	}
 
+	// ReadOnly from OCI spec.
+	h.ensureSpec(ctx)
+	if h.spec != nil && h.spec.Root != nil && h.spec.Root.Readonly {
+		storage.ReadOnly = true
+	}
+
 	// RW layer path.
 	if path, err := rwLayerPathFromMounts(ctx, snapshotter, info.SnapshotKey); err == nil {
 		storage.RWLayerPath = path

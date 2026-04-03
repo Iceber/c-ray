@@ -85,6 +85,7 @@ func (v *NetworkInfoView) renderError(err error) {
 		root.AddChild(components.NewTreeNode(fmt.Sprintf("[%s]Failed to load network: %v[-]", components.ColorName(components.ColorFgError), err)).SetSelectable(false))
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(root)
+		components.ApplyTreeFocusStyle(v.tree, true)
 	})
 }
 
@@ -104,6 +105,7 @@ func (v *NetworkInfoView) renderEmpty() {
 		root.AddChild(components.NewTreeNode(components.Muted("Refresh to resolve sandbox, DNS, interfaces and routes")).SetSelectable(false))
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(root)
+		components.ApplyTreeFocusStyle(v.tree, true)
 	})
 }
 
@@ -114,6 +116,7 @@ func (v *NetworkInfoView) render(netState *runtime.ContainerNetworkState) {
 		queueUpdateDraw(v.app, func() {
 			v.tree.SetRoot(root)
 			v.tree.SetCurrentNode(root)
+			components.ApplyTreeFocusStyle(v.tree, true)
 		})
 		return
 	}
@@ -129,6 +132,7 @@ func (v *NetworkInfoView) render(netState *runtime.ContainerNetworkState) {
 	queueUpdateDraw(v.app, func() {
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(firstNode)
+		components.ApplyTreeFocusStyle(v.tree, true)
 	})
 }
 

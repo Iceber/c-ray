@@ -88,6 +88,7 @@ func (v *RuntimeInfoView) renderError(err error) {
 		root.AddChild(components.NewTreeNode(fmt.Sprintf("[%s]Failed to load runtime: %v[-]", components.ColorName(components.ColorFgError), err)).SetSelectable(false))
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(root)
+		components.ApplyTreeFocusStyle(v.tree, true)
 	})
 }
 
@@ -107,6 +108,7 @@ func (v *RuntimeInfoView) renderEmpty() {
 		root.AddChild(components.NewTreeNode(components.Muted("Refresh to resolve shim, OCI runtime and namespace metadata")).SetSelectable(false))
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(root)
+		components.ApplyTreeFocusStyle(v.tree, true)
 	})
 }
 
@@ -124,6 +126,7 @@ func (v *RuntimeInfoView) render(rt *runtime.RuntimeProfile, config *runtime.Con
 	queueUpdateDraw(v.app, func() {
 		v.tree.SetRoot(root)
 		v.tree.SetCurrentNode(root)
+		components.ApplyTreeFocusStyle(v.tree, true)
 	})
 }
 
