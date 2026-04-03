@@ -100,7 +100,8 @@ func InferCGroupDriver(cgroupPath string) string {
 	if cgroupPath == "" {
 		return ""
 	}
-	if strings.Contains(cgroupPath, ".slice") || strings.Contains(cgroupPath, ".scope") {
+	if strings.Contains(cgroupPath, ".slice") || strings.Contains(cgroupPath, ".scope") ||
+		strings.Contains(cgroupPath, ":cri-containerd:") {
 		return "systemd"
 	}
 	return "cgroupfs"
@@ -152,6 +153,34 @@ func ExistingPath(path string) string {
 		return path
 	}
 	return ""
+}
+
+// ConvertOCIContainerStatus maps OCI/CRI runtime status strings to ContainerStatus.
+func ConvertOCIContainerStatus(status string) ContainerStatus {
+	switch status {
+	case "created":
+		return ContainerStatusCreated
+	case "running":
+		return ContainerStatusRunning
+	case "paused":
+		return ContainerStatusPaused
+	case "stopped":
+		return ContainerStatusStopped
+	default:
+		return ContainerStatusUnknown
+	}
+}
+
+// BuildNamespaceMap builds a namespace-type→path map from an OCI Linux spec.
+func BuildNamespaceMap(spec *runtimespec.Spec) map[string]string {
+	if spec == nil || spec.Linux == nil || len(spec.Linux.Namespaces) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(spec.Linux.Namespaces))
+	for _, ns := range spec.Linux.Namespaces {
+		m[string(ns.Type)] = ns.Path
+	}
+	return m
 }
 
 // SpecToV1Mounts converts OCI spec mounts to runtime.Mount.

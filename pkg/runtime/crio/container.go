@@ -211,7 +211,7 @@ func (h *containerHandle) Info(ctx context.Context) (*runtime.ContainerInfo, err
 		if !h.spoofed {
 			status, _ := h.rt.criClient.InspectContainerStatus(ctx, h.id)
 			if status != nil {
-				info.Status = convertStatus(status.Status)
+				info.Status = runtime.ConvertOCIContainerStatus(status.Status)
 			}
 		}
 		info.PodName = h.cri.labels["io.kubernetes.pod.name"]
@@ -227,6 +227,8 @@ func (h *containerHandle) Info(ctx context.Context) (*runtime.ContainerInfo, err
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig, error) {
+	h.ensureSpec(ctx)
+
 	cfg := &runtime.ContainerConfig{}
 	if store, err := h.rt.getStore(); err == nil {
 		driverName := store.GraphDriverName()
@@ -245,10 +247,10 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 	}
 
 	if h.spec != nil {
-		cfg.Namespaces = buildNamespaceMap(h.spec)
+		cfg.Namespaces = runtime.BuildNamespaceMap(h.spec)
 		if h.spec.Linux != nil && h.spec.Linux.CgroupsPath != "" {
 			cfg.CGroupPath = h.spec.Linux.CgroupsPath
-			cfg.CGroupDriver = inferCGroupDriver(h.spec.Linux.CgroupsPath)
+			cfg.CGroupDriver = runtime.InferCGroupDriver(h.spec.Linux.CgroupsPath)
 		}
 	}
 
@@ -256,7 +258,7 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 	if !h.spoofed {
 		status, _ = h.rt.criClient.InspectContainerStatus(ctx, h.id)
 	}
-	cfg.Environment = buildEnvironment(h.spec, status)
+	cfg.Environment = cri.BuildEnvironment(h.spec, status)
 
 	if cfg.CGroupPath != "" && h.rt.cgroupReader != nil {
 		cfg.CGroupVersion = int(h.rt.cgroupReader.GetVersion())
@@ -285,7 +287,7 @@ func (h *containerHandle) State(ctx context.Context) (*runtime.ContainerState, e
 	} else if h.cri != nil {
 		status, _ := h.rt.criClient.InspectContainerStatus(ctx, h.id)
 		if status != nil {
-			state.Status = convertStatus(status.Status)
+			state.Status = runtime.ConvertOCIContainerStatus(status.Status)
 		} else {
 			state.Status = runtime.ContainerStatusUnknown
 		}
@@ -472,7 +474,7 @@ func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile,
 		}
 	}
 
-	if configPath := existingPath(bundleDir + "/config.json"); configPath != "" {
+	if configPath := runtime.ExistingPath(bundleDir + "/config.json"); configPath != "" {
 		profile.OCI.ConfigPath = configPath
 	}
 

@@ -43,6 +43,13 @@ const (
 	ColorFgTag       = tcell.ColorWhite // tag foreground (on colored bg)
 )
 
+// Namespace status colors for the Info grid view.
+const (
+	ColorNsPrivate = tcell.Color114 // #87af87 green — container private namespace
+	ColorNsPod     = tcell.Color51  // #00ffff cyan — pod-shared namespace
+	ColorNsHost    = tcell.Color214 // #ffaf00 orange — host-shared namespace
+)
+
 // Styles
 var (
 	StyleDefault    = tcell.StyleDefault.Foreground(ColorFg).Background(ColorBg)

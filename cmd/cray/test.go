@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"slices"
@@ -184,31 +186,29 @@ func requireArgN(args []string, n int, usage string) {
 // ---------------------------------------------------------------------------
 
 func listContainers(ctx context.Context, rt runtime.Runtime) {
-	fmt.Println("=== List Containers ===")
 	containers, err := rt.ListContainers(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Found %d containers:\n\n", len(containers))
-	for i, c := range containers {
+	entries := make([]map[string]any, 0, len(containers))
+	for _, c := range containers {
+		entry := map[string]any{"handle_id": c.ID()}
 		info, err := c.Info(ctx)
 		if err != nil {
-			fmt.Printf("[%d] %s  (info error: %v)\n", i+1, c.ID(), err)
+			entry["info_error"] = err.Error()
+			entries = append(entries, entry)
 			continue
 		}
-		fmt.Printf("[%d] Container:\n", i+1)
-		fmt.Printf("  ID:        %s\n", shortID(info.ID))
-		fmt.Printf("  Name:      %s\n", info.Name)
-		fmt.Printf("  Image:     %s\n", info.Image)
-		fmt.Printf("  Status:    %s\n", info.Status)
-		fmt.Printf("  PID:       %d\n", info.PID)
-		if info.PodName != "" {
-			fmt.Printf("  Pod:       %s/%s\n", info.PodNamespace, info.PodName)
-		}
-		fmt.Println()
+		entry["info"] = info
+		entries = append(entries, entry)
 	}
+
+	printJSONSection("List Containers", map[string]any{
+		"count":      len(entries),
+		"containers": entries,
+	})
 }
 
 func containerInfo(ctx context.Context, rt runtime.Runtime, id string) {
@@ -216,16 +216,10 @@ func containerInfo(ctx context.Context, rt runtime.Runtime, id string) {
 	info, err := c.Info(ctx)
 	exitOnErr("Info", err)
 
-	fmt.Printf("=== Container Info: %s ===\n", shortID(id))
-	fmt.Printf("ID:           %s\n", info.ID)
-	fmt.Printf("Name:         %s\n", info.Name)
-	fmt.Printf("Image:        %s\n", info.Image)
-	fmt.Printf("Status:       %s\n", info.Status)
-	fmt.Printf("PID:          %d\n", info.PID)
-	fmt.Printf("CreatedAt:    %s\n", info.CreatedAt.Format("2006-01-02 15:04:05"))
-	if info.PodName != "" {
-		fmt.Printf("Pod:          %s/%s (uid=%s)\n", info.PodNamespace, info.PodName, info.PodUID)
-	}
+	printJSONSection(fmt.Sprintf("Container Info: %s", shortID(id)), map[string]any{
+		"container_id": id,
+		"info":         info,
+	})
 }
 
 func containerConfig(ctx context.Context, rt runtime.Runtime, id string) {
@@ -233,38 +227,10 @@ func containerConfig(ctx context.Context, rt runtime.Runtime, id string) {
 	cfg, err := c.Config(ctx)
 	exitOnErr("Config", err)
 
-	fmt.Printf("=== Container Config: %s ===\n", shortID(id))
-	fmt.Printf("Image:          %s\n", cfg.ImageName)
-	fmt.Printf("Layer Backend:  %s\n", formatLayerBackend(cfg.Backend))
-	fmt.Printf("SnapshotKey:    %s\n", cfg.SnapshotKey)
-	if cfg.CGroupPath != "" {
-		fmt.Printf("CGroup Path:    %s\n", cfg.CGroupPath)
-		fmt.Printf("CGroup Driver:  %s\n", cfg.CGroupDriver)
-		fmt.Printf("CGroup Version: v%d\n", cfg.CGroupVersion)
-	}
-	if cfg.WritableLayerPath != "" {
-		fmt.Printf("Writable Layer: %s\n", cfg.WritableLayerPath)
-	}
-	if len(cfg.Namespaces) > 0 {
-		fmt.Println("\nNamespaces:")
-		for ns, path := range cfg.Namespaces {
-			if path != "" {
-				fmt.Printf("  %-10s %s\n", ns, path)
-			} else {
-				fmt.Printf("  %-10s (new)\n", ns)
-			}
-		}
-	}
-	if len(cfg.Environment) > 0 {
-		fmt.Printf("\nEnvironment (%d vars):\n", len(cfg.Environment))
-		for _, e := range cfg.Environment {
-			tag := ""
-			if e.IsKubernetes {
-				tag = " [k8s]"
-			}
-			fmt.Printf("  %s=%s%s\n", e.Key, truncate(e.Value, 60), tag)
-		}
-	}
+	printJSONSection(fmt.Sprintf("Container Config: %s", shortID(id)), map[string]any{
+		"container_id": id,
+		"config":       cfg,
+	})
 }
 
 func containerState(ctx context.Context, rt runtime.Runtime, id string) {
@@ -272,28 +238,10 @@ func containerState(ctx context.Context, rt runtime.Runtime, id string) {
 	state, err := c.State(ctx)
 	exitOnErr("State", err)
 
-	fmt.Printf("=== Container State: %s ===\n", shortID(id))
-	fmt.Printf("Status:        %s\n", state.Status)
-	fmt.Printf("PID:           %d\n", state.PID)
-	if state.PPID > 0 {
-		fmt.Printf("PPID:          %d\n", state.PPID)
-	}
-	fmt.Printf("Process Count: %d\n", state.ProcessCount)
-	if !state.StartedAt.IsZero() {
-		fmt.Printf("Started:       %s\n", state.StartedAt.Format("2006-01-02 15:04:05"))
-	}
-	if state.RestartCount != nil {
-		fmt.Printf("Restarts:      %d\n", *state.RestartCount)
-	}
-	if state.ExitCode != nil {
-		fmt.Printf("Exit Code:     %d\n", *state.ExitCode)
-	}
-	if state.ExitReason != "" {
-		fmt.Printf("Exit Reason:   %s\n", state.ExitReason)
-	}
-	if !state.ExitedAt.IsZero() {
-		fmt.Printf("Exited At:     %s\n", state.ExitedAt.Format("2006-01-02 15:04:05"))
-	}
+	printJSONSection(fmt.Sprintf("Container State: %s", shortID(id)), map[string]any{
+		"container_id": id,
+		"state":        state,
+	})
 }
 
 func containerRuntime(ctx context.Context, rt runtime.Runtime, id string) {
@@ -301,54 +249,10 @@ func containerRuntime(ctx context.Context, rt runtime.Runtime, id string) {
 	profile, err := c.Runtime(ctx)
 	exitOnErr("Runtime", err)
 
-	fmt.Printf("=== Container Runtime: %s ===\n", shortID(id))
-	if profile.RootFSPath != "" {
-		fmt.Printf("RootFS:          %s\n", profile.RootFSPath)
-	}
-	if oci := profile.OCI; oci != nil {
-		fmt.Println("\n--- OCI ---")
-		fmt.Printf("Runtime Name:    %s\n", oci.RuntimeName)
-		fmt.Printf("Runtime Binary:  %s\n", oci.RuntimeBinary)
-		fmt.Printf("Bundle Dir:      %s\n", oci.BundleDir)
-		fmt.Printf("State Dir:       %s\n", oci.StateDir)
-		if oci.ConfigPath != "" {
-			fmt.Printf("Config Path:     %s\n", oci.ConfigPath)
-		}
-		if oci.SandboxID != "" {
-			fmt.Printf("Sandbox ID:      %s\n", shortID(oci.SandboxID))
-		}
-	}
-	if shim := profile.Shim; shim != nil {
-		fmt.Println("\n--- Shim ---")
-		if shim.BinaryPath != "" {
-			fmt.Printf("Binary:          %s\n", shim.BinaryPath)
-		}
-		if shim.SocketAddress != "" {
-			fmt.Printf("Socket:          %s\n", shim.SocketAddress)
-		}
-		if len(shim.Cmdline) > 0 {
-			fmt.Printf("Cmdline:         %s\n", strings.Join(shim.Cmdline, " "))
-		}
-		if shim.SandboxBundleDir != "" {
-			fmt.Printf("Sandbox Bundle:  %s\n", shim.SandboxBundleDir)
-		}
-	}
-	if conmon := profile.Conmon; conmon != nil {
-		fmt.Println("\n--- Conmon ---")
-		fmt.Printf("PID:             %d\n", conmon.PID)
-		if conmon.BinaryPath != "" {
-			fmt.Printf("Binary:          %s\n", conmon.BinaryPath)
-		}
-		if len(conmon.Cmdline) > 0 {
-			fmt.Printf("Cmdline:         %s\n", strings.Join(conmon.Cmdline, " "))
-		}
-		if conmon.LogDriver != "" {
-			fmt.Printf("Log Driver:      %s\n", conmon.LogDriver)
-		}
-		if conmon.LogPath != "" {
-			fmt.Printf("Log Path:        %s\n", conmon.LogPath)
-		}
-	}
+	printJSONSection(fmt.Sprintf("Container Runtime: %s", shortID(id)), map[string]any{
+		"container_id": id,
+		"runtime":      profile,
+	})
 }
 
 func containerMounts(ctx context.Context, rt runtime.Runtime, id string) {
@@ -356,18 +260,11 @@ func containerMounts(ctx context.Context, rt runtime.Runtime, id string) {
 	mounts, err := c.Mounts(ctx)
 	exitOnErr("Mounts", err)
 
-	fmt.Printf("=== Container Mounts: %s ===\n", shortID(id))
-	fmt.Printf("Found %d mounts:\n\n", len(mounts))
-	for i, m := range mounts {
-		fmt.Printf("[%d] %s -> %s\n", i+1, m.Source, m.Destination)
-		fmt.Printf("    Type: %s  Origin: %s  State: %s\n", m.Type, m.Origin, m.State)
-		if len(m.Options) > 0 {
-			fmt.Printf("    Options: %s\n", strings.Join(m.Options, ","))
-		}
-		if m.Note != "" {
-			fmt.Printf("    Note: %s\n", m.Note)
-		}
-	}
+	printJSONSection(fmt.Sprintf("Container Mounts: %s", shortID(id)), map[string]any{
+		"container_id": id,
+		"count":        len(mounts),
+		"mounts":       mounts,
+	})
 }
 
 func containerNetwork(ctx context.Context, rt runtime.Runtime, id string) {
@@ -375,59 +272,10 @@ func containerNetwork(ctx context.Context, rt runtime.Runtime, id string) {
 	net, err := c.Network(ctx)
 	exitOnErr("Network", err)
 
-	fmt.Printf("=== Container Network: %s ===\n", shortID(id))
-	if net == nil || net.PodNetwork == nil {
-		fmt.Println("No network info available.")
-		return
-	}
-
-	pn := net.PodNetwork
-	fmt.Printf("Sandbox ID:     %s\n", shortID(pn.SandboxID))
-	fmt.Printf("Sandbox State:  %s\n", pn.SandboxState)
-	fmt.Printf("Primary IP:     %s\n", pn.PrimaryIP)
-	if len(pn.AdditionalIPs) > 0 {
-		fmt.Printf("Additional IPs: %s\n", strings.Join(pn.AdditionalIPs, ", "))
-	}
-	fmt.Printf("Host Network:   %v\n", pn.HostNetwork)
-	if pn.NetNSPath != "" {
-		fmt.Printf("NetNS:          %s\n", pn.NetNSPath)
-	}
-	if pn.Hostname != "" {
-		fmt.Printf("Hostname:       %s\n", pn.Hostname)
-	}
-
-	if len(pn.PortMappings) > 0 {
-		fmt.Printf("\nPort Mappings (%d):\n", len(pn.PortMappings))
-		for _, pm := range pn.PortMappings {
-			fmt.Printf("  %s:%d -> %d/%s\n", pm.HostIP, pm.HostPort, pm.ContainerPort, pm.Protocol)
-		}
-	}
-
-	if pn.CNI != nil && len(pn.CNI.Interfaces) > 0 {
-		fmt.Printf("\nCNI Interfaces (%d):\n", len(pn.CNI.Interfaces))
-		for _, iface := range pn.CNI.Interfaces {
-			fmt.Printf("  %s (mac=%s)\n", iface.Name, iface.MAC)
-			for _, addr := range iface.Addresses {
-				fmt.Printf("    %s gw=%s (%s)\n", addr.CIDR, addr.Gateway, addr.Family)
-			}
-		}
-	}
-
-	if len(pn.ObservedInterfaces) > 0 {
-		fmt.Printf("\nObserved Interfaces (%d):\n", len(pn.ObservedInterfaces))
-		fmt.Printf("  %-12s %12s %12s %10s %10s\n", "IFACE", "RX BYTES", "TX BYTES", "RX PKT", "TX PKT")
-		for _, s := range pn.ObservedInterfaces {
-			fmt.Printf("  %-12s %12d %12d %10d %10d\n",
-				s.Interface, s.RxBytes, s.TxBytes, s.RxPackets, s.TxPackets)
-		}
-	}
-
-	if len(pn.Warnings) > 0 {
-		fmt.Printf("\nWarnings:\n")
-		for _, w := range pn.Warnings {
-			fmt.Printf("  - %s\n", w)
-		}
-	}
+	printJSONSection(fmt.Sprintf("Container Network: %s", shortID(id)), map[string]any{
+		"container_id": id,
+		"network":      net,
+	})
 }
 
 func containerStorage(ctx context.Context, rt runtime.Runtime, id string) {
@@ -435,48 +283,23 @@ func containerStorage(ctx context.Context, rt runtime.Runtime, id string) {
 	storage, err := c.Storage(ctx)
 	exitOnErr("Storage", err)
 
-	fmt.Printf("=== Container Storage: %s ===\n", shortID(id))
-	if storage == nil {
-		fmt.Println("No storage info available.")
-		return
-	}
-	if storage.RWLayerPath != "" {
-		fmt.Printf("RW Layer Path:  %s\n", storage.RWLayerPath)
-	}
-
 	rwStats, _ := c.RWLayerStats(ctx)
-	if rwStats.RWLayerUsage > 0 {
-		fmt.Printf("RW Usage:       %s (%d inodes)\n", formatBytes(rwStats.RWLayerUsage), rwStats.RWLayerInodes)
-	}
-
-	if len(storage.ReadOnlyLayers) > 0 {
-		fmt.Printf("\nRead-Only Layers (%d):\n", len(storage.ReadOnlyLayers))
-		for i := len(storage.ReadOnlyLayers) - 1; i >= 0; i-- {
-			l := storage.ReadOnlyLayers[i]
-			fmt.Printf("  [%d/%d] %s\n", l.Index, len(storage.ReadOnlyLayers), truncate(l.CompressedDigest, 24))
-			fmt.Printf("         Size: %s  Disk: %s\n",
-				formatContentSize(l.Size, l.CompressionType), formatBytes(l.UsageSize))
-			if l.Path != "" {
-				fmt.Printf("         Path: %s\n", l.Path)
-			}
-			if l.Crio != nil {
-				if len(l.Crio.Names) > 0 {
-					fmt.Printf("         Names: %s\n", strings.Join(l.Crio.Names, ", "))
-				}
-				if l.Crio.OverlayLinkID != "" {
-					fmt.Printf("         Link:  %s\n", l.Crio.OverlayLinkID)
-				}
-			}
-		}
-	}
 
 	// CRI-O extended storage introspection (auto-detected).
+	var crioInfo *runtimecrio.ContainerInfo
 	if inspector, ok := c.(runtimecrio.ContainerIntrospector); ok {
-		crioInfo, err := inspector.CRIOContainerInfo(ctx)
-		if err == nil {
-			printCRIOContainerStorage(id, crioInfo)
+		crioInfo, err = inspector.CRIOContainerInfo(ctx)
+		if err != nil {
+			crioInfo = nil
 		}
 	}
+
+	printJSONSection(fmt.Sprintf("Container Storage: %s", shortID(id)), map[string]any{
+		"container_id":   id,
+		"storage":        storage,
+		"rw_layer_stats": rwStats,
+		"crio_storage":   crioInfo,
+	})
 }
 
 func containerProcesses(ctx context.Context, rt runtime.Runtime, id string) {
@@ -484,21 +307,17 @@ func containerProcesses(ctx context.Context, rt runtime.Runtime, id string) {
 	procs, err := c.Processes(ctx)
 	exitOnErr("Processes", err)
 
-	fmt.Printf("=== Container Processes: %s ===\n", shortID(id))
-	fmt.Printf("Found %d processes:\n\n", len(procs))
-	for i, p := range procs {
-		fmt.Printf("[%d] PID: %d  PPID: %d  State: %s\n", i+1, p.PID, p.PPID, p.State)
-		fmt.Printf("    Command: %s\n", p.Command)
-		if len(p.Args) > 0 {
-			fmt.Printf("    Args: %s\n", strings.Join(p.Args, " "))
-		}
+	stats, err := c.ProcessStats(ctx)
+	if err != nil {
+		stats = nil
 	}
 
-	stats, err := c.ProcessStats(ctx)
-	if err == nil && stats != nil {
-		fmt.Printf("\n--- Top Process ---\n")
-		printProcessStats(stats, 0)
-	}
+	printJSONSection(fmt.Sprintf("Container Processes: %s", shortID(id)), map[string]any{
+		"container_id": id,
+		"count":        len(procs),
+		"processes":    procs,
+		"top_process":  stats,
+	})
 }
 
 func containerProcessStatsByPID(ctx context.Context, rt runtime.Runtime, id, pid string) {
@@ -506,12 +325,11 @@ func containerProcessStatsByPID(ctx context.Context, rt runtime.Runtime, id, pid
 	stats, err := c.GetProcessStats(ctx, pid)
 	exitOnErr("GetProcessStats", err)
 
-	fmt.Printf("=== Process Stats: container=%s pid=%s ===\n", shortID(id), pid)
-	if stats == nil {
-		fmt.Println("No stats available.")
-		return
-	}
-	printProcessStats(stats, 0)
+	printJSONSection(fmt.Sprintf("Process Stats: container=%s pid=%s", shortID(id), pid), map[string]any{
+		"container_id": id,
+		"pid":          pid,
+		"stats":        stats,
+	})
 }
 
 func containerImage(ctx context.Context, rt runtime.Runtime, id string) {
@@ -524,22 +342,12 @@ func containerImage(ctx context.Context, rt runtime.Runtime, id string) {
 	cfg, err := img.Config(ctx)
 	exitOnErr("Image.Config", err)
 
-	fmt.Printf("=== Container Image: %s ===\n", shortID(id))
-	fmt.Printf("Ref:       %s\n", img.Ref())
-	fmt.Printf("Name:      %s\n", info.Name)
-	fmt.Printf("Digest:    %s\n", info.Digest)
-	fmt.Printf("Size:      %s\n", formatBytes(info.Size))
-	fmt.Printf("Created:   %s\n", info.CreatedAt.Format("2006-01-02 15:04:05"))
-
-	if cfg == nil {
-		return
-	}
-
-	fmt.Println("\n--- Image Config ---")
-	fmt.Printf("Content Path:    %s\n", cfg.ContentPath)
-	fmt.Printf("Target Media:    %s\n", cfg.TargetMediaType)
-	fmt.Printf("Target Kind:     %s\n", cfg.TargetKind)
-	fmt.Printf("Schema:          %s\n", cfg.Schema)
+	printJSONSection(fmt.Sprintf("Container Image: %s", shortID(id)), map[string]any{
+		"container_id": id,
+		"ref":          img.Ref(),
+		"info":         info,
+		"config":       cfg,
+	})
 }
 
 func containerAll(ctx context.Context, rt runtime.Runtime, id string) {
@@ -567,27 +375,29 @@ func containerAll(ctx context.Context, rt runtime.Runtime, id string) {
 // ---------------------------------------------------------------------------
 
 func listImages(ctx context.Context, rt runtime.Runtime) {
-	fmt.Println("=== List Images ===")
 	images, err := rt.ListImages(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Found %d images:\n\n", len(images))
-	for i, img := range images {
+	entries := make([]map[string]any, 0, len(images))
+	for _, img := range images {
+		entry := map[string]any{"ref": img.Ref()}
 		info, err := img.Info(ctx)
 		if err != nil {
-			fmt.Printf("[%d] %s  (info error: %v)\n", i+1, img.Ref(), err)
+			entry["info_error"] = err.Error()
+			entries = append(entries, entry)
 			continue
 		}
-		fmt.Printf("[%d] Image:\n", i+1)
-		fmt.Printf("  Name:    %s\n", info.Name)
-		fmt.Printf("  Digest:  %s\n", truncate(info.Digest, 24))
-		fmt.Printf("  Size:    %s\n", formatBytes(info.Size))
-		fmt.Printf("  Created: %s\n", info.CreatedAt.Format("2006-01-02 15:04:05"))
-		fmt.Println()
+		entry["info"] = info
+		entries = append(entries, entry)
 	}
+
+	printJSONSection("List Images", map[string]any{
+		"count":  len(entries),
+		"images": entries,
+	})
 }
 
 func imageInfo(ctx context.Context, rt runtime.Runtime, ref string) {
@@ -595,19 +405,20 @@ func imageInfo(ctx context.Context, rt runtime.Runtime, ref string) {
 	info, err := img.Info(ctx)
 	exitOnErr("Info", err)
 
-	fmt.Printf("=== Image Info: %s ===\n", ref)
-	fmt.Printf("Name:      %s\n", info.Name)
-	fmt.Printf("Digest:    %s\n", info.Digest)
-	fmt.Printf("Size:      %s\n", formatBytes(info.Size))
-	fmt.Printf("Created:   %s\n", info.CreatedAt.Format("2006-01-02 15:04:05"))
-
 	// CRI-O extended image introspection (auto-detected).
+	var crioInfo *runtimecrio.ImageInfo
 	if inspector, ok := img.(runtimecrio.ImageIntrospector); ok {
-		crioInfo, err := inspector.CRIOImageInfo(ctx)
-		if err == nil {
-			printCRIOImageStorage(ref, crioInfo)
+		crioInfo, err = inspector.CRIOImageInfo(ctx)
+		if err != nil {
+			crioInfo = nil
 		}
 	}
+
+	printJSONSection(fmt.Sprintf("Image Info: %s", ref), map[string]any{
+		"ref":          ref,
+		"info":         info,
+		"crio_storage": crioInfo,
+	})
 }
 
 func imageConfig(ctx context.Context, rt runtime.Runtime, ref string) {
@@ -615,15 +426,10 @@ func imageConfig(ctx context.Context, rt runtime.Runtime, ref string) {
 	cfg, err := img.Config(ctx)
 	exitOnErr("Config", err)
 
-	fmt.Printf("=== Image Config: %s ===\n", ref)
-	if cfg == nil {
-		fmt.Println("No config available.")
-		return
-	}
-	fmt.Printf("Content Path:    %s\n", cfg.ContentPath)
-	fmt.Printf("Target Media:    %s\n", cfg.TargetMediaType)
-	fmt.Printf("Target Kind:     %s\n", cfg.TargetKind)
-	fmt.Printf("Schema:          %s\n", cfg.Schema)
+	printJSONSection(fmt.Sprintf("Image Config: %s", ref), map[string]any{
+		"ref":    ref,
+		"config": cfg,
+	})
 }
 
 func imageLayers(ctx context.Context, rt runtime.Runtime, ref, snapshotter string) {
@@ -631,73 +437,26 @@ func imageLayers(ctx context.Context, rt runtime.Runtime, ref, snapshotter strin
 	layers, err := img.Layers(ctx, runtime.LayerQuery{Snapshotter: snapshotter})
 	exitOnErr("Layers", err)
 
-	fmt.Printf("=== Image Layers: %s ===\n", ref)
-	fmt.Printf("Found %d layers:\n\n", len(layers))
-
-	for i := len(layers) - 1; i >= 0; i-- {
-		l := layers[i]
-		fmt.Printf("[Layer %d/%d]\n", l.Index, len(layers))
-		fmt.Printf("  Compressed:    %s\n", truncate(l.CompressedDigest, 24))
-		fmt.Printf("  Uncompressed:  %s\n", truncate(l.UncompressedDigest, 24))
-		fmt.Printf("  Size:          %s\n", formatContentSize(l.Size, l.CompressionType))
-		if l.UsageSize > 0 {
-			fmt.Printf("  Disk Usage:    %s (%d inodes)\n", formatBytes(l.UsageSize), l.UsageInodes)
-		}
-		if l.Path != "" {
-			fmt.Printf("  Path:          %s\n", l.Path)
-		}
-		if l.Containerd != nil {
-			if l.Containerd.ContentPath != "" {
-				fmt.Printf("  Content Path:  %s\n", l.Containerd.ContentPath)
-			}
-			if l.Containerd.SnapshotKey != "" {
-				fmt.Printf("  Snapshot Key:  %s\n", l.Containerd.SnapshotKey)
-			}
-		}
-		if l.Crio != nil {
-			if len(l.Crio.Names) > 0 {
-				fmt.Printf("  Names:         %s\n", strings.Join(l.Crio.Names, ", "))
-			}
-			if l.Crio.OverlayLinkID != "" {
-				fmt.Printf("  Link:          %s\n", l.Crio.OverlayLinkID)
-			}
-		}
-		fmt.Println()
-	}
+	printJSONSection(fmt.Sprintf("Image Layers: %s", ref), map[string]any{
+		"ref":         ref,
+		"snapshotter": snapshotter,
+		"count":       len(layers),
+		"layers":      layers,
+	})
 }
 
 func runtimeInfo(ctx context.Context, rt runtime.Runtime) {
 	if inspector, ok := rt.(runtimecrio.StoreIntrospector); ok {
 		info, err := inspector.CRIOStoreInfo(ctx)
 		exitOnErr("CRI-O store info", err)
-
-		fmt.Println("=== Runtime Info (CRI-O) ===")
-		fmt.Printf("Graph Root:       %s\n", info.GraphRoot)
-		fmt.Printf("Run Root:         %s\n", info.RunRoot)
-		fmt.Printf("Image Store:      %s\n", emptyDash(info.ImageStore))
-		fmt.Printf("Driver:           %s\n", info.GraphDriverName)
-		fmt.Printf("Transient Store:  %v\n", info.TransientStore)
-		if len(info.GraphOptions) > 0 {
-			fmt.Printf("Graph Options:    %s\n", strings.Join(info.GraphOptions, ", "))
-		}
-		if len(info.PullOptions) > 0 {
-			fmt.Printf("Pull Options:     %s\n", formatStringMap(info.PullOptions))
-		}
-		if len(info.AdditionalImageStores) > 0 {
-			fmt.Printf("Additional Image Stores: %s\n", strings.Join(info.AdditionalImageStores, ", "))
-		}
-		if len(info.AdditionalLayerStores) > 0 {
-			fmt.Printf("Additional Layer Stores: %s\n", strings.Join(info.AdditionalLayerStores, ", "))
-		}
-		if len(info.DriverStatus) > 0 {
-			fmt.Println("\nDriver Status:")
-			for _, key := range sortedStringKeys(info.DriverStatus) {
-				fmt.Printf("  %-20s %s\n", key, info.DriverStatus[key])
-			}
-		}
+		printJSONSection("Runtime Info (CRI-O)", map[string]any{
+			"runtime": "crio",
+			"store":   info,
+		})
 	} else {
-		fmt.Println("=== Runtime Info ===")
-		fmt.Println("No extended runtime introspection available for current backend.")
+		printJSONSection("Runtime Info", map[string]any{
+			"message": "No extended runtime introspection available for current backend.",
+		})
 	}
 }
 
@@ -929,34 +688,40 @@ func printCRIOImageStorage(ref string, info *runtimecrio.ImageInfo) {
 // ---------------------------------------------------------------------------
 
 func listPods(ctx context.Context, rt runtime.Runtime) {
-	fmt.Println("=== List Pods ===")
 	pods, err := rt.ListPods(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Found %d pods:\n\n", len(pods))
-	for i, pod := range pods {
+	entries := make([]map[string]any, 0, len(pods))
+	for _, pod := range pods {
+		entry := map[string]any{"uid": pod.UID()}
 		info, err := pod.Info(ctx)
 		if err != nil {
-			fmt.Printf("[%d] %s  (info error: %v)\n", i+1, pod.UID(), err)
+			entry["info_error"] = err.Error()
+			entries = append(entries, entry)
 			continue
 		}
 		containers, _ := pod.Containers(ctx)
-		fmt.Printf("[%d] Pod:\n", i+1)
-		fmt.Printf("  Name:       %s\n", info.Name)
-		fmt.Printf("  Namespace:  %s\n", info.Namespace)
-		fmt.Printf("  UID:        %s\n", info.UID)
-		fmt.Printf("  Containers: %d\n", len(containers))
-		for j, c := range containers {
+		containerEntries := make([]map[string]any, 0, len(containers))
+		for _, c := range containers {
+			containerEntry := map[string]any{"handle_id": c.ID()}
 			cInfo, _ := c.Info(ctx)
 			if cInfo != nil {
-				fmt.Printf("    [%d] %s (%s)\n", j+1, cInfo.Name, cInfo.Status)
+				containerEntry["info"] = cInfo
 			}
+			containerEntries = append(containerEntries, containerEntry)
 		}
-		fmt.Println()
+		entry["info"] = info
+		entry["containers"] = containerEntries
+		entries = append(entries, entry)
 	}
+
+	printJSONSection("List Pods", map[string]any{
+		"count": len(entries),
+		"pods":  entries,
+	})
 }
 
 func podInfo(ctx context.Context, rt runtime.Runtime, uid string) {
@@ -978,29 +743,27 @@ func podInfo(ctx context.Context, rt runtime.Runtime, uid string) {
 	info, err := target.Info(ctx)
 	exitOnErr("Pod.Info", err)
 
-	fmt.Printf("=== Pod Info: %s ===\n", uid)
-	fmt.Printf("Name:       %s\n", info.Name)
-	fmt.Printf("Namespace:  %s\n", info.Namespace)
-	fmt.Printf("UID:        %s\n", info.UID)
-
 	containers, err := target.Containers(ctx)
 	exitOnErr("Pod.Containers", err)
 
-	fmt.Printf("Containers: %d\n\n", len(containers))
-	for i, c := range containers {
+	containerEntries := make([]map[string]any, 0, len(containers))
+	for _, c := range containers {
+		entry := map[string]any{"handle_id": c.ID()}
 		cInfo, err := c.Info(ctx)
 		if err != nil {
-			fmt.Printf("[%d] %s  (info error: %v)\n", i+1, c.ID(), err)
+			entry["info_error"] = err.Error()
+			containerEntries = append(containerEntries, entry)
 			continue
 		}
-		fmt.Printf("[%d] Container:\n", i+1)
-		fmt.Printf("  ID:      %s\n", shortID(cInfo.ID))
-		fmt.Printf("  Name:    %s\n", cInfo.Name)
-		fmt.Printf("  Image:   %s\n", cInfo.Image)
-		fmt.Printf("  Status:  %s\n", cInfo.Status)
-		fmt.Printf("  PID:     %d\n", cInfo.PID)
-		fmt.Println()
+		entry["info"] = cInfo
+		containerEntries = append(containerEntries, entry)
 	}
+
+	printJSONSection(fmt.Sprintf("Pod Info: %s", uid), map[string]any{
+		"uid":        uid,
+		"info":       info,
+		"containers": containerEntries,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,6 +793,27 @@ func exitOnErr(label string, err error) {
 		fmt.Fprintf(os.Stderr, "%s error: %v\n", label, err)
 		os.Exit(1)
 	}
+}
+
+func printJSONSection(title string, value any) {
+	fmt.Printf("=== %s ===\n", title)
+	data, err := marshalPrettyJSON(value)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "JSON encode error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(data))
+}
+
+func marshalPrettyJSON(value any) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 func shortID(id string) string {

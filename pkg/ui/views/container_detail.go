@@ -41,7 +41,7 @@ type ContainerDetailView struct {
 	content    *tview.Pages
 	footer     *components.Footer
 
-	summaryView    *DetailSummaryView
+	summaryView    *DetailGridView
 	processesView  *ProcessesView
 	filesystemView *StorageView
 	runtimeView    *RuntimeInfoView
@@ -79,7 +79,7 @@ func (v *ContainerDetailView) setupLayout() {
 	// Footer
 	v.footer = components.NewFooter()
 
-	v.summaryView = NewDetailSummaryView(v.app)
+	v.summaryView = NewDetailGridView(v.app)
 	v.processesView = NewProcessesView(v.app, v.ctx)
 	v.filesystemView = NewStorageView(v.app, v.ctx)
 	v.runtimeView = NewRuntimeInfoView(v.app)
@@ -355,6 +355,8 @@ func (v *ContainerDetailView) updateFooter() {
 		{Key: "r", Action: "refresh"},
 	}
 	switch v.activeTab {
+	case DetailTabSummary:
+		hints = append(hints, components.FooterHint{Key: "p/f", Action: "focus panes"}, components.FooterHint{Key: "e", Action: "toggle"})
 	case DetailTabProcesses:
 		hints = append(hints, components.FooterHint{Key: "s/g/t", Action: "process tabs"}, components.FooterHint{Key: "[/]", Action: "cycle"})
 	case DetailTabFilesystem:

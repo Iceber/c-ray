@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/icebergu/c-ray/pkg/runtime"
-	"github.com/icebergu/c-ray/pkg/runtime/cri"
 	"github.com/icebergu/c-ray/pkg/sysinfo"
 	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
 )
@@ -53,10 +52,6 @@ func buildSupplementFromSpecAnnotations(spec *runtimespec.Spec) *criContainerSup
 		labels:       labels,
 		annotations:  ann,
 	}
-}
-
-func existingPath(path string) string {
-	return runtime.ExistingPath(path)
 }
 
 // ---------------------------------------------------------------------------
@@ -110,76 +105,8 @@ func isConmonProcess(exePath string, cmdline []string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Container name helpers
-// ---------------------------------------------------------------------------
-
-func containerName(name string, labels map[string]string, id string) string {
-	if k8sName, ok := labels["io.kubernetes.container.name"]; ok {
-		return k8sName
-	}
-	if name != "" {
-		return name
-	}
-	if n, ok := labels["name"]; ok {
-		return n
-	}
-	if len(id) >= 12 {
-		return id[:12]
-	}
-	return id
-}
-
-func convertStatus(status string) runtime.ContainerStatus {
-	switch status {
-	case "created":
-		return runtime.ContainerStatusCreated
-	case "running":
-		return runtime.ContainerStatusRunning
-	case "paused":
-		return runtime.ContainerStatusPaused
-	case "stopped":
-		return runtime.ContainerStatusStopped
-	default:
-		return runtime.ContainerStatusUnknown
-	}
-}
-
-// ---------------------------------------------------------------------------
 // OCI spec helpers
 // ---------------------------------------------------------------------------
-
-func buildNamespaceMap(spec *runtimespec.Spec) map[string]string {
-	if spec == nil || spec.Linux == nil || len(spec.Linux.Namespaces) == 0 {
-		return nil
-	}
-	m := make(map[string]string, len(spec.Linux.Namespaces))
-	for _, ns := range spec.Linux.Namespaces {
-		m[string(ns.Type)] = ns.Path
-	}
-	return m
-}
-
-func buildEnvironment(spec *runtimespec.Spec, criStatus *cri.ContainerStatus) []runtime.EnvVar {
-	if spec != nil && spec.Process != nil && len(spec.Process.Env) > 0 {
-		return runtime.ParseEnvVars(spec.Process.Env)
-	}
-	if criStatus != nil && len(criStatus.Envs) > 0 {
-		envs := make([]runtime.EnvVar, 0, len(criStatus.Envs))
-		for _, e := range criStatus.Envs {
-			envs = append(envs, runtime.EnvVar{
-				Key:          e.Key,
-				Value:        e.Value,
-				IsKubernetes: runtime.IsKubernetesEnvKey(e.Key),
-			})
-		}
-		return envs
-	}
-	return nil
-}
-
-func inferCGroupDriver(path string) string {
-	return runtime.InferCGroupDriver(path)
-}
 
 var nsPathFromSpec = runtime.NsPathFromSpec
 
@@ -232,21 +159,4 @@ func resolveRootFSPath(rt *Runtime, pid uint32) string {
 	return rootMount.Source
 }
 
-// ---------------------------------------------------------------------------
-// PodInfo type (needed by client.go ListPods)
-// ---------------------------------------------------------------------------
-
 type PodInfo = runtime.PodInfo
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}

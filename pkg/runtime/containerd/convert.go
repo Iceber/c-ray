@@ -137,8 +137,6 @@ func computeShimSocketAddress(stateDir, namespace, id string) string {
 	return fmt.Sprintf("unix:///%s/s/%x", stateDir, sum)
 }
 
-var existingPathCheck = runtime.ExistingPath
-
 // ---------------------------------------------------------------------------
 // Pod network building
 // ---------------------------------------------------------------------------

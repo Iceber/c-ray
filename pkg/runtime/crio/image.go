@@ -215,7 +215,7 @@ func resolveConfigPath(store cstorage.Store, img *cstorage.Image, name, imageDir
 		return ""
 	}
 	path := filepath.Join(imageDir, imageBigDataBaseName(name))
-	if existingPath(path) != "" {
+	if runtime.ExistingPath(path) != "" {
 		return path
 	}
 	return ""

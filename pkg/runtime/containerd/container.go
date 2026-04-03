@@ -136,7 +136,7 @@ func (h *containerHandle) Info(ctx context.Context) (*runtime.ContainerInfo, err
 		if err != nil {
 			ci.Status = runtime.ContainerStatusUnknown
 		} else {
-			ci.Status = convertStatus(string(status.Status))
+			ci.Status = runtime.ConvertOCIContainerStatus(string(status.Status))
 		}
 	}
 
@@ -164,7 +164,7 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 	cfg := &runtime.ContainerConfig{
 		ImageName:   info.Image,
 		SnapshotKey: info.SnapshotKey,
-		Namespaces:  buildNamespaceMap(spec),
+		Namespaces:  runtime.BuildNamespaceMap(spec),
 	}
 	if info.Snapshotter != "" {
 		cfg.Backend = &runtime.LayerBackend{
@@ -175,10 +175,10 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 
 	if spec.Linux != nil && spec.Linux.CgroupsPath != "" {
 		cfg.CGroupPath = spec.Linux.CgroupsPath
-		cfg.CGroupDriver = inferCGroupDriver(spec.Linux.CgroupsPath)
+		cfg.CGroupDriver = runtime.InferCGroupDriver(spec.Linux.CgroupsPath)
 	}
 
-	cfg.Environment = buildEnvironment(spec, h.criStatus)
+	cfg.Environment = cri.BuildEnvironment(spec, h.criStatus)
 
 	// CGroup version from reader.
 	if cfg.CGroupPath != "" && h.rt.cgroupReader != nil {
@@ -217,7 +217,7 @@ func (h *containerHandle) State(ctx context.Context) (*runtime.ContainerState, e
 	} else {
 		state.PID = task.Pid()
 		if status, err := task.Status(ctx); err == nil {
-			state.Status = convertStatus(string(status.Status))
+			state.Status = runtime.ConvertOCIContainerStatus(string(status.Status))
 		} else {
 			state.Status = runtime.ContainerStatusUnknown
 		}
@@ -375,7 +375,7 @@ func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile,
 	if runtimeBinary := resolveRuntimeBinary(info.Runtime); runtimeBinary != "" {
 		profile.OCI.RuntimeBinary = runtimeBinary
 	}
-	if configPath := existingPath(bundleDir + "/config.json"); configPath != "" {
+	if configPath := runtime.ExistingPath(bundleDir + "/config.json"); configPath != "" {
 		profile.OCI.ConfigPath = configPath
 	}
 
@@ -498,79 +498,6 @@ func containerName(info containers.Container) string {
 	return info.ID
 }
 
-func convertStatus(status string) runtime.ContainerStatus {
-	switch status {
-	case "created":
-		return runtime.ContainerStatusCreated
-	case "running":
-		return runtime.ContainerStatusRunning
-	case "paused":
-		return runtime.ContainerStatusPaused
-	case "stopped":
-		return runtime.ContainerStatusStopped
-	default:
-		return runtime.ContainerStatusUnknown
-	}
-}
-
-func buildNamespaceMap(spec *runtimespec.Spec) map[string]string {
-	if spec == nil || spec.Linux == nil || len(spec.Linux.Namespaces) == 0 {
-		return nil
-	}
-	m := make(map[string]string, len(spec.Linux.Namespaces))
-	for _, ns := range spec.Linux.Namespaces {
-		m[string(ns.Type)] = ns.Path
-	}
-	return m
-}
-
-func buildEnvironment(spec *runtimespec.Spec, criStatus *cri.ContainerStatus) []runtime.EnvVar {
-	if spec != nil && spec.Process != nil && len(spec.Process.Env) > 0 {
-		return parseSpecEnv(spec.Process.Env)
-	}
-	if criStatus != nil && len(criStatus.Envs) > 0 {
-		envs := make([]runtime.EnvVar, 0, len(criStatus.Envs))
-		for _, e := range criStatus.Envs {
-			envs = append(envs, runtime.EnvVar{
-				Key:          e.Key,
-				Value:        e.Value,
-				IsKubernetes: isKubernetesEnvKey(e.Key),
-			})
-		}
-		return envs
-	}
-	return nil
-}
-
-func parseSpecEnv(envEntries []string) []runtime.EnvVar {
-	envs := make([]runtime.EnvVar, 0, len(envEntries))
-	for _, entry := range envEntries {
-		key, value, found := strings.Cut(entry, "=")
-		if !found || key == "" {
-			continue
-		}
-		envs = append(envs, runtime.EnvVar{
-			Key:          key,
-			Value:        value,
-			IsKubernetes: isKubernetesEnvKey(key),
-		})
-	}
-	return envs
-}
-
-func isKubernetesEnvKey(key string) bool {
-	return strings.HasPrefix(key, "KUBERNETES_") ||
-		strings.HasPrefix(key, "POD_") ||
-		strings.HasPrefix(key, "SERVICE_")
-}
-
-func inferCGroupDriver(path string) string {
-	if strings.Contains(path, ".slice") || strings.Contains(path, ":cri-containerd:") {
-		return "systemd"
-	}
-	return "cgroupfs"
-}
-
 // ---------------------------------------------------------------------------
 // Snapshot helpers
 // ---------------------------------------------------------------------------
@@ -677,11 +604,6 @@ func resolveSpecRootPath(rootPath, bundleDir string) string {
 		return rootPath
 	}
 	return filepath.Join(bundleDir, rootPath)
-}
-
-func existingPath(path string) string {
-	// We import os lazily here through the helper.
-	return existingPathCheck(path)
 }
 
 // Compile-time interface check.
