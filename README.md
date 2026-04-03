@@ -1,70 +1,78 @@
 # c-ray
 
-一个容器管理 TUI 工具，提供深度运行时 introspection 能力。支持 **containerd**、**CRI-O**、**Docker**（Classic / containerd image store）以及 **Docker Desktop on macOS**。
+A container management TUI with deep runtime introspection capabilities. Supports **containerd**, **CRI-O**, **Docker** (Classic / containerd image store), and **Docker Desktop on macOS**.
 
-## 功能特性
+## Screenshots
 
-### 容器管理
-- 📦 **容器列表**: ID、名称、镜像、状态、运行时间、Pod 关联
-- 🌲 **容器树形视图**: 层级化展示 Pod 与容器关系
-- 📊 **容器详情页**:
-  - 基本信息汇总（状态、PID、启动时间、重启次数）
-  - 环境变量（支持 Kubernetes 标记）
-  - 进程 Top 视图（CPU、内存、RSS 实时监控）
-  - 进程树展示（层级进程关系）
-  - 进程列表（详细信息）
-  - 挂载卷浏览（带来源追踪和状态标记）
-  - 镜像层查看（快照、压缩信息、磁盘占用）
-  - 网络信息（CNI、DNS、端口映射、多 IP）
-  - 运行时信息（OCI 配置、runc 状态、CRI 元数据）
-  - 存储信息（可写层、快照使用量）
+### Container Detail View
+![Container Info](docs/container-info.png)
 
-### 镜像管理
-- 🖼️ **镜像列表**: 名称、Digest、大小、创建时间
-- 📐 **镜像详情**: 标签、配置信息、内容路径
-- 🥞 **镜像层分析**:
-  - 分层结构可视化
-  - 压缩/未压缩 Digest
-  - 快照存储状态
-  - 磁盘占用统计
-  - 容器层叠加展示
+### Container Layers View
+![Container Layers](docs/container-layers.png)
 
-### Pod 管理
-- 🎯 **Pod 列表**: 名称、命名空间、UID、容器数量
-- 🔗 **Pod 关联**: 容器与 Pod 的双向导航
+## Features
 
-### 深度运行时 Introspection
-- **CRI 元数据集成**: 从 CRI 获取挂载、网络、状态信息
-- **挂载来源追踪**:
-  - `cri`: CRI 配置的挂载
-  - `runtime-default`: 运行时默认挂载
-  - `live-extra`: 运行时动态添加的挂载
-- **挂载状态**: `declared+live` / `declared-only` / `live-only`
-- **CNI 网络详情**: 接口、路由、DNS、端口映射
-- **进程资源监控**: CPU 使用率、内存 RSS、内存百分比
+### Container Management
+- **Container List**: ID, name, image, status, uptime, Pod association
+- **Container Tree View**: Hierarchical display of Pod and container relationships
+- **Container Detail Pages**:
+  - Summary (status, PID, start time, restart count)
+  - Environment variables (with Kubernetes annotations)
+  - Process Top view (CPU, memory, RSS real-time monitoring)
+  - Process tree (hierarchical process relationships)
+  - Process list (detailed information)
+  - Mount browser (with source tracking and status markers)
+  - Image layers viewer (snapshots, compression info, disk usage)
+  - Network info (CNI, DNS, port mappings, multiple IPs)
+  - Runtime info (OCI config, runc state, CRI metadata)
+  - Storage info (writable layer, snapshot usage)
 
-## 支持的运行时
+### Image Management
+- **Image List**: Name, digest, size, creation time
+- **Image Details**: Tags, config, content path
+- **Image Layer Analysis**:
+  - Layer structure visualization
+  - Compressed/uncompressed digests
+  - Snapshot storage status
+  - Disk usage statistics
+  - Container layer overlay display
 
-c-ray 通过统一抽象层对接多种容器运行时，自动探测可用的 socket 并按以下顺序选择对应后端：CRI-O，支持 CRI 的 containerd，Docker，最后尝试普通 containerd。若全部探测失败，会直接报错，并提示使用 `-socket` 或 `CRAY_SOCKET` 显式指定。
+### Pod Management
+- **Pod List**: Name, namespace, UID, container count
+- **Pod Association**: Bidirectional navigation between containers and Pods
 
-| 运行时 | Socket 路径 | 数据来源 | 说明 |
-|--------|------------|---------|------|
-| **containerd** | `/run/containerd/containerd.sock` | containerd API + CRI | 原生 containerd，支持 namespace 隔离，适用于 Kubernetes 节点 |
-| **CRI-O** | `/run/crio/crio.sock` | containers/storage + CRI | 使用 containers/storage 库直读存储元数据，CRI 补充运行时状态 |
-| **Docker (Classic)** | `/var/run/docker.sock` | Docker Engine API | 传统 Docker graphdriver 模式（overlay2 等） |
-| **Docker (containerd)** | `/var/run/docker.sock` | Docker Engine API + containerd | 检测到 containerd snapshotter 时自动委托镜像操作给 containerd |
-| **Docker Desktop (macOS)** | N/A（通过 launcher 桥接） | Docker Desktop VM 内的 Docker socket | macOS 上通过 launcher 在 Docker 容器内 chroot 执行 Linux 二进制 |
+### Deep Runtime Introspection
+- **CRI Metadata Integration**: Mounts, network, and state info from CRI
+- **Mount Source Tracking**:
+  - `cri`: CRI-configured mounts
+  - `runtime-default`: Runtime default mounts
+  - `live-extra`: Runtime dynamically added mounts
+- **Mount Status**: `declared+live` / `declared-only` / `live-only`
+- **CNI Network Details**: Interfaces, routes, DNS, port mappings
+- **Process Resource Monitoring**: CPU usage, memory RSS, memory percentage
 
-### 运行时详情
+## Supported Runtimes
+
+c-ray connects to multiple container runtimes through a unified abstraction layer. It automatically detects available sockets and selects the backend in this order: CRI-O, CRI-enabled containerd, Docker, and finally plain containerd. If all detection fails, it will error out and prompt you to use `-socket` or `CRAY_SOCKET` to specify explicitly.
+
+| Runtime | Socket Path | Data Source | Notes |
+|---------|-------------|-------------|-------|
+| **containerd** | `/run/containerd/containerd.sock` | containerd API + CRI | Native containerd with namespace isolation, suitable for Kubernetes nodes |
+| **CRI-O** | `/run/crio/crio.sock` | containers/storage + CRI | Uses containers/storage library for direct storage metadata access, CRI supplements runtime state |
+| **Docker (Classic)** | `/var/run/docker.sock` | Docker Engine API | Traditional Docker graphdriver mode (overlay2, etc.) |
+| **Docker (containerd)** | `/var/run/docker.sock` | Docker Engine API + containerd | Delegates image operations to containerd when containerd snapshotter is detected |
+| **Docker Desktop (macOS)** | N/A (via launcher bridge) | Docker socket inside Docker Desktop VM | On macOS, uses a launcher to execute Linux binary via chroot in a Docker container |
+
+### Runtime Details
 
 #### containerd
 
-原生对接 containerd gRPC API，是 c-ray 最初支持的运行时。通过 Kubernetes CRI 获取 Pod、挂载、网络等元数据，配合 `/proc`、`/sys/fs/cgroup` 等系统文件实现进程和资源监控。
+Native integration with containerd gRPC API, the first runtime supported by c-ray. Retrieves Pod, mount, and network metadata through Kubernetes CRI, combined with `/proc`, `/sys/fs/cgroup` and other system files for process and resource monitoring.
 
-当未显式传入 `-namespace` 或 `CONTAINERD_NAMESPACE` 时，c-ray 会按探测结果自动选择 namespace：
+When `-namespace` or `CONTAINERD_NAMESPACE` is not explicitly specified, c-ray automatically selects the namespace based on detection results:
 
-- 支持 CRI 的 containerd：默认 `k8s.io`
-- 纯 containerd：默认 `default`
+- CRI-enabled containerd: defaults to `k8s.io`
+- Plain containerd: defaults to `default`
 
 ```bash
 cray -socket /run/containerd/containerd.sock -namespace k8s.io
@@ -72,9 +80,9 @@ cray -socket /run/containerd/containerd.sock -namespace k8s.io
 
 #### CRI-O
 
-CRI-O 模式以 [containers/storage](https://github.com/containers/storage) 作为主要数据源，直接读取存储后端获取容器、镜像和层的元数据，无需依赖 CRI API 即可获取存储层面的完整信息。CRI API 仅用于补充运行时状态（PID、生命周期、标签、Pod 关联、网络元数据）。
+CRI-O mode uses [containers/storage](https://github.com/containers/storage) as the primary data source, directly reading storage backend to obtain container, image, and layer metadata without relying on CRI API for storage-level information. CRI API is only used to supplement runtime state (PID, lifecycle, labels, Pod association, network metadata).
 
-支持 CRI-O 的 split store（`/var/lib/containers/storage` + `/run/containers/storage`）和 transient store 配置。
+Supports CRI-O's split store (`/var/lib/containers/storage` + `/run/containers/storage`) and transient store configurations.
 
 ```bash
 cray -socket /run/crio/crio.sock
@@ -82,10 +90,10 @@ cray -socket /run/crio/crio.sock
 
 #### Docker
 
-通过 Docker Engine API 管理容器。连接时自动探测镜像存储模式：
+Manages containers through Docker Engine API. Automatically detects image storage mode on connection:
 
-- **Classic**：传统 graphdriver（overlay2、btrfs 等），镜像操作通过 Docker API 完成
-- **Containerd**：检测到 `io.containerd.snapshotter.v1` 时，镜像操作自动委托给 containerd 后端（Docker Desktop 4.34+ / Docker Engine 29.0+ 默认）
+- **Classic**: Traditional graphdriver (overlay2, btrfs, etc.), image operations via Docker API
+- **Containerd**: When `io.containerd.snapshotter.v1` is detected, image operations are automatically delegated to containerd backend (Docker Desktop 4.34+ / Docker Engine 29.0+ default)
 
 ```bash
 cray -socket /var/run/docker.sock
@@ -93,22 +101,22 @@ cray -socket /var/run/docker.sock
 
 #### Docker Desktop on macOS
 
-macOS 没有原生 Linux 容器运行时，因此 c-ray 提供了一个 launcher 包装器：
+macOS doesn't have native Linux container runtime, so c-ray provides a launcher wrapper:
 
-1. launcher 是一个 Darwin 原生二进制，内嵌静态链接的 Linux c-ray 二进制
-2. 运行时自动启动一个特权 Docker 容器，将宿主机 `/` 挂载为 `/vm`
-3. 将内嵌的二进制复制到 VM 文件系统后通过 `chroot /vm` 执行
-4. 在 VM 内按统一策略自动探测可用 socket，通常会解析到 Docker 的 `/var/run/docker.sock`
+1. The launcher is a Darwin native binary with an embedded statically-linked Linux c-ray binary
+2. At runtime, it automatically starts a privileged Docker container that mounts the host `/` as `/vm`
+3. Copies the embedded binary to the VM filesystem and executes it via `chroot /vm`
+4. Inside the VM, it auto-detects available sockets using the unified strategy, typically resolving to Docker's `/var/run/docker.sock`
 
-前置条件：Docker Desktop 必须处于运行状态。
+Prerequisite: Docker Desktop must be running.
 
 ```bash
-cray   # macOS 上自动使用 launcher
+cray   # On macOS, launcher is used automatically
 ```
 
-## 安装
+## Installation
 
-### 从 Release 下载
+### Download from Release
 
 ```bash
 # Linux AMD64
@@ -127,61 +135,61 @@ tar -xzf cray.tar.gz
 curl -L -o cray.tar.gz https://github.com/icebergu/c-ray/releases/latest/download/cray-darwin-arm64.tar.gz
 tar -xzf cray.tar.gz
 
-# 移动到 PATH
+# Move to PATH
 chmod +x cray
 sudo mv cray /usr/local/bin/
 ```
 
-### 从源码构建
+### Build from Source
 
 ```bash
-# 克隆仓库
+# Clone the repository
 git clone https://github.com/icebergu/c-ray.git
 cd c-ray
 
-# 本地构建
+# Build locally
 make build
 
-# 交叉编译 Linux
+# Cross-compile for Linux
 GOOS=linux GOARCH=arm64 go build -o bin/cray-linux ./cmd/cray
 ```
 
-## 使用
+## Usage
 
-### TUI 模式
+### TUI Mode
 
 ```bash
-# 启动 TUI（默认，自动探测运行时）
+# Start TUI (default, auto-detect runtime)
 cray
 
-# 或显式指定
+# Or explicitly specify
 cray tui
 
-# 自动探测失败时，显式指定 socket
+# If auto-detection fails, specify socket explicitly
 cray -socket /run/containerd/containerd.sock
 
-# 指定 containerd
+# Specify containerd
 cray -socket /run/containerd/containerd.sock -namespace k8s.io
 
-# 纯 containerd 环境常见写法
+# Common pattern for plain containerd
 cray -socket /run/containerd/containerd.sock -namespace default
 
-# 指定 CRI-O
+# Specify CRI-O
 cray -socket /run/crio/crio.sock
 
-# 指定 Docker
+# Specify Docker
 cray -socket /var/run/docker.sock
 
-# 完整参数
+# Full options
 cray -socket /run/containerd/containerd.sock -namespace k8s.io -timeout 30
 ```
 
-### CLI 模式
+### CLI Mode
 
-适用于非交互式环境（CI/CD、远程执行）：
+Suitable for non-interactive environments (CI/CD, remote execution):
 
 ```bash
-# 容器操作
+# Container operations
 cray test list-containers
 cray test container-detail <container-id>
 cray test container-processes <container-id>
@@ -190,98 +198,98 @@ cray test container-mounts <container-id>
 cray test container-layers <container-id>
 cray test crio-container-storage <container-id>
 
-# 镜像操作
+# Image operations
 cray test list-images
 cray test image-detail <image-ref>
 cray test image-layers <image-id>
 cray test crio-image-storage <image-ref>
 
-# Pod 操作
+# Pod operations
 cray test list-pods
 
-# CRI-O 存储视图
+# CRI-O storage view
 cray test crio-store-info
 ```
 
-### TUI 快捷键
+### TUI Keybindings
 
-| 按键 | 功能 |
-|------|------|
-| `↑/↓` 或 `j/k` | 导航列表 |
-| `Enter` | 进入详情/选择 |
-| `Esc` 或 `q` | 返回/退出 |
-| `Tab` | 切换视图标签 |
-| `1-9` | 快速切换详情页标签 |
-| `r` | 刷新数据 |
-| `/` | 搜索过滤 |
+| Key | Action |
+|-----|--------|
+| `Up/Down` or `j/k` | Navigate list |
+| `Enter` | Enter detail / Select |
+| `Esc` or `q` | Go back / Exit |
+| `Tab` | Switch view tabs |
+| `1-9` | Quick switch detail page tabs |
+| `r` | Refresh data |
+| `/` | Search / Filter |
 
-### 在 Kind/Docker 中测试
+### Testing in Kind/Docker
 
 ```bash
-# 使用测试脚本
+# Use test script
 ./scripts/test-in-kind.sh
 
-# 手动复制到 kind 节点
+# Manually copy to kind node
 GOOS=linux GOARCH=arm64 go build -o bin/cray-linux ./cmd/cray
 cat bin/cray-linux | docker exec -i kind-control-plane bash -c "cat > /usr/local/bin/cray && chmod +x /usr/local/bin/cray"
 docker exec kind-control-plane cray test list-containers
 ```
 
-## 项目结构
+## Project Structure
 
 ```
 .
 ├── cmd/
-│   ├── cray/               # 主程序入口（Linux 原生）
-│   └── cray-launcher/      # macOS launcher（内嵌 Linux 二进制，通过 Docker 容器 chroot 执行）
+│   ├── cray/               # Main entry point (Linux native)
+│   └── cray-launcher/      # macOS launcher (embeds Linux binary, executes via chroot in Docker container)
 ├── pkg/
-│   ├── models/             # 数据模型（容器、镜像、Pod、网络）
-│   ├── runtime/            # 运行时抽象层
-│   │   ├── containerd/     # containerd 实现
-│   │   ├── crio/           # CRI-O 实现（containers/storage + CRI）
-│   │   ├── docker/         # Docker 实现（Engine API，自动探测 classic/containerd image store）
-│   │   └── cri/            # CRI 元数据客户端
-│   ├── sysinfo/            # 系统信息采集
-│   │   ├── procfs/         # 进程信息
-│   │   ├── cgroup/         # CGroup 资源
-│   │   └── mount/          # 挂载点信息
-│   └── ui/                 # TUI 界面层
-│       ├── app.go          # 应用主框架
-│       └── views/          # 视图组件
-│           ├── container_detail.go   # 容器详情页框架
-│           ├── container_list.go     # 容器列表
-│           ├── container_tree.go     # 容器树形视图
-│           ├── detail_summary_view.go    # 详情汇总
-│           ├── image_layers_view.go      # 镜像层
-│           ├── image_list.go             # 镜像列表
-│           ├── mounts_view.go            # 挂载视图
-│           ├── network_info_view.go      # 网络信息
-│           ├── pod_list.go               # Pod 列表
-│           ├── process_summary_view.go   # 进程汇总
-│           ├── process_tree_view.go      # 进程树
-│           ├── processes_view.go         # 进程列表
-│           ├── runtime_info_view.go      # 运行时信息
-│           ├── storage_view.go           # 存储信息
-│           └── top_view.go               # Top 视图
-├── docs/                   # 技术文档
-│   ├── containerd/         # containerd 相关
-│   ├── design/             # 设计文档
-│   └── runtime-spec/       # 运行时规范
-└── scripts/                # 测试脚本
+│   ├── models/             # Data models (container, image, pod, network)
+│   ├── runtime/            # Runtime abstraction layer
+│   │   ├── containerd/     # containerd implementation
+│   │   ├── crio/           # CRI-O implementation (containers/storage + CRI)
+│   │   ├── docker/         # Docker implementation (Engine API, auto-detects classic/containerd image store)
+│   │   └── cri/            # CRI metadata client
+│   ├── sysinfo/            # System information collection
+│   │   ├── procfs/         # Process info
+│   │   ├── cgroup/         # CGroup resources
+│   │   └── mount/          # Mount point info
+│   └── ui/                 # TUI interface layer
+│       ├── app.go          # Application framework
+│       └── views/          # View components
+│           ├── container_detail.go   # Container detail page frame
+│           ├── container_list.go     # Container list
+│           ├── container_tree.go     # Container tree view
+│           ├── detail_summary_view.go    # Detail summary
+│           ├── image_layers_view.go      # Image layers
+│           ├── image_list.go             # Image list
+│           ├── mounts_view.go            # Mounts view
+│           ├── network_info_view.go      # Network info
+│           ├── pod_list.go               # Pod list
+│           ├── process_summary_view.go   # Process summary
+│           ├── process_tree_view.go      # Process tree
+│           ├── processes_view.go         # Process list
+│           ├── runtime_info_view.go      # Runtime info
+│           ├── storage_view.go           # Storage info
+│           └── top_view.go               # Top view
+├── docs/                   # Technical documentation
+│   ├── containerd/         # containerd related
+│   ├── design/             # Design documents
+│   └── runtime-spec/       # Runtime specs
+└── scripts/                # Test scripts
 ```
 
-## 技术栈
+## Tech Stack
 
-- **语言**: Go 1.24.3+
-- **TUI 框架**: [tview](https://github.com/rivo/tview)
-- **终端库**: [tcell](https://github.com/gdamore/tcell)
-- **容器运行时**: [containerd](https://github.com/containerd/containerd) / [CRI-O](https://github.com/cri-o/cri-o) / [Docker](https://github.com/docker/docker)
-- **存储库**: [containers/storage](https://github.com/containers/storage)（CRI-O 模式）
-- **CRI 接口**: Kubernetes CRI API
+- **Language**: Go 1.24.3+
+- **TUI Framework**: [tview](https://github.com/rivo/tview)
+- **Terminal Library**: [tcell](https://github.com/gdamore/tcell)
+- **Container Runtimes**: [containerd](https://github.com/containerd/containerd) / [CRI-O](https://github.com/cri-o/cri-o) / [Docker](https://github.com/docker/docker)
+- **Storage Library**: [containers/storage](https://github.com/containers/storage) (CRI-O mode)
+- **CRI Interface**: Kubernetes CRI API
 
-## 架构设计
+## Architecture
 
-### 运行时抽象
+### Runtime Abstraction
 
 ```go
 type Runtime interface {
@@ -291,41 +299,41 @@ type Runtime interface {
     GetContainerTop(ctx context.Context, id string) (*models.TopInfo, error)
     GetContainerMounts(ctx context.Context, id string) ([]*models.Mount, error)
     ListImages(ctx context.Context) ([]*models.Image, error)
-    GetImageLayers(ctx context context.Context, id, snapshotter, rwKey string) ([]*models.ImageLayer, error)
+    GetImageLayers(ctx context.Context, id, snapshotter, rwKey string) ([]*models.ImageLayer, error)
     ListPods(ctx context.Context) ([]*models.Pod, error)
     // ...
 }
 ```
 
-### CRI 元数据增强
+### CRI Metadata Enhancement
 
-通过独立的 CRI 客户端获取 Kubernetes 级别的元数据：
+Retrieves Kubernetes-level metadata through a dedicated CRI client:
 
-- **ContainerMounts**: CRI 配置的挂载点声明
-- **PodSandboxNetwork**: CNI 结果、DNS 配置、端口映射
-- **ContainerStatus**: 重启次数、退出状态、环境变量
+- **ContainerMounts**: CRI-configured mount point declarations
+- **PodSandboxNetwork**: CNI results, DNS configuration, port mappings
+- **ContainerStatus**: Restart count, exit status, environment variables
 
-## 开发状态
+## Development Status
 
-- [x] 项目架构设计
-- [x] containerd 运行时集成
-- [x] CRI-O 运行时集成（containers/storage + CRI）
-- [x] Docker 运行时集成（Classic / containerd image store 自动探测）
-- [x] Docker Desktop on macOS 支持（launcher + chroot）
-- [x] 容器列表与详情
-- [x] 镜像管理与层分析
-- [x] Pod 列表与关联
-- [x] 进程监控与资源统计
-- [x] CRI 元数据集成
-- [x] 网络信息展示（CNI）
-- [x] 挂载来源追踪
-- [x] 存储与快照分析
-- [x] 多平台构建与发布
+- [x] Project architecture design
+- [x] containerd runtime integration
+- [x] CRI-O runtime integration (containers/storage + CRI)
+- [x] Docker runtime integration (Classic / containerd image store auto-detection)
+- [x] Docker Desktop on macOS support (launcher + chroot)
+- [x] Container list and details
+- [x] Image management and layer analysis
+- [x] Pod list and association
+- [x] Process monitoring and resource statistics
+- [x] CRI metadata integration
+- [x] Network info display (CNI)
+- [x] Mount source tracking
+- [x] Storage and snapshot analysis
+- [x] Multi-platform build and release
 
-## 贡献
+## Contributing
 
-欢迎提交 Issue 和 Pull Request！
+Issues and Pull Requests are welcome!
 
-## 许可证
+## License
 
 MIT License
