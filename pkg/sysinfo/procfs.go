@@ -416,6 +416,181 @@ func (r *ProcReader) skipNetInterface(pid int, name string) bool {
 	return false
 }
 
+// ReadOpenFDsSummary counts and classifies the open file descriptors of a
+// process by reading /proc/[pid]/fd and resolving each symlink target.
+//
+// Returned map keys: "file", "socket", "pipe", and anon_inode type labels
+// (e.g. "eventfd", "timerfd"). An empty map means fd/ was unreadable.
+func (r *ProcReader) ReadOpenFDsSummary(pid int) (map[string]int, error) {
+	fdDir := filepath.Join(r.procRoot, strconv.Itoa(pid), "fd")
+	entries, err := os.ReadDir(fdDir)
+	if err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int)
+	for _, e := range entries {
+		target, err := os.Readlink(filepath.Join(fdDir, e.Name()))
+		if err != nil {
+			counts["other"]++
+			continue
+		}
+		counts[classifyFDTarget(target)]++
+	}
+	return counts, nil
+}
+
+func classifyFDTarget(target string) string {
+	switch {
+	case strings.HasPrefix(target, "socket:"):
+		return "socket"
+	case strings.HasPrefix(target, "pipe:"):
+		return "pipe"
+	case strings.HasPrefix(target, "anon_inode:"):
+		s := strings.TrimPrefix(target, "anon_inode:")
+		return strings.Trim(s, "[]")
+	case strings.HasPrefix(target, "/"):
+		return "file"
+	default:
+		return "other"
+	}
+}
+
+// ReadListeningPorts returns a deduplicated list of "proto:port" strings for
+// sockets in LISTEN (TCP) or UNCONN (UDP) state in the network namespace
+// associated with the given PID.
+// Reads /proc/[pid]/net/tcp, tcp6, udp, udp6.
+func (r *ProcReader) ReadListeningPorts(pid int) ([]string, error) {
+	seen := make(map[string]struct{})
+	var ports []string
+	for _, proto := range []string{"tcp", "tcp6", "udp", "udp6"} {
+		path := filepath.Join(r.procRoot, strconv.Itoa(pid), "net", proto)
+		ps, err := parseNetListening(path, proto)
+		if err != nil {
+			continue
+		}
+		for _, p := range ps {
+			if _, dup := seen[p]; !dup {
+				seen[p] = struct{}{}
+				ports = append(ports, p)
+			}
+		}
+	}
+	return ports, nil
+}
+
+// parseNetListening parses a /proc/[pid]/net/{tcp,tcp6,udp,udp6} file and
+// returns "proto:port" entries for LISTEN (0A) TCP or UNCONN (07) UDP sockets.
+func parseNetListening(path, proto string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	isUDP := strings.HasPrefix(proto, "udp")
+	targetState := "0A" // TCP LISTEN
+	if isUDP {
+		targetState = "07" // UDP UNCONN (bound, no remote)
+	}
+	// Normalise proto: "tcp6" → "tcp", "udp6" → "udp"
+	protoBase := strings.TrimSuffix(proto, "6")
+
+	var ports []string
+	scanner := bufio.NewScanner(f)
+	first := true
+	for scanner.Scan() {
+		if first {
+			first = false
+			continue // skip header line
+		}
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 4 {
+			continue
+		}
+		// fields[1] = local_address "XXXXXXXX:PPPP"  fields[3] = state
+		if strings.ToUpper(fields[3]) != targetState {
+			continue
+		}
+		localAddr := fields[1]
+		colon := strings.LastIndex(localAddr, ":")
+		if colon < 0 {
+			continue
+		}
+		port, err := strconv.ParseUint(localAddr[colon+1:], 16, 16)
+		if err != nil || port == 0 {
+			continue
+		}
+		ports = append(ports, fmt.Sprintf("%s:%d", protoBase, port))
+	}
+	return ports, scanner.Err()
+}
+
+// ReadThreadCount returns the thread count from /proc/[pid]/status.
+func (r *ProcReader) ReadThreadCount(pid int) (int, error) {
+	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "status")
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "Threads:") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				return strconv.Atoi(strings.TrimSpace(parts[1]))
+			}
+		}
+	}
+	return 0, fmt.Errorf("threads field not found in status")
+}
+
+// ReadNSpid reads the NSpid field from /proc/[pid]/status and returns the PID
+// values for each nested namespace (outermost first, innermost last).
+// When called on a HOST proc reader, the first value is the host PID and the
+// last value is the PID as seen from the innermost namespace (e.g. container).
+func (r *ProcReader) ReadNSpid(pid int) ([]int, error) {
+	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "status")
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "NSpid:") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			break
+		}
+		fields := strings.Fields(parts[1])
+		pids := make([]int, 0, len(fields))
+		for _, f := range fields {
+			n, err := strconv.Atoi(f)
+			if err != nil {
+				return nil, fmt.Errorf("invalid NSpid value %q: %w", f, err)
+			}
+			pids = append(pids, n)
+		}
+		return pids, nil
+	}
+	return nil, fmt.Errorf("NSpid field not found in %s", path)
+}
+
+// ReadPIDNamespaceInode reads the /proc/[pid]/ns/pid symlink and returns the
+// target string, e.g. "pid:[4026531836]". This uniquely identifies the PID
+// namespace the process belongs to.
+func (r *ProcReader) ReadPIDNamespaceInode(pid int) (string, error) {
+	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "ns", "pid")
+	return os.Readlink(path)
+}
+
 // parseMemorySize parses memory size from status file (e.g., "12345 kB")
 func parseMemorySize(s string) (uint64, error) {
 	parts := strings.Fields(s)

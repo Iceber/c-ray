@@ -1,11 +1,17 @@
 package models
 
 type Process struct {
-	PID     int
-	PPID    int
-	Command string
-	Args    []string
-	State   string
+	PID  int
+	PPID int
+	// HostPID is the PID of this process as seen from the host PID namespace.
+	// Zero when the mapping could not be resolved (e.g. on non-Linux platforms
+	// or when /proc is not accessible).
+	HostPID int
+	// HostPPID is the parent PID of this process in the host PID namespace.
+	HostPPID int
+	Command  string
+	Args     []string
+	State    string
 
 	UTime uint64
 	STime uint64

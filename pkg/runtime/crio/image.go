@@ -62,9 +62,9 @@ func (h *imageHandle) Info(_ context.Context) (*runtime.ImageInfo, error) {
 	if len(h.digests) > 0 {
 		digest = h.digests[0]
 	}
-	name := h.ref
-	if len(h.names) > 0 {
-		name = h.names[0]
+	names := append([]string(nil), h.names...)
+	if len(names) == 0 {
+		names = []string{h.ref}
 	}
 	var size int64
 	if store, err := h.rt.getStore(); err == nil {
@@ -73,7 +73,7 @@ func (h *imageHandle) Info(_ context.Context) (*runtime.ImageInfo, error) {
 		}
 	}
 	return &runtime.ImageInfo{
-		Name:      name,
+		Names:     names,
 		Digest:    digest,
 		Size:      size,
 		CreatedAt: h.createdAt,
@@ -87,20 +87,23 @@ func (h *imageHandle) Config(_ context.Context) (*runtime.ImageConfigInfo, error
 	}
 
 	info := &runtime.ImageConfigInfo{
-		ContentPath:    digest,
 		StorageBackend: runtime.ImageBackendCRIO,
 	}
 
 	if store, err := h.rt.getStore(); err == nil {
 		if img, err := h.lookupStorageImage(store); err == nil {
 			resolved := resolveImageConfigInfo(store, img)
-			if resolved.contentPath != "" {
-				info.ContentPath = resolved.contentPath
-			}
 			info.TargetMediaType = resolved.mediaType
 			info.TargetKind = resolved.kind
 			info.Schema = resolved.schema
+			info.Manifest = &runtime.ImageManifest{
+				Platform:   resolved.platform,
+				ConfigPath: resolved.contentPath,
+			}
 		}
+	}
+	if info.Manifest == nil {
+		info.Manifest = &runtime.ImageManifest{ConfigPath: digest}
 	}
 
 	return info, nil
@@ -109,6 +112,7 @@ func (h *imageHandle) Config(_ context.Context) (*runtime.ImageConfigInfo, error
 // imageConfigResolution holds the results of resolving image config from big-data.
 type imageConfigResolution struct {
 	contentPath string
+	platform    string
 	mediaType   string
 	kind        string
 	schema      string
@@ -172,7 +176,7 @@ func resolveImageConfigInfo(store cstorage.Store, img *cstorage.Image) imageConf
 	}
 	res.schema = deriveSchema(res.mediaType)
 
-	if imageDir == "" || len(configDigests) == 0 {
+	if len(configDigests) == 0 {
 		return res
 	}
 
@@ -194,7 +198,14 @@ func resolveImageConfigInfo(store cstorage.Store, img *cstorage.Image) imageConf
 		if !keyMatch && !digestMatch {
 			continue
 		}
-		if path := resolveConfigPath(store, img, name, imageDir); path != "" {
+		configInfo, path, ok := resolveConfigMetadata(store, img, name, imageDir)
+		if !ok {
+			continue
+		}
+		if res.platform == "" {
+			res.platform = formatPlatform(configInfo.OS, configInfo.Architecture, configInfo.Variant)
+		}
+		if path != "" {
 			res.contentPath = path
 			return res
 		}
@@ -203,22 +214,37 @@ func resolveImageConfigInfo(store cstorage.Store, img *cstorage.Image) imageConf
 	return res
 }
 
-// resolveConfigPath checks if a big-data key is a valid image config and returns
-// its on-disk path, or empty string if not.
-func resolveConfigPath(store cstorage.Store, img *cstorage.Image, name, imageDir string) string {
+// resolveConfigMetadata checks if a big-data key is a valid image config and returns
+// the parsed config plus its on-disk path when available.
+func resolveConfigMetadata(store cstorage.Store, img *cstorage.Image, name, imageDir string) (ConfigInfo, string, bool) {
 	data, err := store.ImageBigData(img.ID, name)
 	if err != nil || len(data) == 0 {
-		return ""
+		return ConfigInfo{}, "", false
 	}
 	item := makeBigDataItem(img, name)
-	if _, ok := parseConfigInfo(item, data); !ok {
-		return ""
+	configInfo, ok := parseConfigInfo(item, data)
+	if !ok {
+		return ConfigInfo{}, "", false
+	}
+	if imageDir == "" {
+		return configInfo, "", true
 	}
 	path := filepath.Join(imageDir, imageBigDataBaseName(name))
 	if runtime.ExistingPath(path) != "" {
-		return path
+		return configInfo, path, true
 	}
-	return ""
+	return configInfo, "", true
+}
+
+func formatPlatform(osName, arch, variant string) string {
+	if osName == "" || arch == "" {
+		return ""
+	}
+	platform := osName + "/" + arch
+	if variant != "" {
+		platform += "/" + variant
+	}
+	return platform
 }
 
 func imageBigDataDir(store cstorage.Store, imageID string) string {

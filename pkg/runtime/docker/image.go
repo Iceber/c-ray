@@ -48,12 +48,10 @@ func (h *imageHandle) Info(ctx context.Context) (*runtime.ImageInfo, error) {
 		Size:   i.Size,
 		Digest: i.ID,
 	}
-	if len(i.RepoTags) > 0 {
-		info.Name = i.RepoTags[0]
-	} else if len(i.RepoDigests) > 0 {
-		info.Name = i.RepoDigests[0]
-	} else {
-		info.Name = i.ID
+	info.Names = append(info.Names, i.RepoTags...)
+	info.Names = append(info.Names, i.RepoDigests...)
+	if len(info.Names) == 0 {
+		info.Names = []string{i.ID}
 	}
 	if ct, err := time.Parse(time.RFC3339Nano, i.Created); err == nil {
 		info.CreatedAt = ct
@@ -67,9 +65,24 @@ func (h *imageHandle) Config(ctx context.Context) (*runtime.ImageConfigInfo, err
 	if h.inspectErr != nil {
 		return nil, h.inspectErr
 	}
-	return &runtime.ImageConfigInfo{
+	info := &runtime.ImageConfigInfo{
 		StorageBackend: runtime.ImageBackendDockerClassic,
-	}, nil
+	}
+	if platform := formatPlatform(h.inspect.Os, h.inspect.Architecture, h.inspect.Variant); platform != "" {
+		info.Manifest = &runtime.ImageManifest{Platform: platform}
+	}
+	return info, nil
+}
+
+func formatPlatform(osName, arch, variant string) string {
+	if osName == "" || arch == "" {
+		return ""
+	}
+	platform := osName + "/" + arch
+	if variant != "" {
+		platform += "/" + variant
+	}
+	return platform
 }
 
 func (h *imageHandle) Layers(ctx context.Context, query runtime.LayerQuery) ([]*runtime.ImageLayer, error) {

@@ -36,7 +36,7 @@ func NewMountsView(app *tview.Application) *MountsView {
 
 	v.tree = tview.NewTreeView()
 	components.InitTreeView(v.tree)
-	v.tree.SetRoot(tview.NewTreeNode(components.Muted("No mount metadata")).SetSelectable(false))
+	v.tree.SetRoot(components.NewTreeNode(components.Muted("No mount metadata")).SetSelectable(false))
 	v.tree.SetSelectedFunc(func(node *tview.TreeNode) {
 		if node != nil {
 			node.SetExpanded(!node.IsExpanded())
@@ -124,9 +124,9 @@ func (v *MountsView) render() {
 	runtimePath := v.runtimePath
 	v.mu.Unlock()
 
-	root := tview.NewTreeNode(components.Accent("Mounts")).SetSelectable(false).SetExpanded(true)
+	root := components.NewTreeNode(components.Accent("Mounts")).SetSelectable(false).SetExpanded(true)
 	if len(mounts) == 0 {
-		root.AddChild(tview.NewTreeNode(components.Muted("Refresh to resolve mounts")).SetSelectable(false))
+		root.AddChild(components.NewTreeNode(components.Muted("Refresh to resolve mounts")).SetSelectable(false))
 	} else {
 		rootMount, criMounts, runtimeMounts, otherMounts := splitMounts(mounts)
 		if rootMount != nil {
@@ -237,9 +237,9 @@ func mountSortKey(m *runtime.Mount) string {
 
 func buildMountGroupNodeV1(title string, mounts []*runtime.Mount, expanded bool, runtimePath string) *tview.TreeNode {
 	label := components.Accent(fmt.Sprintf("%s (%d)", title, len(mounts)))
-	node := tview.NewTreeNode(label).SetSelectable(true).SetExpanded(expanded)
+	node := components.NewTreeNode(label).SetSelectable(true).SetExpanded(expanded)
 	if len(mounts) == 0 {
-		node.AddChild(tview.NewTreeNode(components.Muted("No entries")).SetSelectable(false))
+		node.AddChild(components.NewTreeNode(components.Muted("No entries")).SetSelectable(true))
 		return node
 	}
 	for _, m := range mounts {
@@ -252,20 +252,20 @@ func buildMountNodeV1(m *runtime.Mount, runtimePath string) *tview.TreeNode {
 	target := cropColumn(fallbackMountField(m.Destination), 28)
 	source := cropColumn(fallbackMountField(displaySource(m, runtimePath)), 44)
 	label := fmt.Sprintf("%-28s  %s", target, source)
-	node := tview.NewTreeNode(label).SetReference(m).SetSelectable(true).SetExpanded(false)
-	node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Type:"), components.Bright(fallbackMountField(m.Type)))).SetSelectable(true))
-	node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Source:"), components.Bright(fallbackMountField(displaySource(m, runtimePath))))).SetSelectable(true))
+	node := components.NewTreeNode(label).SetReference(m).SetSelectable(true).SetExpanded(false)
+	node.AddChild(components.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Type:"), components.Bright(fallbackMountField(m.Type)))).SetSelectable(true))
+	node.AddChild(components.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Source:"), components.Bright(fallbackMountField(displaySource(m, runtimePath))))).SetSelectable(true))
 	if m.HostPath != "" {
-		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Host Path:"), components.Bright(m.HostPath))).SetSelectable(true))
+		node.AddChild(components.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Host Path:"), components.Bright(m.HostPath))).SetSelectable(true))
 	}
 	if m.LiveSource != "" && m.LiveSource != m.Source {
-		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Live Source:"), components.Bright(m.LiveSource))).SetSelectable(true))
+		node.AddChild(components.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Live Source:"), components.Bright(m.LiveSource))).SetSelectable(true))
 	}
-	node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Options:"), components.Bright(joinOpts(m.Options)))).SetSelectable(true))
-	node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Origin:"), components.Bright(mountOriginStr(m.Origin)))).SetSelectable(true))
-	node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("State:"), components.Bright(mountStateStr(m.State)))).SetSelectable(true))
+	node.AddChild(components.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Options:"), components.Bright(joinOpts(m.Options)))).SetSelectable(true))
+	node.AddChild(components.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Origin:"), components.Bright(mountOriginStr(m.Origin)))).SetSelectable(true))
+	node.AddChild(components.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("State:"), components.Bright(mountStateStr(m.State)))).SetSelectable(true))
 	if m.Note != "" {
-		node.AddChild(tview.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Note:"), components.Bright(m.Note))).SetSelectable(true))
+		node.AddChild(components.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Note:"), components.Bright(m.Note))).SetSelectable(true))
 	}
 	return node
 }

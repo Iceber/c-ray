@@ -3,19 +3,35 @@ package runtime
 import "time"
 
 type ImageInfo struct {
-	Name      string
+	Names     []string
 	Digest    string
 	Size      int64
 	CreatedAt time.Time
 }
 
+// ImageManifest describes a single platform manifest resolved from the image.
+type ImageManifest struct {
+	Digest     string
+	Platform   string // e.g. "linux/amd64"
+	Path       string // on-disk path of the manifest blob (when known)
+	ConfigPath string // on-disk path of the config blob (when known)
+}
+
 // ImageConfigInfo contains the image-config fields surfaced in storage and summary views.
 type ImageConfigInfo struct {
-	ContentPath     string
 	TargetMediaType string
 	TargetKind      string
 	Schema          string
 	StorageBackend  ImageBackendType
+
+	// IndexPath is the on-disk path of the image index blob.
+	// Empty when the image is a single-platform manifest (not an index).
+	IndexPath string
+
+	// Manifest is the manifest for the current/matched platform.
+	Manifest *ImageManifest
+	// Manifests lists all platform manifests when the image is an index.
+	Manifests []*ImageManifest
 }
 
 // ImageLayer contains the layer fields rendered by the rootfs layers view.

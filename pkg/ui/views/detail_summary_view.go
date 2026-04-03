@@ -256,8 +256,22 @@ func buildImageRuntimePanel(info *runtime.ContainerInfo, config *runtime.Contain
 			mediaType = strings.Trim(mediaType, " /")
 		}
 		lines = append(lines, summaryKV("Media Type", mediaType))
-		if imageConfig.ContentPath != "" {
-			lines = append(lines, summaryKV("Config Path", imageConfig.ContentPath))
+		if imageConfig.Manifest != nil {
+			if platform := imageCurrentPlatform(imageConfig); platform != "" {
+				lines = append(lines, summaryKV("Platform", platform))
+			}
+			if platforms := imagePlatformsSummary(imageConfig); platforms != "" {
+				lines = append(lines, summaryKV("Platforms", platforms))
+			}
+			if imageConfig.Manifest.Digest != "" {
+				lines = append(lines, summaryKV("Manifest", shortID(imageConfig.Manifest.Digest)))
+			}
+			if imageConfig.IndexPath != "" {
+				lines = append(lines, summaryKV("Index Path", imageConfig.IndexPath))
+			}
+			if imageConfig.Manifest.ConfigPath != "" {
+				lines = append(lines, summaryKV("Config Path", imageConfig.Manifest.ConfigPath))
+			}
 		}
 	}
 

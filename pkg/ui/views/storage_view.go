@@ -65,6 +65,10 @@ func (v *StorageView) SetContainer(c runtime.Container) {
 	v.mountsView.SetContainer(c)
 }
 
+func (v *StorageView) SetContainerPID(pid uint32) {
+	v.layersView.SetContainerPID(pid)
+}
+
 // Refresh refreshes the active filesystem subview.
 func (v *StorageView) Refresh(ctx context.Context) error {
 	if v.activeMode == StorageModeMounts {

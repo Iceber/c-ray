@@ -536,6 +536,41 @@ func readOnlyLayerPathsFromMounts(ctx context.Context, snapshotter snapshots.Sna
 	return nil
 }
 
+// readOnlyLayerPathsViaView resolves the ordered list of read-only layer
+// directories for a snapshot stack by creating a short-lived temporary View
+// snapshot against the topmost committed chainID. This avoids opening the
+// snapshotter's metadata.db directly and works while containerd holds its
+// BoltDB lock. The temporary view is removed immediately after the mount
+// options are read.
+func readOnlyLayerPathsViaView(ctx context.Context, snapshotter snapshots.Snapshotter, topChainID string) []string {
+	viewKey := "c-ray-ro-view/" + topChainID
+	mounts, err := snapshotter.View(ctx, viewKey, topChainID)
+	if err != nil {
+		// View may fail if a stale entry exists; try to remove it and retry once.
+		_ = snapshotter.Remove(ctx, viewKey)
+		mounts, err = snapshotter.View(ctx, viewKey, topChainID)
+		if err != nil {
+			return nil
+		}
+	}
+	defer snapshotter.Remove(ctx, viewKey)
+
+	for _, m := range mounts {
+		if m.Type == "overlay" {
+			for _, opt := range m.Options {
+				if strings.HasPrefix(opt, "lowerdir=") {
+					return strings.Split(opt[len("lowerdir="):], ":")
+				}
+			}
+		} else if m.Source != "" {
+			// Single-layer image: represented as a bind/native mount — the
+			// source directory is the single layer path.
+			return []string{m.Source}
+		}
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // OCI runtime helpers
 // ---------------------------------------------------------------------------

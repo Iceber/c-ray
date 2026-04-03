@@ -51,8 +51,8 @@ func NewContainerTreeView(app *tview.Application, rt runtime.Runtime) *Container
 		rt:   rt,
 	}
 
-	root := tview.NewTreeNode("Containers").SetColor(components.ColorFgAccent).SetSelectable(false)
-	root.AddChild(tview.NewTreeNode(components.Muted("Loading containers...")).SetSelectable(false))
+	root := components.NewTreeNode("Containers").SetColor(components.ColorFgAccent).SetSelectable(false)
+	root.AddChild(components.NewTreeNode(components.Muted("Loading containers...")).SetSelectable(false))
 
 	v.tree = tview.NewTreeView().SetRoot(root).SetCurrentNode(root)
 	v.tree.SetBorder(true).SetBorderColor(components.ColorFgBorder)
@@ -109,7 +109,7 @@ func (v *ContainerTreeView) Refresh(ctx context.Context) error {
 		queueUpdateDraw(v.app, func() {
 			root := v.tree.GetRoot()
 			root.ClearChildren()
-			root.AddChild(tview.NewTreeNode(fmt.Sprintf("[%s]Failed to load containers: %v[-]", components.ColorName(components.ColorFgError), err)).SetSelectable(false))
+			root.AddChild(components.NewTreeNode(fmt.Sprintf("[%s]Failed to load containers: %v[-]", components.ColorName(components.ColorFgError), err)).SetSelectable(false))
 		})
 		return err
 	}
@@ -245,7 +245,7 @@ func (v *ContainerTreeView) createPodNode(pg *podGroup) *tview.TreeNode {
 		components.ColorName(runningColor), pg.running,
 		components.ColorName(components.ColorFgBright), pg.total,
 	)
-	node := tview.NewTreeNode(text).SetColor(tcell.ColorWhite).SetSelectable(true).SetExpanded(true)
+	node := components.NewTreeNode(text).SetColor(tcell.ColorWhite).SetSelectable(true).SetExpanded(true)
 	node.SetReference(&treeNodeData{nodeType: nodeTypePod, podUID: pg.uid})
 	return node
 }
@@ -274,7 +274,7 @@ func (v *ContainerTreeView) createContainerNode(e containerEntry, isInPod bool) 
 		components.ColorName(components.ColorFgMuted), components.ColorName(components.ColorFgBright), pid,
 		components.ColorName(components.ColorFgMuted), components.ColorName(components.ColorFgBright), age)
 
-	node := tview.NewTreeNode(text).SetSelectable(true)
+	node := components.NewTreeNode(text).SetSelectable(true)
 	node.SetReference(&treeNodeData{nodeType: nodeType, container: e.handle, containerID: e.info.ID, podUID: e.info.PodUID})
 	return node
 }

@@ -114,6 +114,7 @@ func (v *ContainerDetailView) SetContainer(c runtime.Container) {
 	v.summaryView.SetContainer(c)
 	v.processesView.SetContainer(c)
 	v.filesystemView.SetContainer(c)
+	v.filesystemView.SetContainerPID(0)
 	v.runtimeView.SetContainer(c)
 	v.networkView.SetContainer(c)
 
@@ -181,6 +182,7 @@ func (v *ContainerDetailView) Refresh() {
 	v.info = info
 	v.state = state
 	v.refreshedAt = time.Now()
+	v.filesystemView.SetContainerPID(info.PID)
 
 	queueUpdateDraw(v.app, func() {
 		v.renderHeader()
@@ -252,9 +254,16 @@ func (v *ContainerDetailView) HandleInput(event *tcell.EventKey) *tcell.EventKey
 		}
 		return nil
 	case tcell.KeyTab:
+		// Give the active subview first chance to consume Tab (e.g. layer browser pane switch).
+		if v.activeTab == DetailTabFilesystem && v.filesystemView.HandleInput(event) == nil {
+			return nil
+		}
 		v.switchTab((v.activeTab + 1) % 5)
 		return nil
 	case tcell.KeyBacktab:
+		if v.activeTab == DetailTabFilesystem && v.filesystemView.HandleInput(event) == nil {
+			return nil
+		}
 		v.switchTab((v.activeTab + 4) % 5)
 		return nil
 	}

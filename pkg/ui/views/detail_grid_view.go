@@ -9,6 +9,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/runtime"
+	"github.com/icebergu/c-ray/pkg/sysinfo"
 	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/rivo/tview"
 )
@@ -25,11 +26,12 @@ import (
 type DetailGridView struct {
 	*tview.Flex
 
-	app       *tview.Application
-	container runtime.Container
-	mu        sync.Mutex
-	focusPane detailGridFocusPane
-	topContent *tview.Flex
+	app              *tview.Application
+	container        runtime.Container
+	containerHostPID uint32
+	mu               sync.Mutex
+	focusPane        detailGridFocusPane
+	topContent       *tview.Flex
 
 	// Column panels
 	networkPanel *tview.TextView
@@ -39,7 +41,7 @@ type DetailGridView struct {
 	cgroupPanel  *tview.TextView
 	fsPanel      *tview.TreeView
 	podPanel     *tview.TextView
-	imagePanel   *tview.TextView
+	imagePanel   *tview.TreeView
 	detailPanel  *tview.TextView
 }
 
@@ -48,6 +50,7 @@ type detailGridFocusPane int
 const (
 	detailGridFocusProcesses detailGridFocusPane = iota
 	detailGridFocusFilesystem
+	detailGridFocusImage
 )
 
 type detailGridSelectionDetail struct {
@@ -63,8 +66,8 @@ type detailGridField struct {
 // NewDetailGridView creates a new 4-column grid info view.
 func NewDetailGridView(app *tview.Application) *DetailGridView {
 	v := &DetailGridView{
-		Flex: tview.NewFlex().SetDirection(tview.FlexRow),
-		app:  app,
+		Flex:      tview.NewFlex().SetDirection(tview.FlexRow),
+		app:       app,
 		focusPane: detailGridFocusProcesses,
 	}
 	v.topContent = tview.NewFlex().SetDirection(tview.FlexColumn)
@@ -87,7 +90,7 @@ func NewDetailGridView(app *tview.Application) *DetailGridView {
 	v.processTree.SetBorder(true).SetBorderColor(components.ColorFgBorder)
 	v.processTree.SetTitle(fmt.Sprintf(" %s ", components.Accent("Processes"))).SetTitleAlign(tview.AlignLeft)
 	v.processTree.SetBackgroundColor(components.ColorBg)
-	v.processTree.SetRoot(tview.NewTreeNode(components.Muted("No data")))
+	v.processTree.SetRoot(components.NewTreeNode(components.Muted("No data")))
 	v.processTree.SetChangedFunc(func(node *tview.TreeNode) {
 		v.updateDetailPanelForNode(detailGridFocusProcesses, node)
 	})
@@ -98,7 +101,7 @@ func NewDetailGridView(app *tview.Application) *DetailGridView {
 	v.fsPanel.SetBorder(true).SetBorderColor(components.ColorFgBorder)
 	v.fsPanel.SetTitle(fmt.Sprintf(" %s ", components.Accent("Filesystem"))).SetTitleAlign(tview.AlignLeft)
 	v.fsPanel.SetBackgroundColor(components.ColorBg)
-	v.fsPanel.SetRoot(tview.NewTreeNode(components.Muted("No data")))
+	v.fsPanel.SetRoot(components.NewTreeNode(components.Muted("No data")))
 	v.fsPanel.SetChangedFunc(func(node *tview.TreeNode) {
 		v.updateDetailPanelForNode(detailGridFocusFilesystem, node)
 	})
@@ -112,16 +115,24 @@ func NewDetailGridView(app *tview.Application) *DetailGridView {
 
 	// --- Column 4: Pod + Image (20%) ---
 	v.podPanel = newGridPanel("Pod")
-	v.imagePanel = newGridPanel("Image")
+	v.imagePanel = tview.NewTreeView()
+	components.InitTreeView(v.imagePanel)
+	v.imagePanel.SetBorder(true).SetBorderColor(components.ColorFgBorder)
+	v.imagePanel.SetTitle(fmt.Sprintf(" %s ", components.Accent("Image"))).SetTitleAlign(tview.AlignLeft)
+	v.imagePanel.SetBackgroundColor(components.ColorBg)
+	v.imagePanel.SetRoot(components.NewTreeNode(components.Muted("No data")))
+	v.imagePanel.SetChangedFunc(func(node *tview.TreeNode) {
+		v.updateDetailPanelForNode(detailGridFocusImage, node)
+	})
 	col4 := tview.NewFlex().SetDirection(tview.FlexRow)
 	col4.AddItem(v.podPanel, 0, 1, false)
 	col4.AddItem(v.imagePanel, 0, 1, false)
 
 	// Assemble columns into the top horizontal grid.
-	v.topContent.AddItem(col1, 0, 5, false)  // 20%
-	v.topContent.AddItem(col2, 0, 2, false)  // 8%
-	v.topContent.AddItem(col3, 0, 13, true)  // 52%
-	v.topContent.AddItem(col4, 0, 5, false)  // 20%
+	v.topContent.AddItem(col1, 0, 5, false) // 20%
+	v.topContent.AddItem(col2, 0, 2, false) // 8%
+	v.topContent.AddItem(col3, 0, 13, true) // 52%
+	v.topContent.AddItem(col4, 0, 5, false) // 20%
 
 	v.detailPanel = tview.NewTextView().SetDynamicColors(true).SetWordWrap(true)
 	v.detailPanel.SetBorder(true).SetBorderColor(components.ColorFgBorder)
@@ -131,6 +142,7 @@ func NewDetailGridView(app *tview.Application) *DetailGridView {
 
 	v.Flex.AddItem(v.topContent, 0, 1, true)
 	v.Flex.AddItem(v.detailPanel, 7, 0, false)
+	v.updateFocusStyles()
 
 	return v
 }
@@ -162,6 +174,12 @@ func (v *DetailGridView) Refresh(ctx context.Context) {
 	}
 
 	info, _ := c.Info(ctx)
+	if info != nil {
+		v.mu.Lock()
+		v.containerHostPID = info.PID
+		v.mu.Unlock()
+	}
+
 	config, _ := c.Config(ctx)
 	profile, _ := c.Runtime(ctx)
 	netState, _ := c.Network(ctx)
@@ -187,7 +205,6 @@ func (v *DetailGridView) Refresh(ctx context.Context) {
 	placeholders = append(placeholders, cp...)
 	fsRoot := buildGridFilesystemTree(config, storage, mounts)
 	podText := buildGridPodPanel(info, profile)
-	imageText := buildGridImagePanel(config, imageInfo, imageConfig)
 	processRoot := buildGridProcessTree(c, ctx, processes)
 
 	// Append placeholder summary to cgroup panel (smallest panel, good anchor)
@@ -213,7 +230,14 @@ func (v *DetailGridView) Refresh(ctx context.Context) {
 		}
 		v.fsPanel.SetCurrentNode(currentFSNode)
 		v.podPanel.SetText(podText)
-		v.imagePanel.SetText(imageText)
+		_, _, imageWidth, _ := v.imagePanel.GetInnerRect()
+		imageRoot := buildGridImageTree(config, imageInfo, imageConfig, imageWidth)
+		v.imagePanel.SetRoot(imageRoot)
+		currentImageNode := imageRoot
+		if children := imageRoot.GetChildren(); len(children) > 0 {
+			currentImageNode = children[0]
+		}
+		v.imagePanel.SetCurrentNode(currentImageNode)
 		v.processTree.SetRoot(processRoot)
 		v.processTree.SetCurrentNode(processRoot)
 		v.processTree.SetTitle(fmt.Sprintf(" %s %s ",
@@ -221,9 +245,12 @@ func (v *DetailGridView) Refresh(ctx context.Context) {
 			components.Muted(fmt.Sprintf("%d total", count))))
 		if v.focusPane == detailGridFocusFilesystem {
 			v.updateDetailPanelForNode(detailGridFocusFilesystem, currentFSNode)
+		} else if v.focusPane == detailGridFocusImage {
+			v.updateDetailPanelForNode(detailGridFocusImage, currentImageNode)
 		} else {
 			v.updateDetailPanelForNode(detailGridFocusProcesses, processRoot)
 		}
+		v.updateFocusStyles()
 	})
 }
 
@@ -232,6 +259,8 @@ func (v *DetailGridView) GetFocusPrimitive() tview.Primitive {
 	switch v.focusPane {
 	case detailGridFocusFilesystem:
 		return v.fsPanel
+	case detailGridFocusImage:
+		return v.imagePanel
 	default:
 		return v.processTree
 	}
@@ -248,6 +277,7 @@ func (v *DetailGridView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
 		if v.app != nil {
 			v.app.SetFocus(v.processTree)
 		}
+		v.updateFocusStyles()
 		v.updateDetailPanelForNode(detailGridFocusProcesses, v.processTree.GetCurrentNode())
 		return nil
 	case 'f', 'F':
@@ -255,12 +285,23 @@ func (v *DetailGridView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
 		if v.app != nil {
 			v.app.SetFocus(v.fsPanel)
 		}
+		v.updateFocusStyles()
 		v.updateDetailPanelForNode(detailGridFocusFilesystem, v.fsPanel.GetCurrentNode())
+		return nil
+	case 'i', 'I':
+		v.focusPane = detailGridFocusImage
+		if v.app != nil {
+			v.app.SetFocus(v.imagePanel)
+		}
+		v.updateFocusStyles()
+		v.updateDetailPanelForNode(detailGridFocusImage, v.imagePanel.GetCurrentNode())
 		return nil
 	}
 	switch v.focusPane {
 	case detailGridFocusFilesystem:
 		return components.HandleTreeInput(event, v.fsPanel, nil, nil)
+	case detailGridFocusImage:
+		return components.HandleTreeInput(event, v.imagePanel, nil, nil)
 	default:
 		return components.HandleTreeInput(event, v.processTree, v.expandAll, nil)
 	}
@@ -293,14 +334,23 @@ func (v *DetailGridView) renderEmpty() {
 		v.stdioPanel.SetText(empty)
 		v.nsPanel.SetText(empty)
 		v.cgroupPanel.SetText(empty)
-		fsRoot := tview.NewTreeNode(components.Muted("Loading...")).SetSelectable(false)
+		fsRoot := components.NewTreeNode(components.Muted("Loading...")).SetSelectable(false)
 		v.fsPanel.SetRoot(fsRoot)
 		v.fsPanel.SetCurrentNode(fsRoot)
 		v.podPanel.SetText(empty)
-		v.imagePanel.SetText(empty)
-		v.processTree.SetRoot(tview.NewTreeNode(components.Muted("Loading...")))
+		imageRoot := components.NewTreeNode(components.Muted("Loading...")).SetSelectable(false)
+		v.imagePanel.SetRoot(imageRoot)
+		v.imagePanel.SetCurrentNode(imageRoot)
+		v.processTree.SetRoot(components.NewTreeNode(components.Muted("Loading...")))
 		v.detailPanel.SetText(empty)
+		v.updateFocusStyles()
 	})
+}
+
+func (v *DetailGridView) updateFocusStyles() {
+	components.ApplyTreeFocusStyle(v.processTree, v.focusPane == detailGridFocusProcesses)
+	components.ApplyTreeFocusStyle(v.fsPanel, v.focusPane == detailGridFocusFilesystem)
+	components.ApplyTreeFocusStyle(v.imagePanel, v.focusPane == detailGridFocusImage)
 }
 
 func (v *DetailGridView) updateDetailPanelForNode(pane detailGridFocusPane, node *tview.TreeNode) {
@@ -312,28 +362,96 @@ func (v *DetailGridView) updateDetailPanelForNode(pane detailGridFocusPane, node
 	switch pane {
 	case detailGridFocusFilesystem:
 		title, lines = filesystemNodeDetail(node)
+	case detailGridFocusImage:
+		title, lines = imageNodeDetail(node)
 	default:
-		title, lines = processNodeDetail(node)
+		v.mu.Lock()
+		hostPID := v.containerHostPID
+		v.mu.Unlock()
+		title, lines = processNodeDetail(node, hostPID)
 	}
 	v.detailPanel.SetTitle(fmt.Sprintf(" %s ", components.Accent(title)))
 	v.detailPanel.SetText(strings.Join(lines, "\n"))
 }
 
-func processNodeDetail(node *tview.TreeNode) (string, []string) {
+func processNodeDetail(node *tview.TreeNode, containerHostPID uint32) (string, []string) {
 	if node == nil {
 		return "Detail", []string{"  " + components.Muted("No process selected")}
 	}
-	if process, ok := node.GetReference().(*runtime.Process); ok && process != nil {
-		return "Process Detail", detailLines(
-			detailField("PID", fmt.Sprintf("%d", process.PID)),
-			detailField("PPID", fmt.Sprintf("%d", process.PPID)),
-			detailField("State", fallbackValue(process.State, "-")),
-			detailField("Command", processCommandLine(process)),
-		)
+	process, ok := node.GetReference().(*runtime.Process)
+	if !ok || process == nil {
+		return "Process Detail", []string{
+			"  " + components.Muted("Select a concrete process entry to inspect full values."),
+		}
 	}
-	return "Process Detail", []string{
-		"  " + components.Muted("Select a concrete process entry to inspect full values."),
+
+	lines := []string{
+		gridKV("Command", processCommandLine(process)),
 	}
+
+	threads := "-"
+	fdSummary := "-"
+	portsSummary := "-"
+
+	if containerHostPID > 0 {
+		procRoot := fmt.Sprintf("/proc/%d/root/proc", containerHostPID)
+		reader := sysinfo.NewProcReaderWithRoot(procRoot)
+
+		if n, err := reader.ReadThreadCount(process.PID); err == nil {
+			threads = fmt.Sprintf("%d", n)
+		}
+
+		if fdMap, err := reader.ReadOpenFDsSummary(process.PID); err == nil {
+			fdSummary = formatFDSummary(fdMap)
+		}
+
+		// Listening ports are network-namespace-wide; read from the container's
+		// host PID which shares the same network namespace as all its processes.
+		hostReader := sysinfo.NewProcReader()
+		if ports, err := hostReader.ReadListeningPorts(int(containerHostPID)); err == nil {
+			if len(ports) == 0 {
+				portsSummary = "none"
+			} else {
+				portsSummary = strings.Join(ports, ", ")
+			}
+		}
+	}
+
+	lines = append(lines,
+		gridKV("Threads", threads),
+		gridKV("Open FDs", fdSummary),
+		gridKV("Ports", portsSummary),
+	)
+	return "Process Detail", lines
+}
+
+// formatFDSummary converts a fd-type→count map to a compact string like
+// "10(file) + 3(socket) + 2(pipe)".
+func formatFDSummary(fdMap map[string]int) string {
+	if len(fdMap) == 0 {
+		return "0"
+	}
+	// Known types listed first in a fixed order, then everything else sorted.
+	priority := []string{"file", "socket", "pipe"}
+	seen := make(map[string]bool)
+	var parts []string
+	for _, k := range priority {
+		if v, ok := fdMap[k]; ok {
+			parts = append(parts, fmt.Sprintf("%d(%s)", v, k))
+			seen[k] = true
+		}
+	}
+	var others []string
+	for k := range fdMap {
+		if !seen[k] {
+			others = append(others, k)
+		}
+	}
+	sort.Strings(others)
+	for _, k := range others {
+		parts = append(parts, fmt.Sprintf("%d(%s)", fdMap[k], k))
+	}
+	return strings.Join(parts, " + ")
 }
 
 func filesystemNodeDetail(node *tview.TreeNode) (string, []string) {
@@ -345,6 +463,18 @@ func filesystemNodeDetail(node *tview.TreeNode) (string, []string) {
 	}
 	return "Filesystem Detail", []string{
 		"  " + components.Muted("Select a concrete filesystem field to inspect full values."),
+	}
+}
+
+func imageNodeDetail(node *tview.TreeNode) (string, []string) {
+	if node == nil {
+		return "Detail", []string{"  " + components.Muted("No image field selected")}
+	}
+	if detail, ok := node.GetReference().(*detailGridSelectionDetail); ok && detail != nil {
+		return detail.Title, detail.Lines
+	}
+	return "Image Detail", []string{
+		"  " + components.Muted("Select Name or ID to inspect image paths and platforms."),
 	}
 }
 
@@ -534,10 +664,10 @@ func buildGridNamespacePanel(config *runtime.ContainerConfig) string {
 
 func buildGridProcessTree(c runtime.Container, ctx context.Context, processes []*runtime.Process) *tview.TreeNode {
 	rootLabel := processTreeRootLabel(c, ctx)
-	rootNode := tview.NewTreeNode(rootLabel).SetSelectable(true).SetExpanded(true)
+	rootNode := components.NewTreeNode(rootLabel).SetSelectable(true).SetExpanded(true)
 
 	if len(processes) == 0 {
-		rootNode.AddChild(tview.NewTreeNode(components.Muted("no processes")).SetSelectable(false))
+		rootNode.AddChild(components.NewTreeNode(components.Muted("no processes")).SetSelectable(true))
 		return rootNode
 	}
 
@@ -597,7 +727,7 @@ func buildGridCgroupPanel(config *runtime.ContainerConfig) (string, []string) {
 }
 
 func buildGridFilesystemTree(config *runtime.ContainerConfig, storage *runtime.ContainerStorage, mounts []*runtime.Mount) *tview.TreeNode {
-	root := tview.NewTreeNode(components.Accent("Filesystem")).SetSelectable(false).SetExpanded(true)
+	root := components.NewTreeNode(components.Accent("Filesystem")).SetSelectable(false).SetExpanded(true)
 
 	root.AddChild(buildFilesystemMountsNode(mounts))
 	root.AddChild(buildFilesystemRootfsNode(config, storage))
@@ -622,52 +752,208 @@ func buildGridPodPanel(info *runtime.ContainerInfo, rt *runtime.RuntimeProfile) 
 	return joinGridBlocks(lines)
 }
 
-func buildGridImagePanel(config *runtime.ContainerConfig, imgInfo *runtime.ImageInfo, imgConfig *runtime.ImageConfigInfo) string {
-	var lines []string
+func buildGridImageTree(config *runtime.ContainerConfig, imgInfo *runtime.ImageInfo, imgConfig *runtime.ImageConfigInfo, width int) *tview.TreeNode {
+	root := components.NewTreeNode(components.Accent("Image")).SetSelectable(false).SetExpanded(true)
 
-	// Image name
-	name := "-"
-	if config != nil && config.ImageName != "" {
-		name = truncateForCard(config.ImageName, 28)
-	}
-	lines = append(lines, gridKVBlock("Name", name))
-
-	// Image digest/ID
-	digest := "-"
-	if imgInfo != nil && imgInfo.Digest != "" {
-		digest = shortID(imgInfo.Digest)
-	}
-	lines = append(lines, gridKVBlock("ID", digest))
-
-	// Size
+	name := imagePanelName(config, imgInfo)
+	id := imagePanelID(imgInfo)
+	fullID := imageDetailFullID(imgInfo)
 	size := "-"
 	if imgInfo != nil && imgInfo.Size > 0 {
 		size = formatBytes(imgInfo.Size)
 	}
-	lines = append(lines, gridKVBlock("Size", size))
+	kindSchema := imageKindSchemaSummary(imgConfig)
 
-	// Backend
-	backend := "-"
-	if imgConfig != nil && imgConfig.StorageBackend != "" {
-		backend = string(imgConfig.StorageBackend)
+	detail := buildGridImageDetail(name, fullID, imageDetailOtherNames(config, imgInfo), imgConfig)
+	root.AddChild(imageLeafNode("Name", name, true, detail, width, true))
+	root.AddChild(imageLeafNode("ID", id, true, detail, width, false))
+	root.AddChild(imageLeafNode("Kind/Schema", kindSchema, true, detail, width, false))
+	root.AddChild(imageLeafNode("Size", size, false, nil, width, false))
+	return root
+}
+
+func imageLeafNode(key, value string, selectable bool, detail *detailGridSelectionDetail, width int, wrapValue bool) *tview.TreeNode {
+	node := components.NewTreeNode(imageLeafText(key, value, width, wrapValue)).SetSelectable(selectable)
+	if detail != nil {
+		node.SetReference(detail)
 	}
-	lines = append(lines, gridKVBlock("Backend", backend))
+	return node
+}
 
-	// Kind
-	kind := "-"
-	if imgConfig != nil && imgConfig.TargetKind != "" {
-		kind = imgConfig.TargetKind
+func imageLeafText(key, value string, width int, wrapValue bool) string {
+	value = fallbackValue(value, "-")
+	if !wrapValue {
+		return fmt.Sprintf("[%s]%s[-] [%s]%s[-]",
+			components.ColorName(components.ColorFgMuted), key+":",
+			components.ColorName(components.ColorFgBright), value,
+		)
 	}
-	lines = append(lines, gridKVBlock("Kind", kind))
-
-	// Schema
-	schema := "-"
-	if imgConfig != nil && imgConfig.Schema != "" {
-		schema = imgConfig.Schema
+	wrapped := wrapImageValue(value, width-len(key)-4)
+	if len(wrapped) == 0 {
+		wrapped = []string{"-"}
 	}
-	lines = append(lines, gridKVBlock("Schema", schema))
+	lines := []string{fmt.Sprintf("[%s]%s[-] [%s]%s[-]",
+		components.ColorName(components.ColorFgMuted), key+":",
+		components.ColorName(components.ColorFgBright), wrapped[0],
+	)}
+	indent := strings.Repeat(" ", len(key)+2)
+	for _, line := range wrapped[1:] {
+		lines = append(lines, fmt.Sprintf("[%s]%s[-] [%s]%s[-]",
+			components.ColorName(components.ColorFgMuted), indent,
+			components.ColorName(components.ColorFgBright), line,
+		))
+	}
+	return strings.Join(lines, "\n")
+}
 
-	return joinGridBlocks(lines)
+func wrapImageValue(value string, width int) []string {
+	if width < 8 {
+		width = 8
+	}
+	runes := []rune(value)
+	if len(runes) <= width {
+		return []string{value}
+	}
+	lines := make([]string, 0, (len(runes)/width)+1)
+	for start := 0; start < len(runes); start += width {
+		end := start + width
+		if end > len(runes) {
+			end = len(runes)
+		}
+		lines = append(lines, string(runes[start:end]))
+	}
+	return lines
+}
+
+func imagePanelName(config *runtime.ContainerConfig, imgInfo *runtime.ImageInfo) string {
+	if config != nil && strings.TrimSpace(config.ImageName) != "" {
+		return config.ImageName
+	}
+	if imgInfo != nil && len(imgInfo.Names) > 0 && strings.TrimSpace(imgInfo.Names[0]) != "" {
+		return imgInfo.Names[0]
+	}
+	return "-"
+}
+
+func imagePanelID(imgInfo *runtime.ImageInfo) string {
+	if imgInfo == nil || strings.TrimSpace(imgInfo.Digest) == "" {
+		return "-"
+	}
+	return shortID(imgInfo.Digest)
+}
+
+func imageDetailFullID(imgInfo *runtime.ImageInfo) string {
+	if imgInfo == nil {
+		return "-"
+	}
+	if value := strings.TrimSpace(imgInfo.Digest); value != "" {
+		return value
+	}
+	return "-"
+}
+
+func imageDetailOtherNames(config *runtime.ContainerConfig, imgInfo *runtime.ImageInfo) string {
+	if imgInfo == nil || len(imgInfo.Names) == 0 {
+		return "-"
+	}
+	primary := imagePanelName(config, imgInfo)
+	others := make([]string, 0, len(imgInfo.Names))
+	seen := make(map[string]bool)
+	for _, name := range imgInfo.Names {
+		name = strings.TrimSpace(name)
+		if name == "" || name == primary || seen[name] {
+			continue
+		}
+		seen[name] = true
+		others = append(others, name)
+	}
+	if len(others) == 0 {
+		return "-"
+	}
+	return strings.Join(others, ", ")
+}
+
+func imageKindSchemaSummary(imgConfig *runtime.ImageConfigInfo) string {
+	if imgConfig == nil {
+		return "-"
+	}
+	kind := strings.TrimSpace(imgConfig.TargetKind)
+	schema := strings.TrimSpace(imgConfig.Schema)
+	value := strings.TrimSpace(kind + " / " + schema)
+	value = strings.Trim(value, " /")
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+func buildGridImageDetail(name, fullID, otherNames string, imgConfig *runtime.ImageConfigInfo) *detailGridSelectionDetail {
+	manifestPath := "-"
+	configPath := "-"
+	if imgConfig != nil && imgConfig.Manifest != nil {
+		manifestPath = fallbackValue(imgConfig.Manifest.Path, "-")
+		configPath = fallbackValue(imgConfig.Manifest.ConfigPath, "-")
+	}
+	lines := []string{
+		gridKV("Name", fallbackValue(name, "-")),
+		gridKV("Full ID", fallbackValue(fullID, "-")),
+		gridKV("Other Names", fallbackValue(otherNames, "-")),
+		gridKV("Index Path", fallbackValue(imageIndexPath(imgConfig), "-")),
+		gridKV("Manifest Path", manifestPath),
+		gridKV("Config Path", configPath),
+		gridKV("Platforms", imageSupportedPlatformsSummary(imgConfig)),
+	}
+	return &detailGridSelectionDetail{Title: "Image Detail", Lines: lines}
+}
+
+func imageIndexPath(imgConfig *runtime.ImageConfigInfo) string {
+	if imgConfig == nil {
+		return ""
+	}
+	return strings.TrimSpace(imgConfig.IndexPath)
+}
+
+func imageSupportedPlatformsSummary(imgConfig *runtime.ImageConfigInfo) string {
+	if imgConfig == nil {
+		return "-"
+	}
+	current := imageCurrentPlatform(imgConfig)
+	manifestList := imgConfig.Manifests
+	if len(manifestList) == 0 && imgConfig.Manifest != nil {
+		manifestList = []*runtime.ImageManifest{imgConfig.Manifest}
+	}
+	if len(manifestList) == 0 {
+		return "-"
+	}
+	seen := make(map[string]bool)
+	parts := make([]string, 0, len(manifestList))
+	for _, manifest := range manifestList {
+		platform := "(unknown)"
+		rawPlatform := ""
+		if manifest != nil {
+			rawPlatform = strings.TrimSpace(manifest.Platform)
+			if rawPlatform != "" {
+				platform = rawPlatform
+			}
+		}
+		if seen[platform] {
+			continue
+		}
+		seen[platform] = true
+		if rawPlatform != "" && rawPlatform == current {
+			parts = append(parts, fmt.Sprintf("[%s::b]%s[-:-:-]%s",
+				components.ColorName(components.ColorFgAccentAlt),
+				platform,
+				components.Muted("(current)"),
+			))
+			continue
+		}
+		parts = append(parts, components.Bright(platform))
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // gridKV renders a compact key-value pair for grid panels.
@@ -711,7 +997,7 @@ func buildFilesystemMountsNode(mounts []*runtime.Mount) *tview.TreeNode {
 	if rootMount != nil && rootMount.Destination != "" {
 		rootTarget = rootMount.Destination
 	}
-	node := tview.NewTreeNode(components.Dim("Mounts")).SetSelectable(true).SetExpanded(true)
+	node := components.NewTreeNode(components.Dim("Mounts")).SetSelectable(true).SetExpanded(true)
 	node.SetReference(&detailGridSelectionDetail{
 		Title: "Filesystem Mounts",
 		Lines: detailLines(
@@ -783,7 +1069,7 @@ func buildFilesystemRootfsNode(config *runtime.ContainerConfig, storage *runtime
 		rwLayer = config.SnapshotKey
 	}
 
-	node := tview.NewTreeNode(components.Dim("Rootfs")).SetSelectable(true).SetExpanded(true)
+	node := components.NewTreeNode(components.Dim("Rootfs")).SetSelectable(true).SetExpanded(true)
 	node.SetReference(&detailGridSelectionDetail{
 		Title: "Rootfs",
 		Lines: detailLines(
@@ -806,7 +1092,7 @@ func buildFilesystemRootfsNode(config *runtime.ContainerConfig, storage *runtime
 		detailField("Origin", "Container storage"),
 	)))
 
-	layersNode := tview.NewTreeNode(components.Dim(fmt.Sprintf("Image Layers (%d)", filesystemLayerCount(storage)))).SetSelectable(true).SetExpanded(true)
+	layersNode := components.NewTreeNode(components.Dim(fmt.Sprintf("Image Layers (%d)", filesystemLayerCount(storage)))).SetSelectable(true).SetExpanded(true)
 	layersNode.SetReference(&detailGridSelectionDetail{
 		Title: "Image Layers",
 		Lines: detailLines(
@@ -827,7 +1113,7 @@ func buildFilesystemRootfsNode(config *runtime.ContainerConfig, storage *runtime
 			))
 		}
 	} else {
-		emptyNode := tview.NewTreeNode(components.Muted("none")).SetSelectable(true)
+		emptyNode := components.NewTreeNode(components.Muted("none")).SetSelectable(true)
 		emptyNode.SetReference(&detailGridSelectionDetail{Title: "Image Layers", Lines: detailLines(
 			detailField("Count", "0"),
 			detailField("Type", "Read-only"),
@@ -842,7 +1128,7 @@ func buildFilesystemRootfsNode(config *runtime.ContainerConfig, storage *runtime
 }
 
 func filesystemLeafNode(key, value string, title string, detailLines []string) *tview.TreeNode {
-	node := tview.NewTreeNode(fmt.Sprintf("[%s]%s[-] [%s]%s[-]",
+	node := components.NewTreeNode(fmt.Sprintf("[%s]%s[-] [%s]%s[-]",
 		components.ColorName(components.ColorFgMuted), key,
 		components.ColorName(components.ColorFgBright), value)).SetSelectable(true)
 	node.SetReference(&detailGridSelectionDetail{Title: title, Lines: detailLines})
@@ -870,7 +1156,6 @@ func filesystemLayerDetail(layer *runtime.ImageLayer) []string {
 		usage = fmt.Sprintf("%d inodes", layer.UsageInodes)
 	}
 	return detailLines(
-		detailField("Index", fmt.Sprintf("%d", layer.Index)),
 		detailField("ID", layerTreeID(layer)),
 		detailField("Path", fallbackValue(layer.Path, "-")),
 		detailField("Usage", usage),

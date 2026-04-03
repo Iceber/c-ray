@@ -112,8 +112,90 @@ func NewProcessCollector() (*ProcessCollector, error) {
 	}, nil
 }
 
-// CollectContainerProcesses collects all processes for a container
-// containerPID is the main process PID of the container
+// buildNsPIDToHostPIDMap builds a mapping from container-namespace PIDs to
+// host PIDs by scanning host /proc for processes that share the same PID
+// namespace as the container's init process (containerPID).
+//
+// The algorithm:
+//  1. Resolve the PID namespace inode of containerPID via /proc/<pid>/ns/pid.
+//  2. Iterate all host PIDs; for each that lives in the same namespace, read
+//     NSpid: from /proc/<hostPID>/status. The final entry in NSpid is the
+//     innermost-namespace (container) PID.
+func (c *ProcessCollector) buildNsPIDToHostPIDMap(containerPID uint32) map[int]int {
+	containerNS, err := c.procReader.ReadPIDNamespaceInode(int(containerPID))
+	if err != nil {
+		return nil
+	}
+
+	hostPIDs, err := c.procReader.ListPIDs()
+	if err != nil {
+		return nil
+	}
+
+	m := make(map[int]int, len(hostPIDs)/4)
+	for _, hostPID := range hostPIDs {
+		nsInode, err := c.procReader.ReadPIDNamespaceInode(hostPID)
+		if err != nil || nsInode != containerNS {
+			continue
+		}
+		nsPIDs, err := c.procReader.ReadNSpid(hostPID)
+		if err != nil || len(nsPIDs) == 0 {
+			continue
+		}
+		// The last entry is the PID as seen inside the container namespace.
+		nsPID := nsPIDs[len(nsPIDs)-1]
+		m[nsPID] = hostPID
+	}
+	return m
+}
+
+// applyHostPIDs fills HostPID and HostPPID on each process using the
+// provided nsPID-to-hostPID map. Unknown parents whose namespace PID is
+// not present in the map (e.g. the container init whose shim parent lives
+// outside the namespace, showing as PPID=0 inside) are left as zero by
+// this function; callers should follow up with resolveHostPIDs to fill
+// those gaps via the host procfs.
+func applyHostPIDs(procs []*models.Process, nsPIDToHostPID map[int]int) {
+	if nsPIDToHostPID == nil {
+		return
+	}
+	for _, p := range procs {
+		if hpid, ok := nsPIDToHostPID[p.PID]; ok {
+			p.HostPID = hpid
+		}
+		if hppid, ok := nsPIDToHostPID[p.PPID]; ok {
+			p.HostPPID = hppid
+		}
+	}
+}
+
+// resolveHostPIDs applies the nsPID-to-hostPID namespace map and then fills
+// any remaining HostPPID gaps via a direct host-procfs lookup.
+//
+// Why a second pass is needed: processes whose parent lives outside the
+// container PID namespace (always true for the container init / PID-1) have
+// PPID=0 in their stat file as seen from the container procfs. That key is
+// absent from the namespace map, so HostPPID stays 0 after applyHostPIDs.
+// The fallback reads /proc/<HostPID>/stat on the host, which shows the real
+// parent (e.g. the shim) and fills HostPPID correctly.
+func (c *ProcessCollector) resolveHostPIDs(procs []*models.Process, containerPID uint32) {
+	applyHostPIDs(procs, c.buildNsPIDToHostPIDMap(containerPID))
+
+	// Fallback: for any process where HostPID is known but HostPPID is still
+	// zero, read the PPID from the host procfs. This covers:
+	//   • The container init (PID 1), whose parent (shim) is outside the ns.
+	//   • Any process whose parent exited mid-scan and was not in the map.
+	for _, p := range procs {
+		if p.HostPID > 0 && p.HostPPID == 0 {
+			if ppid, err := c.procReader.GetProcessPPID(p.HostPID); err == nil && ppid > 0 {
+				p.HostPPID = ppid
+			}
+		}
+	}
+}
+
+// CollectContainerProcesses collects all processes for a container.
+// containerPID is the main process PID of the container (host namespace).
 func (c *ProcessCollector) CollectContainerProcesses(containerPID uint32) ([]*models.Process, error) {
 	// For containers, we need to read processes from the container's namespace
 	// This is done by reading /proc/[containerPID]/root/proc
@@ -125,21 +207,31 @@ func (c *ProcessCollector) CollectContainerProcesses(containerPID uint32) ([]*mo
 	// List all PIDs in the container
 	pids, err := containerProcReader.ListPIDs()
 	if err != nil {
-		// Fallback: just return the main process
+		// Fallback: just return the main process read from the host proc.
+		// In this path the PID is already a host PID.
 		process, err := c.procReader.ReadProcess(int(containerPID))
 		if err != nil {
 			return nil, err
 		}
+		process.HostPID = process.PID
+		if ppid, err := c.procReader.GetProcessPPID(process.PID); err == nil {
+			process.HostPPID = ppid
+		}
 		return []*models.Process{process}, nil
 	}
 
-	// Build process tree
+	// Build process tree using container-namespace proc reader.
 	tree := NewProcessTree(containerProcReader)
 	if err := tree.Build(pids); err != nil {
 		return nil, err
 	}
 
-	return tree.GetAllProcesses(), nil
+	procs := tree.GetAllProcesses()
+
+	// Resolve host PIDs for every process in the container namespace.
+	c.resolveHostPIDs(procs, containerPID)
+
+	return procs, nil
 }
 
 // CollectProcessTop collects top-like process information with CPU%, IO rate,
@@ -191,7 +283,9 @@ func (c *ProcessCollector) collectTopProcesses(containerPID uint32, targetPIDs .
 		return nil, err
 	}
 
-	return []*models.Process{process}, nil
+	procs := []*models.Process{process}
+	c.resolveHostPIDs(procs, containerPID)
+	return procs, nil
 }
 
 // BuildProcessTree builds a process tree from a list of processes

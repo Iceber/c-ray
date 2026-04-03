@@ -5,12 +5,45 @@ import (
 	"github.com/rivo/tview"
 )
 
+// NewTreeNode creates a tree node using the shared components package entrypoint.
+func NewTreeNode(text string) *tview.TreeNode {
+	return tview.NewTreeNode(text)
+}
+
 // InitTreeView applies the standard tree view style: no border, graphics
 // lines enabled, and the default border color for tree connectors.
 func InitTreeView(tree *tview.TreeView) {
 	tree.SetBorder(false)
 	tree.SetGraphics(true)
 	tree.SetGraphicsColor(ColorFgBorder)
+}
+
+// ApplyTreeFocusStyle updates a tree so only the focused tree renders its
+// current node with the selected highlight. Non-focused trees keep their
+// current node but render it like normal text to avoid ambiguous focus cues.
+func ApplyTreeFocusStyle(tree *tview.TreeView, focused bool) {
+	if tree == nil {
+		return
+	}
+	if focused {
+		tree.SetBorderColor(ColorFgAccent)
+		tree.SetGraphicsColor(ColorFgAccent)
+	} else {
+		tree.SetBorderColor(ColorFgBorder)
+		tree.SetGraphicsColor(ColorFgBorder)
+	}
+	root := tree.GetRoot()
+	if root == nil {
+		return
+	}
+	root.Walk(func(node, parent *tview.TreeNode) bool {
+		if focused {
+			node.SetSelectedTextStyle(StyleSelectRow)
+		} else {
+			node.SetSelectedTextStyle(node.GetTextStyle())
+		}
+		return true
+	})
 }
 
 // ExpandAllNodes toggles expand/collapse for all nodes under root.

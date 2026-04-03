@@ -35,7 +35,12 @@ func NewProcessTreeView(app *tview.Application) *ProcessTreeView {
 
 	v.tree = tview.NewTreeView()
 	components.InitTreeView(v.tree)
-	v.tree.SetRoot(tview.NewTreeNode(components.Muted("No data")))
+	v.tree.SetRoot(tview.NewTreeNode(components.Muted("No data")).SetSelectable(false))
+	v.tree.SetSelectedFunc(func(node *tview.TreeNode) {
+		if node != nil {
+			node.SetExpanded(!node.IsExpanded())
+		}
+	})
 
 	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
 
@@ -116,6 +121,9 @@ func (v *ProcessTreeView) render(ctx context.Context) {
 
 	queueUpdateDraw(v.app, func() {
 		rootNode := tview.NewTreeNode(rootLabel).SetSelectable(true).SetExpanded(true)
+		if len(roots) == 0 {
+			rootNode.AddChild(tview.NewTreeNode(components.Muted("No container processes reported")).SetSelectable(true))
+		}
 		for _, root := range roots {
 			rootNode.AddChild(buildProcessNode(root, childMap))
 		}
@@ -176,22 +184,8 @@ func (v *ProcessTreeView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
 
 func (v *ProcessTreeView) expandAll() {
 	root := v.tree.GetRoot()
-	if root == nil {
-		return
-	}
-	expanded := true
-	root.Walk(func(node, parent *tview.TreeNode) bool {
-		if !node.IsExpanded() && len(node.GetChildren()) > 0 {
-			expanded = false
-			return false
-		}
-		return true
-	})
-	target := !expanded
-	root.Walk(func(node, parent *tview.TreeNode) bool {
-		node.SetExpanded(target)
-		return true
-	})
+	components.ExpandAllNodes(root)
+	v.tree.SetCurrentNode(root)
 }
 
 // GetFocusPrimitive returns the focusable primitive.

@@ -113,11 +113,16 @@ type IDMapEntry struct {
 }
 
 type Process struct {
-	PID     int
-	PPID    int
-	Command string
-	Args    []string
-	State   string
+	PID  int
+	PPID int
+	// HostPID is the PID of this process in the host PID namespace.
+	// Zero when the mapping could not be resolved.
+	HostPID int
+	// HostPPID is the parent PID of this process in the host PID namespace.
+	HostPPID int
+	Command  string
+	Args     []string
+	State    string
 }
 
 // Process contains the process fields currently used by the top and tree views.

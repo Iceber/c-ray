@@ -20,11 +20,13 @@ func ConvertProcesses(procs []*models.Process) []*Process {
 	out := make([]*Process, 0, len(procs))
 	for _, p := range procs {
 		out = append(out, &Process{
-			PID:     p.PID,
-			PPID:    p.PPID,
-			Command: p.Command,
-			Args:    append([]string(nil), p.Args...),
-			State:   p.State,
+			PID:      p.PID,
+			PPID:     p.PPID,
+			HostPID:  p.HostPID,
+			HostPPID: p.HostPPID,
+			Command:  p.Command,
+			Args:     append([]string(nil), p.Args...),
+			State:    p.State,
 		})
 	}
 	return out
@@ -37,11 +39,13 @@ func ConvertProcessStats(p *models.Process) *ProcessStats {
 	}
 	ps := &ProcessStats{
 		Process: Process{
-			PID:     p.PID,
-			PPID:    p.PPID,
-			Command: p.Command,
-			Args:    append([]string(nil), p.Args...),
-			State:   p.State,
+			PID:      p.PID,
+			PPID:     p.PPID,
+			HostPID:  p.HostPID,
+			HostPPID: p.HostPPID,
+			Command:  p.Command,
+			Args:     append([]string(nil), p.Args...),
+			State:    p.State,
 		},
 		CPUPercent:       p.CPUPercent,
 		MemoryPercent:    p.MemoryPercent,

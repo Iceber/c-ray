@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	dockertypes "github.com/docker/docker/api/types"
@@ -138,6 +139,45 @@ func TestImageLayersOverlay2FallsBackToSummaryOnDirCountMismatch(t *testing.T) {
 		if layer.Docker == nil || layer.Docker.GraphDriver != "overlay2" {
 			t.Fatalf("layer[%d].Docker = %+v, want overlay2 summary metadata", i, layer.Docker)
 		}
+	}
+}
+
+func TestImageInfoReturnsAllNames(t *testing.T) {
+	h := newLoadedDockerImageHandle(&dockertypes.ImageInspect{
+		ID:          "sha256:imageid",
+		Size:        42,
+		Created:     "2024-01-02T03:04:05.123456789Z",
+		RepoTags:    []string{"repo:v1", "repo:latest"},
+		RepoDigests: []string{"repo@sha256:deadbeef"},
+	})
+
+	info, err := h.Info(context.Background())
+	if err != nil {
+		t.Fatalf("Info() error: %v", err)
+	}
+
+	want := []string{"repo:v1", "repo:latest", "repo@sha256:deadbeef"}
+	if !reflect.DeepEqual(info.Names, want) {
+		t.Fatalf("Info().Names = %#v, want %#v", info.Names, want)
+	}
+}
+
+func TestImageConfigReturnsPlatform(t *testing.T) {
+	h := newLoadedDockerImageHandle(&dockertypes.ImageInspect{
+		Architecture: "arm64",
+		Variant:      "v8",
+		Os:           "linux",
+	})
+
+	info, err := h.Config(context.Background())
+	if err != nil {
+		t.Fatalf("Config() error: %v", err)
+	}
+	if info.Manifest == nil {
+		t.Fatal("Config().Manifest = nil, want non-nil")
+	}
+	if info.Manifest.Platform != "linux/arm64/v8" {
+		t.Fatalf("Config().Manifest.Platform = %q, want linux/arm64/v8", info.Manifest.Platform)
 	}
 }
 

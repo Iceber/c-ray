@@ -21,9 +21,10 @@ import (
 // Image metadata (config, manifest, diffIDs) is immutable once pushed and is
 // loaded lazily then cached for the lifetime of the handle.
 type imageHandle struct {
-	rt  *Runtime
-	raw client.Image
-	ref string
+	rt    *Runtime
+	raw   client.Image
+	ref   string
+	names []string
 
 	metaOnce sync.Once
 	meta     *imageMeta
@@ -32,17 +33,34 @@ type imageHandle struct {
 
 // imageMeta groups the parsed image metadata that is resolved together.
 type imageMeta struct {
-	target     ocispec.Descriptor
-	configDesc ocispec.Descriptor
-	manifest   ocispec.Manifest
-	diffIDs    []digest.Digest
+	target       ocispec.Descriptor
+	configDesc   ocispec.Descriptor
+	manifestDesc ocispec.Descriptor // the per-platform manifest descriptor (same as target when not index)
+	manifest     ocispec.Manifest
+	platform     string
+	diffIDs      []digest.Digest
 }
 
 func newImageHandle(rt *Runtime, raw client.Image) *imageHandle {
 	return &imageHandle{
-		rt:  rt,
-		raw: raw,
-		ref: raw.Name(),
+		rt:    rt,
+		raw:   raw,
+		ref:   raw.Name(),
+		names: []string{raw.Name()},
+	}
+}
+
+func newGroupedImageHandle(rt *Runtime, raw client.Image, names []string) *imageHandle {
+	resolvedNames := append([]string(nil), names...)
+	ref := raw.Name()
+	if len(resolvedNames) > 0 {
+		ref = resolvedNames[0]
+	}
+	return &imageHandle{
+		rt:    rt,
+		raw:   raw,
+		ref:   ref,
+		names: resolvedNames,
 	}
 }
 
@@ -64,21 +82,23 @@ func (h *imageHandle) loadMeta(ctx context.Context) (*imageMeta, error) {
 		return nil, fmt.Errorf("failed to get image config: %w", err)
 	}
 
-	manifest, err := getManifestForConfig(ctx, cs, h.raw.Target(), configDesc.Digest)
+	manifestDesc, manifest, err := getManifestForConfig(ctx, cs, h.raw.Target(), configDesc.Digest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get image manifest: %w", err)
 	}
 
-	diffIDs, err := parseDiffIDs(ctx, cs, configDesc)
+	configMeta, err := parseImageConfigMeta(ctx, cs, configDesc)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse diff ids: %w", err)
+		return nil, fmt.Errorf("failed to parse image config: %w", err)
 	}
 
 	return &imageMeta{
-		target:     h.raw.Target(),
-		configDesc: configDesc,
-		manifest:   manifest,
-		diffIDs:    diffIDs,
+		target:       h.raw.Target(),
+		configDesc:   configDesc,
+		manifestDesc: manifestDesc,
+		manifest:     manifest,
+		platform:     configMeta.platform,
+		diffIDs:      configMeta.diffIDs,
 	}, nil
 }
 
@@ -94,8 +114,12 @@ func (h *imageHandle) Info(ctx context.Context) (*runtime.ImageInfo, error) {
 	if h.raw.Target().Digest != "" {
 		d = h.raw.Target().Digest.String()
 	}
+	names := append([]string(nil), h.names...)
+	if len(names) == 0 {
+		names = []string{h.raw.Name()}
+	}
 	return &runtime.ImageInfo{
-		Name:      h.raw.Name(),
+		Names:     names,
 		Digest:    d,
 		Size:      size,
 		CreatedAt: h.raw.Metadata().CreatedAt,
@@ -110,13 +134,96 @@ func (h *imageHandle) Config(ctx context.Context) (*runtime.ImageConfigInfo, err
 	m := h.meta
 	targetKind, schema := describeImageTarget(m.target.MediaType)
 
-	return &runtime.ImageConfigInfo{
-		ContentPath:     contentPath(h.rt.paths.Root, m.configDesc.Digest),
+	info := &runtime.ImageConfigInfo{
 		TargetMediaType: m.target.MediaType,
 		TargetKind:      targetKind,
 		Schema:          schema,
 		StorageBackend:  runtime.ImageBackendContainerd,
-	}, nil
+	}
+
+	// IndexPath is set only when the target is an index (multi-platform).
+	if !images.IsManifestType(m.target.MediaType) {
+		info.IndexPath = contentPath(h.rt.paths.Root, m.target.Digest)
+	}
+
+	// Build the current-platform manifest.
+	info.Manifest = h.buildCurrentManifest(ctx, m)
+
+	// If the target is an index, enumerate all platform manifests.
+	info.Manifests = h.buildAllManifests(ctx, m)
+
+	return info, nil
+}
+
+func (h *imageHandle) buildCurrentManifest(_ context.Context, m *imageMeta) *runtime.ImageManifest {
+	// Use manifestDesc (the per-platform manifest descriptor), not target,
+	// so that Manifest always describes the current platform's manifest
+	// rather than the index.
+	platform := describePlatform(m.manifestDesc.Platform)
+	if platform == "" {
+		platform = m.platform
+	}
+	return &runtime.ImageManifest{
+		Digest:     m.manifestDesc.Digest.String(),
+		Platform:   platform,
+		Path:       contentPath(h.rt.paths.Root, m.manifestDesc.Digest),
+		ConfigPath: contentPath(h.rt.paths.Root, m.configDesc.Digest),
+	}
+}
+
+func (h *imageHandle) buildAllManifests(ctx context.Context, m *imageMeta) []*runtime.ImageManifest {
+	cs := h.rt.client.ContentStore()
+	target := m.target
+
+	// Only index-type targets contain multiple platform manifests.
+	if images.IsManifestType(target.MediaType) {
+		// Single manifest — Manifests mirrors the current Manifest.
+		return []*runtime.ImageManifest{h.buildCurrentManifest(ctx, m)}
+	}
+
+	data, err := content.ReadBlob(ctx, cs, target)
+	if err != nil {
+		return nil
+	}
+	var index ocispec.Index
+	if err := json.Unmarshal(data, &index); err != nil {
+		return nil
+	}
+
+	result := make([]*runtime.ImageManifest, 0, len(index.Manifests))
+	for _, desc := range index.Manifests {
+		if !images.IsManifestType(desc.MediaType) {
+			continue
+		}
+		platformStr := describePlatform(desc.Platform)
+		manifest := &runtime.ImageManifest{
+			Digest:   desc.Digest.String(),
+			Platform: platformStr,
+			Path:     contentPath(h.rt.paths.Root, desc.Digest),
+		}
+
+		// Resolve config path by reading this platform's manifest.
+		if platManifest, err := images.Manifest(ctx, cs, desc, nil); err == nil {
+			manifest.ConfigPath = contentPath(h.rt.paths.Root, platManifest.Config.Digest)
+			if manifest.Platform == "" {
+				manifest.Platform = resolveConfigPlatform(ctx, cs, platManifest.Config)
+			}
+		}
+
+		result = append(result, manifest)
+	}
+	return result
+}
+
+func describePlatform(p *ocispec.Platform) string {
+	if p == nil {
+		return ""
+	}
+	s := p.OS + "/" + p.Architecture
+	if p.Variant != "" {
+		s += "/" + p.Variant
+	}
+	return s
 }
 
 func (h *imageHandle) Layers(ctx context.Context, query runtime.LayerQuery) ([]*runtime.ImageLayer, error) {
@@ -145,9 +252,15 @@ func (h *imageHandle) buildLayers(ctx context.Context, manifest ocispec.Manifest
 	chainIDs := calculateChainIDs(diffIDs)
 	layerCount := len(manifest.Layers)
 
+	// Resolve RO layer paths. Primary: from the active container's RW layer
+	// mount (fast, no side-effects). Fallback: create a temporary view of the
+	// topmost committed snapshot via the containerd API — avoids opening
+	// metadata.db directly and works while containerd holds its BoltDB lock.
 	var roPaths []string
 	if query.RWSnapshotKey != "" {
 		roPaths = readOnlyLayerPathsFromMounts(ctx, snapshotter, query.RWSnapshotKey)
+	} else if snapshotter != nil && layerCount > 0 {
+		roPaths = readOnlyLayerPathsViaView(ctx, snapshotter, chainIDs[layerCount-1].String())
 	}
 
 	layers := make([]*runtime.ImageLayer, layerCount)
@@ -195,25 +308,25 @@ func (h *imageHandle) populateSnapshotInfo(ctx context.Context, snapshotter snap
 // Image helpers
 // ---------------------------------------------------------------------------
 
-func getManifestForConfig(ctx context.Context, cs content.Store, target ocispec.Descriptor, configDigest digest.Digest) (ocispec.Manifest, error) {
+func getManifestForConfig(ctx context.Context, cs content.Store, target ocispec.Descriptor, configDigest digest.Digest) (ocispec.Descriptor, ocispec.Manifest, error) {
 	if images.IsManifestType(target.MediaType) {
 		manifest, err := images.Manifest(ctx, cs, target, nil)
 		if err != nil {
-			return ocispec.Manifest{}, err
+			return ocispec.Descriptor{}, ocispec.Manifest{}, err
 		}
 		if manifest.Config.Digest != configDigest {
-			return ocispec.Manifest{}, fmt.Errorf("manifest config digest mismatch")
+			return ocispec.Descriptor{}, ocispec.Manifest{}, fmt.Errorf("manifest config digest mismatch")
 		}
-		return manifest, nil
+		return target, manifest, nil
 	}
 
 	data, err := content.ReadBlob(ctx, cs, target)
 	if err != nil {
-		return ocispec.Manifest{}, fmt.Errorf("failed to read image index: %w", err)
+		return ocispec.Descriptor{}, ocispec.Manifest{}, fmt.Errorf("failed to read image index: %w", err)
 	}
 	var index ocispec.Index
 	if err := json.Unmarshal(data, &index); err != nil {
-		return ocispec.Manifest{}, fmt.Errorf("failed to unmarshal image index: %w", err)
+		return ocispec.Descriptor{}, ocispec.Manifest{}, fmt.Errorf("failed to unmarshal image index: %w", err)
 	}
 	for _, desc := range index.Manifests {
 		if !images.IsManifestType(desc.MediaType) {
@@ -224,26 +337,56 @@ func getManifestForConfig(ctx context.Context, cs content.Store, target ocispec.
 			continue
 		}
 		if manifest.Config.Digest == configDigest {
-			return manifest, nil
+			return desc, manifest, nil
 		}
 	}
-	return ocispec.Manifest{}, fmt.Errorf("no manifest found with config digest %s", configDigest)
+	return ocispec.Descriptor{}, ocispec.Manifest{}, fmt.Errorf("no manifest found with config digest %s", configDigest)
 }
 
-func parseDiffIDs(ctx context.Context, cs content.Store, configDesc ocispec.Descriptor) ([]digest.Digest, error) {
+type imageConfigMeta struct {
+	platform string
+	diffIDs  []digest.Digest
+}
+
+func parseImageConfigMeta(ctx context.Context, cs content.Store, configDesc ocispec.Descriptor) (imageConfigMeta, error) {
 	data, err := content.ReadBlob(ctx, cs, configDesc)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config: %w", err)
+		return imageConfigMeta{}, fmt.Errorf("failed to read config: %w", err)
 	}
 	var config struct {
-		RootFS struct {
+		Architecture string `json:"architecture"`
+		OS           string `json:"os"`
+		Variant      string `json:"variant"`
+		RootFS       struct {
 			DiffIDs []digest.Digest `json:"diff_ids"`
 		} `json:"rootfs"`
 	}
 	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, err
+		return imageConfigMeta{}, err
 	}
-	return config.RootFS.DiffIDs, nil
+	return imageConfigMeta{
+		platform: formatPlatform(config.OS, config.Architecture, config.Variant),
+		diffIDs:  config.RootFS.DiffIDs,
+	}, nil
+}
+
+func resolveConfigPlatform(ctx context.Context, cs content.Store, configDesc ocispec.Descriptor) string {
+	meta, err := parseImageConfigMeta(ctx, cs, configDesc)
+	if err != nil {
+		return ""
+	}
+	return meta.platform
+}
+
+func formatPlatform(osName, arch, variant string) string {
+	if osName == "" || arch == "" {
+		return ""
+	}
+	platform := osName + "/" + arch
+	if variant != "" {
+		platform += "/" + variant
+	}
+	return platform
 }
 
 func calculateChainIDs(diffIDs []digest.Digest) []digest.Digest {

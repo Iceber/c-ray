@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/rivo/tview"
 )
 
@@ -170,4 +171,35 @@ func fallbackValue(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func imageCurrentPlatform(imgConfig *runtime.ImageConfigInfo) string {
+	if imgConfig == nil || imgConfig.Manifest == nil {
+		return ""
+	}
+	return strings.TrimSpace(imgConfig.Manifest.Platform)
+}
+
+func imagePlatformCount(imgConfig *runtime.ImageConfigInfo) int {
+	if imgConfig == nil {
+		return 0
+	}
+	if len(imgConfig.Manifests) > 0 {
+		return len(imgConfig.Manifests)
+	}
+	if imgConfig.Manifest != nil {
+		return 1
+	}
+	return 0
+}
+
+func imagePlatformsSummary(imgConfig *runtime.ImageConfigInfo) string {
+	count := imagePlatformCount(imgConfig)
+	if count == 0 {
+		return ""
+	}
+	if count == 1 {
+		return "1 manifest"
+	}
+	return fmt.Sprintf("%d manifests", count)
 }
