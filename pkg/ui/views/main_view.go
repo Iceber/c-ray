@@ -44,6 +44,7 @@ type MainView struct {
 	refreshCancel   context.CancelFunc
 
 	onContainerSelect func(c runtime.Container)
+	onImageSelect     func(img runtime.Image)
 }
 
 // NewMainView creates the main view with tab switching.
@@ -85,6 +86,12 @@ func NewMainView(app *tview.Application, rt runtime.Runtime, ctx context.Context
 func (v *MainView) SetContainerSelectFunc(handler func(c runtime.Container)) {
 	v.onContainerSelect = handler
 	v.containerList.SetSelectedFunc(handler)
+}
+
+// SetImageSelectFunc sets the callback when an image is selected.
+func (v *MainView) SetImageSelectFunc(handler func(img runtime.Image)) {
+	v.onImageSelect = handler
+	v.imageList.SetSelectedFunc(handler)
 }
 
 // HandleInput processes key events for tab switching and refresh.

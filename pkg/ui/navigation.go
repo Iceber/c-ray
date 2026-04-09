@@ -10,6 +10,7 @@ type PageName string
 const (
 	PageMain            PageName = "main"
 	PageContainerDetail PageName = "container_detail"
+	PageImageDetail     PageName = "image_detail"
 )
 
 // Navigator manages page navigation with history.

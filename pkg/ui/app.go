@@ -22,6 +22,7 @@ type App struct {
 
 	mainView   *views.MainView
 	detailView *views.ContainerDetailView
+	imageView  *views.ImageDetailView
 }
 
 // NewApp creates a new TUI application.
@@ -46,21 +47,36 @@ func (a *App) setupUI() {
 
 	a.mainView = views.NewMainView(a.tviewApp, a.runtime, a.ctx)
 	a.detailView = views.NewContainerDetailView(a.tviewApp, a.ctx)
+	a.imageView = views.NewImageDetailView(a.tviewApp, a.runtime, a.ctx)
 
 	a.mainView.SetContainerSelectFunc(func(c runtime.Container) {
 		a.detailView.SetContainer(c)
 		a.nav.NavigateToAndFocus(PageContainerDetail, a.detailView.GetFocusPrimitive())
 	})
+	a.mainView.SetImageSelectFunc(func(img runtime.Image) {
+		a.imageView.SetImage(img)
+		a.nav.NavigateToAndFocus(PageImageDetail, a.imageView.GetFocusPrimitive())
+	})
 
 	a.detailView.SetBackFunc(func() {
 		a.nav.Back()
+		// Re-resolve focus dynamically: the registered focus for PageMain is a static
+		// snapshot captured at startup (containerList). If the user navigated back from
+		// a different tab, we must override with the currently active tab's widget.
+		a.tviewApp.SetFocus(a.mainView.GetFocusPrimitive())
+	})
+	a.imageView.SetBackFunc(func() {
+		a.nav.Back()
+		a.tviewApp.SetFocus(a.mainView.GetFocusPrimitive())
 	})
 
 	a.pages.AddPage(string(PageMain), a.mainView, true, true)
 	a.pages.AddPage(string(PageContainerDetail), a.detailView, true, false)
+	a.pages.AddPage(string(PageImageDetail), a.imageView, true, false)
 
 	a.nav.RegisterFocus(PageMain, a.mainView.GetFocusPrimitive())
 	a.nav.RegisterFocus(PageContainerDetail, a.detailView)
+	a.nav.RegisterFocus(PageImageDetail, a.imageView)
 	a.nav.NavigateTo(PageMain)
 }
 
@@ -88,6 +104,12 @@ func (a *App) setupKeybindings() {
 				return nil
 			}
 			return a.detailView.HandleInput(event)
+		case PageImageDetail:
+			if event.Rune() == 'Q' {
+				a.Stop()
+				return nil
+			}
+			return a.imageView.HandleInput(event)
 		default:
 			if event.Rune() == 'q' || event.Rune() == 'Q' {
 				a.Stop()
@@ -116,14 +138,14 @@ func (a *App) showHelp() {
   ` + keyTag + `1/2/3` + resetFg + `       Switch tab (Containers/Images/Pods)
   ` + keyTag + `Tab` + resetFg + `         Next tab
   ` + keyTag + `Shift+Tab` + resetFg + `   Previous tab
-  ` + keyTag + `Enter` + resetFg + `       Open container detail
+	` + keyTag + `Enter` + resetFg + `       Open selected resource detail
   ` + keyTag + `e` + resetFg + `           Toggle expand/collapse
   ` + keyTag + `a` + resetFg + `           Expand/collapse all pods
   ` + keyTag + `r` + resetFg + `           Refresh data
 
 ` + sectionTag + "Detail View" + reset + `
   ` + keyTag + `Esc/q` + resetFg + `       Back to list
-  ` + keyTag + `1-5` + resetFg + `         Switch page (Info/Processes/Filesystem/Runtime/Network)
+	` + keyTag + `1-5` + resetFg + `         Switch page in detail view
   ` + keyTag + `Tab` + resetFg + `         Next page
   ` + keyTag + `Shift+Tab` + resetFg + `   Previous page
   ` + keyTag + `r` + resetFg + `           Refresh data
