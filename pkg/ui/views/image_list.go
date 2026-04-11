@@ -5,20 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/icebergu/c-ray/pkg/ui/components"
 	"github.com/rivo/tview"
-)
-
-// imageListStyle controls how the image list is rendered.
-type imageListStyle int
-
-const (
-	// imageListStyleFlat: one row per Name, repeating digest/size/created for same digest.
-	imageListStyleFlat imageListStyle = iota
-	// imageListStyleTree: one digest row with collapsible Names beneath.
-	imageListStyleTree
 )
 
 // ImageListView displays a list of images.
@@ -31,10 +20,8 @@ type ImageListView struct {
 	statusBar       *tview.TextView
 	entries         []imageEntry
 	onSelect        func(runtime.Image)
-	rowMap          []int  // data-row (0-based) → entries index
-	entryPrimaryRow []int  // entries index → primary table row (1-based)
-	style           imageListStyle
-	expanded        []bool // per-entry expanded state (tree style only)
+	rowMap          []int // data-row (0-based) → entries index
+	entryPrimaryRow []int // entries index → primary table row (1-based)
 }
 
 type imageEntry struct {
@@ -48,7 +35,9 @@ type imageSelection struct {
 }
 
 var imageColumns = []components.Column{
-	{Title: "NAME", Width: 0},
+	{Title: "IMAGE", Width: 0},
+	{Title: "TAG", Width: 20},
+	{Title: "ALIASES", Width: 8, Align: tview.AlignRight},
 	{Title: "DIGEST", Width: 20},
 	{Title: "SIZE", Width: 12, Align: tview.AlignRight},
 	{Title: "CREATED", Width: 20},
@@ -57,10 +46,9 @@ var imageColumns = []components.Column{
 // NewImageListView creates a new image list view.
 func NewImageListView(app *tview.Application, rt runtime.Runtime) *ImageListView {
 	v := &ImageListView{
-		Flex:  tview.NewFlex().SetDirection(tview.FlexRow),
-		app:   app,
-		rt:    rt,
-		style: imageListStyleFlat,
+		Flex: tview.NewFlex().SetDirection(tview.FlexRow),
+		app:  app,
+		rt:   rt,
 	}
 	v.table = components.NewTable(imageColumns)
 	v.table.SetSelectedFunc(func(row int) {
@@ -78,26 +66,9 @@ func NewImageListView(app *tview.Application, rt runtime.Runtime) *ImageListView
 		}
 		v.updateStatusBar()
 	})
-	v.table.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		switch event.Rune() {
-		case 'v', 'V':
-			v.toggleStyle()
-			return nil
-		case 'e':
-			if v.style == imageListStyleTree {
-				v.toggleExpand()
-				return nil
-			}
-		case 'a':
-			if v.style == imageListStyleTree {
-				v.toggleExpandAll()
-				return nil
-			}
-		}
-		return event
-	})
+
 	v.statusBar = tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
-	v.table.AddRow(components.Muted("Loading images..."), "", "", "")
+	v.table.AddRow(components.Muted("Loading images..."), "", "", "", "", "")
 
 	v.Flex.AddItem(v.table, 0, 1, true)
 	v.Flex.AddItem(v.statusBar, 1, 0, false)
@@ -123,7 +94,7 @@ func (v *ImageListView) Refresh(ctx context.Context) error {
 		v.entries = nil
 		queueUpdateDraw(v.app, func() {
 			v.table.ClearData()
-			v.table.AddRow(fmt.Sprintf("[%s]Failed to load images: %v[-]", components.ColorName(components.ColorFgError), err), "", "", "")
+			v.table.AddRow(fmt.Sprintf("[%s]Failed to load images: %v[-]", components.ColorName(components.ColorFgError), err), "", "", "", "", "")
 		})
 		return err
 	}
@@ -138,33 +109,12 @@ func (v *ImageListView) Refresh(ctx context.Context) error {
 	}
 
 	v.entries = entries
-	// Preserve expanded state per digest across refreshes.
-	oldExpanded := v.expanded
-	v.expanded = make([]bool, len(entries))
-	if oldExpanded != nil {
-		for i := range entries {
-			if i < len(oldExpanded) {
-				v.expanded[i] = oldExpanded[i]
-			}
-		}
-	}
 	queueUpdateDraw(v.app, func() {
-		v.render()
+		v.renderFlat()
+		v.updateStatusBar()
 		v.restoreSelection(savedSelection)
 	})
 	return nil
-}
-
-// ── render dispatches to the active style ──────────────────────────────────
-
-func (v *ImageListView) render() {
-	switch v.style {
-	case imageListStyleFlat:
-		v.renderFlat()
-	case imageListStyleTree:
-		v.renderTree()
-	}
-	v.updateStatusBar()
 }
 
 func (v *ImageListView) renderFlat() {
@@ -179,118 +129,21 @@ func (v *ImageListView) renderFlat() {
 		created := img.CreatedAt.Format("2006-01-02 15:04:05")
 
 		v.entryPrimaryRow[idx] = tableRow
-		if len(img.Names) == 0 {
+		visibleNames := imageVisibleNames(img)
+		aliasCount := fmt.Sprintf("%d", len(visibleNames))
+		if len(visibleNames) == 0 {
 			v.rowMap = append(v.rowMap, idx)
-			v.table.AddRow("-", digest, size, created)
+			v.table.AddRow("-", "", "", digest, size, created)
 			tableRow++
 		} else {
-			for i, name := range img.Names {
+			for _, name := range visibleNames {
+				image, tag := splitImageName(name)
 				v.rowMap = append(v.rowMap, idx)
-				if i == 0 {
-					v.table.AddRow(name, digest, size, created)
-				} else {
-					v.table.AddRow(name, digest, size, created)
-				}
+				v.table.AddRow(image, tag, aliasCount, digest, size, created)
 				tableRow++
 			}
 		}
 	}
-}
-
-func (v *ImageListView) renderTree() {
-	v.table.ClearData()
-	v.rowMap = v.rowMap[:0]
-	v.entryPrimaryRow = make([]int, len(v.entries))
-	tableRow := 1
-	for idx, e := range v.entries {
-		img := e.info
-		digest := shortDigest(img.Digest, 19)
-		size := formatSize(img.Size)
-		created := img.CreatedAt.Format("2006-01-02 15:04:05")
-		nameCount := len(img.Names)
-
-		// Digest row with expand/collapse indicator.
-		var indicator string
-		if nameCount > 1 {
-			if v.expanded[idx] {
-				indicator = "▼ "
-			} else {
-				indicator = "▶ "
-			}
-		} else {
-			indicator = "  "
-		}
-		primaryName := "-"
-		if nameCount > 0 {
-			primaryName = img.Names[0]
-		}
-		label := indicator + primaryName
-		if nameCount > 1 {
-			label += components.Muted(fmt.Sprintf(" (+%d)", nameCount-1))
-		}
-
-		v.entryPrimaryRow[idx] = tableRow
-		v.rowMap = append(v.rowMap, idx)
-		v.table.AddRow(label, digest, size, created)
-		tableRow++
-
-		// Child name rows when expanded.
-		if nameCount > 1 && v.expanded[idx] {
-			for i := 1; i < nameCount; i++ {
-				v.rowMap = append(v.rowMap, idx)
-				v.table.AddRow(components.Muted("    "+img.Names[i]), "", "", "")
-				tableRow++
-			}
-		}
-	}
-}
-
-// ── toggle helpers ──────────────────────────────────────────────────────────
-
-func (v *ImageListView) toggleStyle() {
-	saved := v.getSelection()
-	if v.style == imageListStyleFlat {
-		v.style = imageListStyleTree
-	} else {
-		v.style = imageListStyleFlat
-	}
-	v.render()
-	v.restoreSelection(saved)
-}
-
-func (v *ImageListView) toggleExpand() {
-	row, _ := v.table.GetSelection()
-	e := v.entryForTableRow(row)
-	if e == nil {
-		return
-	}
-	idx := v.rowMap[row-1]
-	if len(e.info.Names) <= 1 {
-		return
-	}
-	saved := v.getSelection()
-	v.expanded[idx] = !v.expanded[idx]
-	v.render()
-	v.restoreSelection(saved)
-}
-
-func (v *ImageListView) toggleExpandAll() {
-	// If any entry is collapsed, expand all; otherwise collapse all.
-	anyCollapsed := false
-	for idx, e := range v.entries {
-		if len(e.info.Names) > 1 && !v.expanded[idx] {
-			anyCollapsed = true
-			break
-		}
-	}
-	saved := v.getSelection()
-	for idx, e := range v.entries {
-		if len(e.info.Names) > 1 {
-			v.expanded[idx] = anyCollapsed
-		}
-	}
-	v.render()
-	v.restoreSelection(saved)
 }
 
 // ── row mapping helpers ─────────────────────────────────────────────────────
@@ -342,10 +195,16 @@ func (v *ImageListView) restoreSelection(saved imageSelection) {
 }
 
 func primaryImageName(img *runtime.ImageInfo) string {
-	if img == nil || len(img.Names) == 0 {
+	if img == nil {
 		return ""
 	}
-	return img.Names[0]
+	if visible := imageVisibleNames(img); len(visible) > 0 {
+		return visible[0]
+	}
+	if len(img.Names) > 0 {
+		return img.Names[0]
+	}
+	return ""
 }
 
 func imageHasName(img *runtime.ImageInfo, name string) bool {
@@ -378,16 +237,7 @@ func (v *ImageListView) updateStatusBar() {
 		}
 		parts = append(parts, components.KV("Digest ", d))
 	}
-	hints := []components.FooterHint{
-		{Key: "v", Action: "view"},
-		{Key: "r", Action: "refresh"},
-	}
-	if v.style == imageListStyleTree {
-		hints = append(hints, components.FooterHint{Key: "e", Action: "toggle"}, components.FooterHint{Key: "a", Action: "expand/collapse"})
-	}
-	for _, h := range hints {
-		parts = append(parts, components.KeyHint(h.Key, h.Action))
-	}
+	parts = append(parts, components.KeyHint("r", "refresh"))
 	v.statusBar.SetText(" " + strings.Join(parts, "  |  "))
 }
 
@@ -407,4 +257,49 @@ func shortDigest(digest string, maxLen int) string {
 		return digest[:maxLen]
 	}
 	return digest
+}
+
+// imageVisibleNames returns names that should be shown in the list:
+// - excludes names starting with "sha256:"
+// - excludes names of the form "<repo>@sha256:<hash>" where hash matches the image digest
+func imageVisibleNames(img *runtime.ImageInfo) []string {
+	// Extract the raw hash from the digest (e.g. "sha256:abc" → "abc").
+	digestHash := img.Digest
+	if after, ok := strings.CutPrefix(digestHash, "sha256:"); ok {
+		digestHash = after
+	}
+
+	visible := make([]string, 0, len(img.Names))
+	for _, name := range img.Names {
+		if strings.HasPrefix(name, "sha256:") {
+			continue
+		}
+		// Hide "<repo>@sha256:<hash>" when the hash matches this image's digest.
+		if idx := strings.Index(name, "@sha256:"); idx >= 0 {
+			if name[idx+len("@sha256:"):] == digestHash {
+				continue
+			}
+		}
+		visible = append(visible, name)
+	}
+	return visible
+}
+
+// splitImageName splits "repo:tag" into ("repo", "tag").
+// If no tag is present, tag is returned as "<none>".
+func splitImageName(name string) (string, string) {
+	// Handle names with port like localhost:5000/repo:tag
+	lastSlash := strings.LastIndex(name, "/")
+	tagPart := name
+	if lastSlash >= 0 {
+		tagPart = name[lastSlash+1:]
+	}
+	if idx := strings.LastIndex(tagPart, ":"); idx >= 0 {
+		splitAt := lastSlash + 1 + idx
+		if lastSlash < 0 {
+			splitAt = idx
+		}
+		return name[:splitAt], name[splitAt+1:]
+	}
+	return name, "<none>"
 }

@@ -809,7 +809,7 @@ func (v *ImageDetailView) renderPlatforms() {
 				indexFileNode := components.NewTreeNode("  " + gridKV("File", foldValue(v.config.IndexPath))).SetSelectable(true)
 				indexFileNode.SetReference(&platformsFileRef{Title: "Index", Path: v.config.IndexPath})
 				indexNode.AddChild(indexFileNode)
-				for _, line := range parsedManifestHighlights(v.config.IndexPath, false) {
+				for _, line := range parsedManifestHighlights(v.config.IndexPath) {
 					indexNode.AddChild(components.NewTreeNode("  " + line).SetSelectable(true))
 				}
 			} else {
@@ -828,7 +828,7 @@ func (v *ImageDetailView) renderPlatforms() {
 			label := fallbackValue(m.Platform, "(unknown)")
 			isCurrent := currentPlatform != "" && strings.TrimSpace(m.Platform) == currentPlatform
 			if isCurrent {
-				label += " " + components.Muted("(current)")
+				label = "📍 " + label
 			}
 			normalized := strings.ToLower(strings.TrimSpace(m.Platform))
 			isUnknown := normalized == "" || normalized == "unknown" || normalized == "unknown/unknown"
@@ -855,7 +855,7 @@ func (v *ImageDetailView) renderPlatforms() {
 				node.AddChild(components.NewTreeNode("  " + gridKV("Fetched to local", "False")).SetSelectable(true))
 			}
 			if pathExists(m.Path) {
-				for _, line := range parsedManifestHighlights(m.Path, isCurrent) {
+				for _, line := range parsedManifestHighlights(m.Path) {
 					node.AddChild(components.NewTreeNode("  " + line).SetSelectable(true))
 				}
 			}
@@ -1971,10 +1971,6 @@ func loadConfigHistory(configPath string) []string {
 
 func parsedSummaryRows(obj map[string]interface{}) []string {
 	rows := make([]string, 0)
-	schemaVersion := jsonFieldString(obj, "schemaVersion")
-	if schemaVersion != "" {
-		rows = append(rows, gridKV("schemaVersion", schemaVersion))
-	}
 	mediaType := jsonFieldString(obj, "mediaType")
 	if mediaType != "" {
 		rows = append(rows, gridKV("mediaType", mediaType))
@@ -2086,7 +2082,7 @@ func jsonMapCount(m map[string]interface{}, key string) int {
 	return len(obj)
 }
 
-func parsedManifestHighlights(path string, isCurrent bool) []string {
+func parsedManifestHighlights(path string) []string {
 	if strings.TrimSpace(path) == "" {
 		return []string{imageMissingPathMarker}
 	}
@@ -2095,8 +2091,5 @@ func parsedManifestHighlights(path string, isCurrent bool) []string {
 		return []string{fmt.Sprintf("[%s::b]parse error[-:-:-] %s", components.ColorName(components.ColorFgError), err.Error())}
 	}
 	rows := parsedSummaryRows(obj)
-	if isCurrent {
-		rows = append(rows, components.Muted("(current platform manifest)"))
-	}
 	return rows
 }
