@@ -184,3 +184,50 @@ type ContainerdShimInfo struct {
 	Cmdline          []string
 	SandboxBundleDir string
 }
+
+// ---------------------------------------------------------------------------
+// Container Stdio — IO configuration, log paths, and attach metadata
+// ---------------------------------------------------------------------------
+
+// AttachInfo holds attach/control socket paths for CRI-O containers.
+type AttachInfo struct {
+	Socket        string
+	ControlSocket string
+	ResizeFile    string
+}
+
+// ContainerStdio is the top-level stdio metadata returned by Container.Stdio().
+type ContainerStdio struct {
+	TTY       *bool
+	OpenStdin *bool
+	StdinOnce *bool
+
+	// Docker-specific attach flags
+	AttachStdin  *bool
+	AttachStdout *bool
+	AttachStderr *bool
+
+	LogPath string
+
+	Stdin  *string
+	Stdout *string
+	Stderr *string
+
+	Attach *AttachInfo
+
+	// Runtime-specific extensions
+	CRI  *CRIStdioInfo
+	CRIO *CRIOStdioInfo
+}
+
+// CRIStdioInfo holds CRI-sourced stdio metadata.
+type CRIStdioInfo struct {
+	ConfigLogPath string
+	StatusLogPath string
+}
+
+// CRIOStdioInfo holds CRI-O-specific stdio metadata.
+type CRIOStdioInfo struct {
+	AnnotationLogPath    string
+	LogPathFromConmonCmd string
+}

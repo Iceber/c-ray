@@ -47,7 +47,7 @@ type containerHandle struct {
 	spoofed     bool
 	spoofedOnce sync.Once
 
-	// lazy-loaded CRI detailed status
+	// one-time refresh of h.cri with authoritative data from ContainerStatus
 	statusOnce sync.Once
 
 	// lazy-loaded CRI mounts
@@ -79,6 +79,41 @@ func (r *Runtime) newContainerHandle(ctr *cstorage.Container, supplement *criCon
 func (h *containerHandle) ensureCRIMounts(ctx context.Context) {
 	h.mountsOnce.Do(func() {
 		h.mountSet, _ = h.rt.criClient.InspectContainerMounts(ctx, h.id)
+	})
+}
+
+// ensureCRISupplement upgrades h.cri with authoritative labels, annotations,
+// image, imageRef, and name sourced from ContainerStatus (verbose=true).
+// This runs once and is a no-op for spoofed containers.
+// Must be called after ensureSpoofedSupplement so that h.spoofed is set.
+func (h *containerHandle) ensureCRISupplement(ctx context.Context) {
+	h.ensureSpoofedSupplement(ctx)
+	if h.spoofed {
+		return
+	}
+	h.statusOnce.Do(func() {
+		status, err := h.rt.criClient.InspectContainerStatus(ctx, h.id)
+		if err != nil || status == nil {
+			return
+		}
+		if h.cri == nil {
+			h.cri = &criContainerSupplement{}
+		}
+		if len(status.Labels) > 0 {
+			h.cri.labels = status.Labels
+		}
+		if len(status.Annotations) > 0 {
+			h.cri.annotations = status.Annotations
+		}
+		if status.Image != "" && h.cri.image == "" {
+			h.cri.image = status.Image
+		}
+		if status.ImageRef != "" && h.cri.imageRef == "" {
+			h.cri.imageRef = status.ImageRef
+		}
+		if status.Name != "" && h.cri.name == "" {
+			h.cri.name = status.Name
+		}
 	})
 }
 
@@ -193,7 +228,7 @@ func (h *containerHandle) OCISepc()   {}
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) Info(ctx context.Context) (*runtime.ContainerInfo, error) {
-	h.ensureSpoofedSupplement(ctx)
+	h.ensureCRISupplement(ctx)
 
 	info := &runtime.ContainerInfo{
 		ID:        h.id,
@@ -227,6 +262,7 @@ func (h *containerHandle) Info(ctx context.Context) (*runtime.ContainerInfo, err
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig, error) {
+	h.ensureCRISupplement(ctx)
 	h.ensureSpec(ctx)
 
 	cfg := &runtime.ContainerConfig{}
@@ -275,7 +311,7 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) State(ctx context.Context) (*runtime.ContainerState, error) {
-	h.ensureSpoofedSupplement(ctx)
+	h.ensureCRISupplement(ctx)
 	pid := h.pid(ctx)
 
 	state := &runtime.ContainerState{
@@ -330,7 +366,7 @@ func (h *containerHandle) State(ctx context.Context) (*runtime.ContainerState, e
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) Network(ctx context.Context) (*runtime.ContainerNetworkState, error) {
-	h.ensureSpoofedSupplement(ctx)
+	h.ensureCRISupplement(ctx)
 	h.ensureSpec(ctx)
 	podNet := h.buildPodNetwork(ctx)
 	if podNet == nil {
@@ -455,7 +491,7 @@ func (h *containerHandle) Mounts(ctx context.Context) ([]*runtime.Mount, error) 
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile, error) {
-	h.ensureSpoofedSupplement(ctx)
+	h.ensureCRISupplement(ctx)
 	h.ensureSpec(ctx)
 	pid := h.pid(ctx)
 
@@ -573,6 +609,7 @@ func (h *containerHandle) GetProcessStats(ctx context.Context, pidStr string) (*
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) Image(ctx context.Context) (runtime.Image, error) {
+	h.ensureCRISupplement(ctx)
 	// Primary: look up by storage imageID.
 	if h.imageID != "" {
 		return h.rt.GetImage(ctx, h.imageID)
@@ -588,6 +625,108 @@ func (h *containerHandle) Image(ctx context.Context) (runtime.Image, error) {
 		}
 	}
 	return nil, fmt.Errorf("container has no image reference")
+}
+
+// ---------------------------------------------------------------------------
+// runtime.Container — Stdio
+// ---------------------------------------------------------------------------
+
+func (h *containerHandle) Stdio(ctx context.Context) (*runtime.ContainerStdio, error) {
+	h.ensureCRISupplement(ctx)
+	h.ensureSpec(ctx)
+	pid := h.pid(ctx)
+
+	s := &runtime.ContainerStdio{}
+	bundleDir := crioContainerBundleDir(h.rt.storageRunRoot, h.id)
+
+	// OCI spec: Process.Terminal
+	if h.spec != nil && h.spec.Process != nil {
+		s.TTY = runtime.BoolPtr(h.spec.Process.Terminal)
+	}
+
+	// CRI verbose info (live fields: TTY, Stdin, StdinOnce, LogPath).
+	crioInfo := &runtime.CRIOStdioInfo{}
+	if !h.spoofed {
+		if criStatus, _ := h.rt.criClient.InspectContainerStatus(ctx, h.id); criStatus != nil {
+			if criStatus.TTY != nil {
+				s.TTY = criStatus.TTY
+			}
+			s.OpenStdin = criStatus.Stdin
+			s.StdinOnce = criStatus.StdinOnce
+
+			s.CRI = &runtime.CRIStdioInfo{
+				ConfigLogPath: criStatus.ConfigLogPath,
+				StatusLogPath: criStatus.StatusLogPath,
+			}
+
+			if criStatus.StatusLogPath != "" {
+				s.LogPath = criStatus.StatusLogPath
+			} else if criStatus.ConfigLogPath != "" {
+				s.LogPath = criStatus.ConfigLogPath
+			}
+		}
+	}
+
+	if logPath, ok := h.cri.annotations["io.kubernetes.cri-o.LogPath"]; ok {
+		crioInfo.AnnotationLogPath = logPath
+		if s.LogPath == "" {
+			s.LogPath = logPath
+		}
+	}
+
+	// Conmon process inspection.
+	attachSocket := ""
+	if pid > 0 && h.rt.procReader != nil {
+		if conmon := getConmonProcessInfo(h.rt.procReader, pid); conmon != nil {
+			if fields := runtime.ParseConmonCmdline(conmon.cmdline); fields != nil {
+				crioInfo.LogPathFromConmonCmd = fields.LogPath
+				if fields.LogPath != "" && s.LogPath == "" {
+					s.LogPath = fields.LogPath
+				}
+				attachSocket = fields.AttachSocket
+				if fields.Terminal != nil {
+					s.TTY = fields.Terminal
+				}
+			}
+		}
+	}
+
+	// Discover attach/control files in bundle dir.
+	if attachSocket == "" {
+		attachSocket = runtime.FindUserdataFile(bundleDir, "attach")
+	}
+	controlFile := runtime.FindUserdataFile(bundleDir, "ctl")
+	winszFile := runtime.FindUserdataFile(bundleDir, "winsz")
+
+	// Build AttachInfo.
+	if attachSocket != "" || controlFile != "" {
+		s.Attach = &runtime.AttachInfo{
+			Socket:        attachSocket,
+			ControlSocket: controlFile,
+			ResizeFile:    winszFile,
+		}
+	}
+
+	s.CRIO = crioInfo
+
+	// Proc FD fallback: resolve actual open files on stdin/stdout/stderr when paths are unknown.
+	if pid > 0 && h.rt.procReader != nil {
+		fd0, fd1, fd2 := h.rt.procReader.ReadStdioFDs(int(pid))
+		if s.Stdin == nil && fd0 != nil {
+			target := fd0.Target
+			s.Stdin = &target
+		}
+		if s.Stdout == nil && fd1 != nil {
+			target := fd1.Target
+			s.Stdout = &target
+		}
+		if s.Stderr == nil && fd2 != nil {
+			target := fd2.Target
+			s.Stderr = &target
+		}
+	}
+
+	return s, nil
 }
 
 // Compile-time interface check.

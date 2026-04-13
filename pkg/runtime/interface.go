@@ -56,6 +56,7 @@ type Container interface {
 
 	Mounts(ctx context.Context) ([]*Mount, error)
 	Runtime(ctx context.Context) (*RuntimeProfile, error)
+	Stdio(ctx context.Context) (*ContainerStdio, error)
 
 	State(ctx context.Context) (*ContainerState, error)
 

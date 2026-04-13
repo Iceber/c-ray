@@ -251,12 +251,6 @@ func TestDockerClassicConfigPathRequiresDaemonRootAndDigestID(t *testing.T) {
 	if got := dockerClassicConfigPath(&Runtime{daemonInfo: &daemonInfo{DockerRootDir: "/var/lib/docker", Driver: "overlay2"}}, "not-a-digest"); got != "" {
 		t.Fatalf("dockerClassicConfigPath(non-digest) = %q, want empty", got)
 	}
-	if got := dockerClassicContentPath(nil, "sha256:abc"); got != "" {
-		t.Fatalf("dockerClassicContentPath(nil) = %q, want empty", got)
-	}
-	if got := dockerClassicContentPath(&Runtime{daemonInfo: &daemonInfo{DockerRootDir: "/var/lib/docker"}}, "not-a-digest"); got != "" {
-		t.Fatalf("dockerClassicContentPath(non-digest) = %q, want empty", got)
-	}
 }
 
 func newLoadedDockerImageHandle(inspect *dockertypes.ImageInspect) *imageHandle {

@@ -183,6 +183,7 @@ func (v *DetailGridView) Refresh(ctx context.Context) {
 	config, _ := c.Config(ctx)
 	profile, _ := c.Runtime(ctx)
 	netState, _ := c.Network(ctx)
+	stdio, _ := c.Stdio(ctx)
 	processes, _ := c.Processes(ctx)
 	storage, _ := c.Storage(ctx)
 	mounts, _ := c.Mounts(ctx)
@@ -198,7 +199,7 @@ func (v *DetailGridView) Refresh(ctx context.Context) {
 	var placeholders []string
 
 	networkText := buildGridNetworkPanel(netState)
-	stdioText, sp := buildGridStdioPanel()
+	stdioText, sp := buildGridStdioPanel(stdio)
 	placeholders = append(placeholders, sp...)
 	nsText := buildGridNamespacePanel(config)
 	cgroupText, cp := buildGridCgroupPanel(config)
@@ -562,15 +563,82 @@ func buildGridNetworkPanel(net *runtime.ContainerNetworkState) string {
 	return strings.Join(lines, "\n")
 }
 
-func buildGridStdioPanel() (string, []string) {
-	// Stdio (stdin/stdout/stderr paths) is NOT exposed by the current runtime interface.
-	placeholders := []string{"Stdio.stdin", "Stdio.stdout", "Stdio.stderr"}
-	lines := []string{
-		gridKV("stdin", components.Muted("(not available)")),
-		gridKV("stdout", components.Muted("(not available)")),
-		gridKV("stderr", components.Muted("(not available)")),
+func buildGridStdioPanel(stdio *runtime.ContainerStdio) (string, []string) {
+	if stdio == nil {
+		placeholders := []string{"Stdio.stdin", "Stdio.stdout", "Stdio.stderr"}
+		lines := []string{
+			gridKV("stdin", components.Muted("(not available)")),
+			gridKV("stdout", components.Muted("(not available)")),
+			gridKV("stderr", components.Muted("(not available)")),
+		}
+		return strings.Join(lines, "\n"), placeholders
 	}
-	return strings.Join(lines, "\n"), placeholders
+
+	var lines []string
+
+	// TTY & Stdin status line.
+	ttyStr := components.Muted("unknown")
+	if stdio.TTY != nil {
+		if *stdio.TTY {
+			ttyStr = components.Bright("yes")
+		} else {
+			ttyStr = "no"
+		}
+	}
+	lines = append(lines, gridKV("TTY", ttyStr))
+
+	stdinStr := components.Muted("unknown")
+	if stdio.OpenStdin != nil {
+		if *stdio.OpenStdin {
+			stdinStr = components.Bright("open")
+			if stdio.StdinOnce != nil && *stdio.StdinOnce {
+				stdinStr += components.Muted(" (once)")
+			}
+		} else {
+			stdinStr = "closed"
+		}
+	}
+	lines = append(lines, gridKV("Stdin", stdinStr))
+	lines = append(lines, "")
+
+	// Log path.
+	if stdio.LogPath != "" {
+		lines = append(lines, gridKV("Log", truncatePath(stdio.LogPath, 40)))
+	}
+
+	lines = append(lines, "")
+
+	// Stream endpoints.
+	renderEndpoint := func(name string, ep *string) {
+		if ep == nil || *ep == "" {
+			lines = append(lines, gridKV(name, components.Muted("-")))
+			return
+		}
+		lines = append(lines, gridKV(name, truncatePath(*ep, 35)))
+	}
+
+	renderEndpoint("stdin", stdio.Stdin)
+	renderEndpoint("stdout", stdio.Stdout)
+	renderEndpoint("stderr", stdio.Stderr)
+
+	// Attach info.
+	if stdio.Attach != nil {
+		lines = append(lines, "")
+		lines = append(lines, gridKV("Attach", components.Bright("yes")))
+		if stdio.Attach.Socket != "" {
+			lines = append(lines, gridKV("Socket", truncatePath(stdio.Attach.Socket, 35)))
+		}
+	}
+
+	return strings.Join(lines, "\n"), nil
+}
+
+// truncatePath shortens a file path for display if it exceeds maxLen.
+func truncatePath(p string, maxLen int) string {
+	if len(p) <= maxLen {
+		return p
+	}
+	return "…" + p[len(p)-maxLen+1:]
 }
 
 // buildGridNamespacePanel renders the namespace indicator panel.

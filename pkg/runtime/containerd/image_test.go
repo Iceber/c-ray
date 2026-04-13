@@ -64,19 +64,21 @@ type fakeImage struct {
 	meta   images.Image
 }
 
-func (f fakeImage) Name() string { return f.name }
-func (f fakeImage) Target() ocispec.Descriptor { return f.target }
-func (f fakeImage) Labels() map[string]string { return nil }
+func (f fakeImage) Name() string                                              { return f.name }
+func (f fakeImage) Target() ocispec.Descriptor                                { return f.target }
+func (f fakeImage) Labels() map[string]string                                 { return nil }
 func (f fakeImage) Unpack(context.Context, string, ...client.UnpackOpt) error { return nil }
-func (f fakeImage) RootFS(context.Context) ([]digest.Digest, error) { return nil, nil }
-func (f fakeImage) Size(context.Context) (int64, error) { return 0, nil }
-func (f fakeImage) Usage(context.Context, ...client.UsageOpt) (int64, error) { return 0, nil }
-func (f fakeImage) Config(context.Context) (ocispec.Descriptor, error) { return ocispec.Descriptor{}, nil }
+func (f fakeImage) RootFS(context.Context) ([]digest.Digest, error)           { return nil, nil }
+func (f fakeImage) Size(context.Context) (int64, error)                       { return 0, nil }
+func (f fakeImage) Usage(context.Context, ...client.UsageOpt) (int64, error)  { return 0, nil }
+func (f fakeImage) Config(context.Context) (ocispec.Descriptor, error) {
+	return ocispec.Descriptor{}, nil
+}
 func (f fakeImage) IsUnpacked(context.Context, string) (bool, error) { return false, nil }
-func (f fakeImage) ContentStore() content.Store { return nil }
-func (f fakeImage) Metadata() images.Image { return f.meta }
-func (f fakeImage) Platform() platforms.MatchComparer { return nil }
-func (f fakeImage) Spec(context.Context) (ocispec.Image, error) { return ocispec.Image{}, nil }
+func (f fakeImage) ContentStore() content.Store                      { return nil }
+func (f fakeImage) Metadata() images.Image                           { return f.meta }
+func (f fakeImage) Platform() platforms.MatchComparer                { return nil }
+func (f fakeImage) Spec(context.Context) (ocispec.Image, error)      { return ocispec.Image{}, nil }
 
 func fakeImagesToClientImages(imgs []fakeImage) []client.Image {
 	result := make([]client.Image, 0, len(imgs))
@@ -225,7 +227,9 @@ func TestResolveImageWithAliases_GetImageNotFound(t *testing.T) {
 		t.Fatal("expected error for missing image, got nil")
 	}
 	if !strings.Contains(err.Error(), "missing:v1") {
+		t.Fatalf("unexpected error: %v", err)
 	}
+}
 
 func TestBuildCurrentManifestFallsBackToConfigPlatform(t *testing.T) {
 	h := &imageHandle{rt: &Runtime{}}
@@ -241,10 +245,7 @@ func TestBuildCurrentManifestFallsBackToConfigPlatform(t *testing.T) {
 
 	manifest := h.buildCurrentManifest(context.Background(), meta)
 	if manifest.Platform != "linux/arm64/v8" {
-		 t.Fatalf("Manifest.Platform = %q, want linux/arm64/v8", manifest.Platform)
-	}
-}
-		t.Fatalf("error %q should mention the ref", err.Error())
+		t.Fatalf("Manifest.Platform = %q, want linux/arm64/v8", manifest.Platform)
 	}
 }
 

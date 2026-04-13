@@ -65,6 +65,7 @@ func runTests(args []string) {
 		fmt.Println("    container-mounts <id>              Show container mounts")
 		fmt.Println("    container-network <id>             Show container network")
 		fmt.Println("    container-storage <id>             Show container storage / layers")
+		fmt.Println("    container-stdio <id>               Show container stdio (stdin/stdout/stderr)")
 		fmt.Println("    container-processes <id>           Show container processes")
 		fmt.Println("    container-process-stats <id> <pid> Show single process stats")
 		fmt.Println("    container-image <id>               Show container's image info")
@@ -127,6 +128,9 @@ func runTests(args []string) {
 	case "container-storage":
 		requireArg(args, "container-storage <id>")
 		containerStorage(ctx, rt, args[1])
+	case "container-stdio":
+		requireArg(args, "container-stdio <id>")
+		containerStdio(ctx, rt, args[1])
 	case "container-processes":
 		requireArg(args, "container-processes <id>")
 		containerProcesses(ctx, rt, args[1])
@@ -365,9 +369,22 @@ func containerAll(ctx context.Context, rt runtime.Runtime, id string) {
 	fmt.Println()
 	containerStorage(ctx, rt, id)
 	fmt.Println()
+	containerStdio(ctx, rt, id)
+	fmt.Println()
 	containerProcesses(ctx, rt, id)
 	fmt.Println()
 	containerImage(ctx, rt, id)
+}
+
+func containerStdio(ctx context.Context, rt runtime.Runtime, id string) {
+	c := mustGetContainer(ctx, rt, id)
+	stdio, err := c.Stdio(ctx)
+	exitOnErr("Stdio", err)
+
+	printJSONSection(fmt.Sprintf("Container Stdio: %s", shortID(id)), map[string]any{
+		"container_id": id,
+		"stdio":        stdio,
+	})
 }
 
 // ---------------------------------------------------------------------------

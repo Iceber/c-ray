@@ -728,5 +728,57 @@ func (r *Runtime) listDockerContainers(ctx context.Context) ([]dockertypes.Conta
 	return r.dockerClient.ContainerList(ctx, containertypes.ListOptions{All: true})
 }
 
+// ---------------------------------------------------------------------------
+// runtime.Container — Stdio
+// ---------------------------------------------------------------------------
+
+func (h *containerHandle) Stdio(ctx context.Context) (*runtime.ContainerStdio, error) {
+	h.ensureInspect(ctx)
+	if h.inspectErr != nil {
+		return nil, h.inspectErr
+	}
+
+	i := h.inspect
+	s := &runtime.ContainerStdio{}
+
+	// Declarative config from Docker inspect.
+	if i.Config != nil {
+		s.TTY = runtime.BoolPtr(i.Config.Tty)
+		s.OpenStdin = runtime.BoolPtr(i.Config.OpenStdin)
+		s.StdinOnce = runtime.BoolPtr(i.Config.StdinOnce)
+		s.AttachStdin = runtime.BoolPtr(i.Config.AttachStdin)
+		s.AttachStdout = runtime.BoolPtr(i.Config.AttachStdout)
+		s.AttachStderr = runtime.BoolPtr(i.Config.AttachStderr)
+	}
+
+	// Log path.
+	s.LogPath = i.LogPath
+
+	// Infer log path from daemon root when driver is json-file and LogPath is empty.
+	if s.LogPath == "" && i.HostConfig != nil && i.HostConfig.LogConfig.Type == "json-file" &&
+		h.rt.daemonInfo != nil && h.rt.daemonInfo.DockerRootDir != "" {
+		s.LogPath = filepath.Join(h.rt.daemonInfo.DockerRootDir, "containers", h.id, h.id+"-json.log")
+	}
+
+	// Proc FD fallback: resolve actual open files on stdin/stdout/stderr when paths are unknown.
+	if h.rt.procReader != nil && i.State != nil && i.State.Pid > 0 {
+		fd0, fd1, fd2 := h.rt.procReader.ReadStdioFDs(i.State.Pid)
+		if s.Stdin == nil && fd0 != nil {
+			target := fd0.Target
+			s.Stdin = &target
+		}
+		if s.Stdout == nil && fd1 != nil {
+			target := fd1.Target
+			s.Stdout = &target
+		}
+		if s.Stderr == nil && fd2 != nil {
+			target := fd2.Target
+			s.Stderr = &target
+		}
+	}
+
+	return s, nil
+}
+
 // Compile-time interface check.
 var _ runtime.Container = (*containerHandle)(nil)

@@ -78,9 +78,6 @@ func (h *imageHandle) Config(ctx context.Context) (*runtime.ImageConfigInfo, err
 		info.TargetMediaType = desc.MediaType
 		info.TargetKind, info.Schema = dockerDescribeImageTarget(desc.MediaType)
 	}
-	if info.TargetKind == "Index" && desc.Digest != "" {
-		info.IndexPath = dockerClassicContentPath(h.rt, desc.Digest)
-	}
 
 	manifest := &runtime.ImageManifest{
 		Platform:   formatPlatform(i.Os, i.Architecture, i.Variant),
@@ -92,7 +89,6 @@ func (h *imageHandle) Config(ctx context.Context) (*runtime.ImageConfigInfo, err
 	// the index digest and should not be assigned to the current-platform manifest.
 	if info.TargetKind == "Manifest" && desc.Digest != "" {
 		manifest.Digest = desc.Digest
-		manifest.Path = dockerClassicContentPath(h.rt, desc.Digest)
 	} else if info.TargetKind == "" {
 		for _, rd := range i.RepoDigests {
 			if _, d, ok := strings.Cut(rd, "@"); ok && d != "" {
@@ -161,21 +157,6 @@ func dockerClassicConfigPath(rt *Runtime, imageID string) string {
 		return ""
 	}
 	return filepath.Join(rootDir, "image", driver, "imagedb", "content", algorithm, encoded)
-}
-
-func dockerClassicContentPath(rt *Runtime, digestValue string) string {
-	if rt == nil || rt.daemonInfo == nil {
-		return ""
-	}
-	rootDir := strings.TrimSpace(rt.daemonInfo.DockerRootDir)
-	if rootDir == "" {
-		return ""
-	}
-	algorithm, encoded, ok := strings.Cut(strings.TrimSpace(digestValue), ":")
-	if !ok || algorithm == "" || encoded == "" {
-		return ""
-	}
-	return filepath.Join(rootDir, "content", "data", "blobs", algorithm, encoded)
 }
 
 func formatPlatform(osName, arch, variant string) string {

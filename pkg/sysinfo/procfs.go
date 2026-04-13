@@ -439,6 +439,55 @@ func (r *ProcReader) ReadOpenFDsSummary(pid int) (map[string]int, error) {
 	return counts, nil
 }
 
+// FDTarget holds the resolved target and classification of a single file descriptor.
+type FDTarget struct {
+	FD     int
+	Target string // symlink destination (file path, pipe:[inode], socket:[inode], /dev/pts/N, etc.)
+	Kind   string // file, socket, pipe, pty, char-device, anon_inode sub-type, unknown
+}
+
+// ReadFDTarget reads the symlink target of /proc/[pid]/fd/[fd] and classifies it.
+func (r *ProcReader) ReadFDTarget(pid, fd int) (*FDTarget, error) {
+	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "fd", strconv.Itoa(fd))
+	target, err := os.Readlink(path)
+	if err != nil {
+		return nil, err
+	}
+	return &FDTarget{
+		FD:     fd,
+		Target: target,
+		Kind:   classifyFDTargetDetailed(target),
+	}, nil
+}
+
+// ReadStdioFDs reads fd 0, 1, 2 targets for the given process.
+func (r *ProcReader) ReadStdioFDs(pid int) (fd0, fd1, fd2 *FDTarget) {
+	fd0, _ = r.ReadFDTarget(pid, 0)
+	fd1, _ = r.ReadFDTarget(pid, 1)
+	fd2, _ = r.ReadFDTarget(pid, 2)
+	return
+}
+
+func classifyFDTargetDetailed(target string) string {
+	switch {
+	case strings.HasPrefix(target, "/dev/pts/"):
+		return "pty"
+	case strings.HasPrefix(target, "/dev/"):
+		return "char-device"
+	case strings.HasPrefix(target, "socket:"):
+		return "socket"
+	case strings.HasPrefix(target, "pipe:"):
+		return "pipe"
+	case strings.HasPrefix(target, "anon_inode:"):
+		s := strings.TrimPrefix(target, "anon_inode:")
+		return strings.Trim(s, "[]")
+	case strings.HasPrefix(target, "/"):
+		return "file"
+	default:
+		return "unknown"
+	}
+}
+
 func classifyFDTarget(target string) string {
 	switch {
 	case strings.HasPrefix(target, "socket:"):

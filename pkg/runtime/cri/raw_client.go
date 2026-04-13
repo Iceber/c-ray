@@ -50,6 +50,20 @@ type ContainerStatusInfo struct {
 	PIDMode      string
 	SharedPID    *bool
 	Envs         []ContainerEnv
+
+	// Fields from ContainerStatus (authoritative; ListContainers response may omit them).
+	Annotations map[string]string
+	Labels      map[string]string
+	Image       string
+	ImageRef    string
+	Name        string
+
+	// Stdio-related fields extracted from CRI config and status.
+	TTY           *bool
+	Stdin         *bool
+	StdinOnce     *bool
+	ConfigLogPath string // ContainerConfig.log_path (may be relative)
+	StatusLogPath string // ContainerStatus.log_path (usually absolute)
 }
 
 // PortMapping captures CRI PodSandbox port mappings used by runtime inspection.
@@ -129,8 +143,9 @@ func NewClient(socketPath string) *Client {
 }
 
 type containerInfo struct {
-	PID    int                         `json:"pid"`
-	Config *runtimeapi.ContainerConfig `json:"config"`
+	PID         int                         `json:"pid"`
+	Config      *runtimeapi.ContainerConfig `json:"config"`
+	RuntimeSpec *runtimespec.Spec           `json:"runtimeSpec"`
 }
 
 type podSandboxInfo struct {
@@ -444,10 +459,6 @@ func decodeContainerStatus(resp *runtimeapi.ContainerStatusResponse) *ContainerS
 		if reason := status.GetReason(); reason != "" {
 			result.Reason = reason
 		}
-		if metadata := status.GetMetadata(); metadata != nil {
-			attempt := metadata.GetAttempt()
-			result.RestartCount = &attempt
-		}
 
 		switch status.GetState() {
 		case runtimeapi.ContainerState_CONTAINER_CREATED:
@@ -458,6 +469,26 @@ func decodeContainerStatus(resp *runtimeapi.ContainerStatusResponse) *ContainerS
 			result.Status = "stopped"
 		default:
 			result.Status = "unknown"
+		}
+		result.StatusLogPath = status.GetLogPath()
+		if ann := status.GetAnnotations(); len(ann) > 0 {
+			result.Annotations = ann
+		}
+		if labels := status.GetLabels(); len(labels) > 0 {
+			result.Labels = labels
+		}
+		if img := status.GetImage(); img != nil && img.GetImage() != "" {
+			result.Image = img.GetImage()
+		}
+		if imgRef := status.GetImageRef(); imgRef != "" {
+			result.ImageRef = imgRef
+		}
+		if metadata := status.GetMetadata(); metadata != nil {
+			attempt := metadata.GetAttempt()
+			result.RestartCount = &attempt
+			if name := metadata.GetName(); name != "" {
+				result.Name = name
+			}
 		}
 	}
 
@@ -473,6 +504,17 @@ func decodeContainerStatus(resp *runtimeapi.ContainerStatusResponse) *ContainerS
 
 	if info.PID > 0 {
 		result.PID = uint32(info.PID)
+	}
+
+	// CRI-O populates runtimeSpec with the OCI spec, whose Annotations
+	// carry authoritative io.kubernetes.cri-o.* keys.
+	if info.RuntimeSpec != nil && len(info.RuntimeSpec.Annotations) > 0 {
+		if result.Annotations == nil {
+			result.Annotations = make(map[string]string, len(info.RuntimeSpec.Annotations))
+		}
+		for k, v := range info.RuntimeSpec.Annotations {
+			result.Annotations[k] = v
+		}
 	}
 
 	if info.Config == nil {
@@ -496,6 +538,15 @@ func decodeContainerStatus(resp *runtimeapi.ContainerStatusResponse) *ContainerS
 			}
 		}
 	}
+
+	// Stdio-related fields from CRI config.
+	tty := info.Config.GetTty()
+	result.TTY = &tty
+	stdin := info.Config.GetStdin()
+	result.Stdin = &stdin
+	stdinOnce := info.Config.GetStdinOnce()
+	result.StdinOnce = &stdinOnce
+	result.ConfigLogPath = info.Config.GetLogPath()
 
 	return result
 }

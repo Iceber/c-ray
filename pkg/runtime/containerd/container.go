@@ -647,5 +647,66 @@ func resolveSpecRootPath(rootPath, bundleDir string) string {
 	return filepath.Join(bundleDir, rootPath)
 }
 
+// ---------------------------------------------------------------------------
+// runtime.Container — Stdio
+// ---------------------------------------------------------------------------
+
+func (h *containerHandle) Stdio(ctx context.Context) (*runtime.ContainerStdio, error) {
+	h.ensureInfo(ctx)
+	if h.infoErr != nil {
+		return nil, h.infoErr
+	}
+	h.ensureSpec(ctx)
+	h.ensureCRIStatus(ctx)
+
+	s := &runtime.ContainerStdio{}
+
+	// OCI spec: Process.Terminal
+	if h.spec != nil && h.spec.Process != nil {
+		s.TTY = runtime.BoolPtr(h.spec.Process.Terminal)
+	}
+
+	// CRI verbose info: tty, stdin, stdin_once, log_path
+	if cri := h.criStatus; cri != nil {
+		if cri.TTY != nil {
+			s.TTY = cri.TTY
+		}
+		s.OpenStdin = cri.Stdin
+		s.StdinOnce = cri.StdinOnce
+
+		s.CRI = &runtime.CRIStdioInfo{
+			ConfigLogPath: cri.ConfigLogPath,
+			StatusLogPath: cri.StatusLogPath,
+		}
+
+		if cri.StatusLogPath != "" {
+			s.LogPath = cri.StatusLogPath
+		} else if cri.ConfigLogPath != "" {
+			s.LogPath = cri.ConfigLogPath
+		}
+	}
+
+	// Proc FD fallback: resolve actual open files on stdin/stdout/stderr when paths are unknown.
+	if h.rt.procReader != nil {
+		if task, err := h.raw.Task(ctx, nil); err == nil {
+			fd0, fd1, fd2 := h.rt.procReader.ReadStdioFDs(int(task.Pid()))
+			if s.Stdin == nil && fd0 != nil {
+				target := fd0.Target
+				s.Stdin = &target
+			}
+			if s.Stdout == nil && fd1 != nil {
+				target := fd1.Target
+				s.Stdout = &target
+			}
+			if s.Stderr == nil && fd2 != nil {
+				target := fd2.Target
+				s.Stderr = &target
+			}
+		}
+	}
+
+	return s, nil
+}
+
 // Compile-time interface check.
 var _ runtime.Container = (*containerHandle)(nil)

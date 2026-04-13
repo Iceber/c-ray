@@ -51,6 +51,20 @@ type ContainerStatus struct {
 	RestartCount *uint32
 	Envs         []ContainerEnv
 	PID          uint32 // from CRI verbose info (CRI-O)
+
+	// Fields from ContainerStatus (authoritative source; ListContainers may omit labels/annotations).
+	Annotations map[string]string
+	Labels      map[string]string
+	Image       string
+	ImageRef    string
+	Name        string
+
+	// Stdio-related CRI fields.
+	TTY           *bool
+	Stdin         *bool
+	StdinOnce     *bool
+	ConfigLogPath string
+	StatusLogPath string
 }
 
 // InspectContainerStatus fetches CRI lifecycle metadata for a container.
@@ -67,13 +81,23 @@ func convertContainerStatus(raw *ContainerStatusInfo) *ContainerStatus {
 		return nil
 	}
 	s := &ContainerStatus{
-		Status:       raw.Status,
-		StartedAt:    raw.StartedAt,
-		FinishedAt:   raw.FinishedAt,
-		ExitCode:     raw.ExitCode,
-		Reason:       raw.Reason,
-		RestartCount: raw.RestartCount,
-		PID:          raw.PID,
+		Status:        raw.Status,
+		StartedAt:     raw.StartedAt,
+		FinishedAt:    raw.FinishedAt,
+		ExitCode:      raw.ExitCode,
+		Reason:        raw.Reason,
+		RestartCount:  raw.RestartCount,
+		PID:           raw.PID,
+		Annotations:   raw.Annotations,
+		Labels:        raw.Labels,
+		Image:         raw.Image,
+		ImageRef:      raw.ImageRef,
+		Name:          raw.Name,
+		TTY:           raw.TTY,
+		Stdin:         raw.Stdin,
+		StdinOnce:     raw.StdinOnce,
+		ConfigLogPath: raw.ConfigLogPath,
+		StatusLogPath: raw.StatusLogPath,
 	}
 	if len(raw.Envs) > 0 {
 		s.Envs = append([]ContainerEnv(nil), raw.Envs...)
