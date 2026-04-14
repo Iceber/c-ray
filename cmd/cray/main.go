@@ -46,6 +46,7 @@ var (
 )
 
 func main() {
+	flag.Usage = func() { printUsage(); os.Exit(0) }
 	flag.StringVar(&socketPath, "socket", os.Getenv("CRAY_SOCKET"), "runtime socket path (auto-detected when empty)")
 	flag.StringVar(&namespace, "namespace", os.Getenv("CONTAINERD_NAMESPACE"), "containerd namespace (auto: k8s.io for CRI-enabled containerd, default for plain containerd)")
 	flag.IntVar(&timeout, "timeout", defaultTimeout, "connection timeout in seconds")
@@ -55,8 +56,17 @@ func main() {
 
 	if len(args) > 0 {
 		switch args[0] {
-		case "test":
-			runTests(args[1:])
+		case "container", "containers":
+			runContainerCommand(args[1:])
+			return
+		case "image", "images":
+			runImageCommand(args[1:])
+			return
+		case "pod", "pods":
+			runPodCommand(args[1:])
+			return
+		case "runtime":
+			runRuntimeCommand(args[1:])
 			return
 		case "tui":
 			if len(args) > 1 {
@@ -67,7 +77,7 @@ func main() {
 			printUsage()
 			return
 		default:
-			fmt.Fprintf(os.Stderr, "Unknown subcommand: %s\n\n", args[0])
+			fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", args[0])
 			printUsage()
 			os.Exit(1)
 		}
@@ -77,12 +87,15 @@ func main() {
 	if !isTerminal() {
 		fmt.Fprintln(os.Stderr, "Error: cray TUI requires an interactive terminal.")
 		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "To use in non-interactive environments:")
-		fmt.Fprintln(os.Stderr, "  1. Use 'cray test <command>' for CLI mode:")
-		fmt.Fprintln(os.Stderr, "     cray test list-containers")
+		fmt.Fprintln(os.Stderr, "To use in non-interactive environments, use CLI commands:")
+		fmt.Fprintln(os.Stderr, "  cray containers list")
+		fmt.Fprintln(os.Stderr, "  cray container info <id>")
+		fmt.Fprintln(os.Stderr, "  cray images list")
+		fmt.Fprintln(os.Stderr, "  cray pods list")
+		fmt.Fprintln(os.Stderr, "  cray runtime info")
 		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "  2. If running via docker exec, use the -it flags:")
-		fmt.Fprintln(os.Stderr, "     docker exec -it <container> cray tui")
+		fmt.Fprintln(os.Stderr, "If running via docker exec, use the -it flags:")
+		fmt.Fprintln(os.Stderr, "  docker exec -it <container> cray tui")
 		os.Exit(1)
 	}
 
@@ -90,9 +103,23 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println("Usage:")
-	fmt.Println("  cray tui")
-	fmt.Println("  cray test <command>")
+	fmt.Println("Usage: cray [flags] <command> [args]")
+	fmt.Println()
+	fmt.Println("Flags:")
+	fmt.Println("  -socket <path>      Runtime socket path (env: CRAY_SOCKET)")
+	fmt.Println("  -namespace <name>   Containerd namespace (env: CONTAINERD_NAMESPACE)")
+	fmt.Println("  -timeout <seconds>  Connection timeout (default: 30)")
+	fmt.Println()
+	fmt.Println("Commands:")
+	fmt.Println("  tui                         Start interactive TUI (default)")
+	fmt.Println("  container(s) <action>       Container operations")
+	fmt.Println("  image(s) <action>           Image operations")
+	fmt.Println("  pod(s) <action>             Pod operations")
+	fmt.Println("  runtime <action>            Runtime operations")
+	fmt.Println("  help                        Show this help message")
+	fmt.Println()
+	fmt.Println("Run 'cray <command>' without arguments to see available actions.")
+	fmt.Println("Both singular and plural resource names are accepted (e.g. container/containers).")
 }
 
 // formatContentSize formats the content size with compression type

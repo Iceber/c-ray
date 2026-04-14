@@ -66,7 +66,7 @@ func TestImageSupportedPlatformsSummaryHighlightsCurrent(t *testing.T) {
 }
 
 func TestImageDetailOtherNamesExcludesPrimary(t *testing.T) {
-	config := &runtime.ContainerConfig{ImageName: "repo:v1"}
+	config := &runtime.ContainerConfig{ImageRef: "repo:v1"}
 	info := &runtime.ImageInfo{Names: []string{"repo:v1", "repo:latest", "repo@sha256:deadbeef", "repo:latest"}}
 
 	got := imageDetailOtherNames(config, info)

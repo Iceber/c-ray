@@ -111,24 +111,38 @@ cray -socket /run/containerd/containerd.sock -namespace k8s.io -timeout 30
 
 ### CLI Mode
 
-Suitable for non-interactive environments (CI/CD, remote execution):
+Suitable for non-interactive environments (CI/CD, remote execution).
+Both singular and plural resource names are accepted (e.g. `container`/`containers`).
 
 ```bash
 # Container operations
-cray test list-containers
-cray test container-detail <container-id>
-cray test container-processes <container-id>
-cray test container-top <container-id>
-cray test container-mounts <container-id>
-cray test container-layers <container-id>
+cray containers list
+cray container info <id>
+cray container config <id>
+cray container state <id>
+cray container runtime <id>
+cray container mounts <id>
+cray container network <id>
+cray container storage <id>
+cray container stdio <id>
+cray container processes <id>
+cray container process-stats <id> <pid>
+cray container cgroup <id>
+cray container image <id>
+cray container all <id>
 
 # Image operations
-cray test list-images
-cray test image-detail <image-ref>
-cray test image-layers <image-id>
+cray images list
+cray image info <ref>
+cray image config <ref>
+cray image layers <ref> [snapshotter]
 
 # Pod operations
-cray test list-pods
+cray pods list
+cray pod info <uid>
+
+# Runtime operations
+cray runtime info
 ```
 
 ### TUI Keybindings
@@ -152,7 +166,7 @@ cray test list-pods
 # Manually copy to kind node
 GOOS=linux GOARCH=arm64 go build -o bin/cray-linux ./cmd/cray
 cat bin/cray-linux | docker exec -i kind-control-plane bash -c "cat > /usr/local/bin/cray && chmod +x /usr/local/bin/cray"
-docker exec kind-control-plane cray test list-containers
+docker exec kind-control-plane cray containers list
 ```
 
 ## Supported Runtimes

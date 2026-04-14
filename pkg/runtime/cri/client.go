@@ -65,6 +65,10 @@ type ContainerStatus struct {
 	StdinOnce     *bool
 	ConfigLogPath string
 	StatusLogPath string
+
+	// Config-level image fields from CRI verbose info (info.config.image).
+	ConfigImageID  string // info.config.image.image
+	ConfigImageRef string // info.config.image.user_specified_image
 }
 
 // InspectContainerStatus fetches CRI lifecycle metadata for a container.
@@ -81,23 +85,25 @@ func convertContainerStatus(raw *ContainerStatusInfo) *ContainerStatus {
 		return nil
 	}
 	s := &ContainerStatus{
-		Status:        raw.Status,
-		StartedAt:     raw.StartedAt,
-		FinishedAt:    raw.FinishedAt,
-		ExitCode:      raw.ExitCode,
-		Reason:        raw.Reason,
-		RestartCount:  raw.RestartCount,
-		PID:           raw.PID,
-		Annotations:   raw.Annotations,
-		Labels:        raw.Labels,
-		Image:         raw.Image,
-		ImageRef:      raw.ImageRef,
-		Name:          raw.Name,
-		TTY:           raw.TTY,
-		Stdin:         raw.Stdin,
-		StdinOnce:     raw.StdinOnce,
-		ConfigLogPath: raw.ConfigLogPath,
-		StatusLogPath: raw.StatusLogPath,
+		Status:         raw.Status,
+		StartedAt:      raw.StartedAt,
+		FinishedAt:     raw.FinishedAt,
+		ExitCode:       raw.ExitCode,
+		Reason:         raw.Reason,
+		RestartCount:   raw.RestartCount,
+		PID:            raw.PID,
+		Annotations:    raw.Annotations,
+		Labels:         raw.Labels,
+		Image:          raw.Image,
+		ImageRef:       raw.ImageRef,
+		Name:           raw.Name,
+		TTY:            raw.TTY,
+		Stdin:          raw.Stdin,
+		StdinOnce:      raw.StdinOnce,
+		ConfigLogPath:  raw.ConfigLogPath,
+		StatusLogPath:  raw.StatusLogPath,
+		ConfigImageID:  raw.ConfigImageID,
+		ConfigImageRef: raw.ConfigImageRef,
 	}
 	if len(raw.Envs) > 0 {
 		s.Envs = append([]ContainerEnv(nil), raw.Envs...)

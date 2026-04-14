@@ -114,16 +114,27 @@ func (h *containerHandle) Info(ctx context.Context) (*runtime.ContainerInfo, err
 	if h.infoErr != nil {
 		return nil, h.infoErr
 	}
+	h.ensureCRIStatus(ctx)
 	info := h.info
 
 	ci := &runtime.ContainerInfo{
 		ID:           info.ID,
 		Name:         containerName(info),
-		Image:        info.Image,
+		ImageRef:     info.Image,
 		PodName:      info.Labels["io.kubernetes.pod.name"],
 		PodNamespace: info.Labels["io.kubernetes.pod.namespace"],
 		PodUID:       info.Labels["io.kubernetes.pod.uid"],
 		CreatedAt:    info.CreatedAt,
+	}
+
+	// If CRI is available, use config-level image fields for ImageRef/ImageID.
+	if cri := h.criStatus; cri != nil {
+		if cri.ConfigImageRef != "" {
+			ci.ImageRef = cri.ConfigImageRef
+		}
+		if cri.ConfigImageID != "" {
+			ci.ImageID = cri.ConfigImageID
+		}
 	}
 
 	// Populate live PID and status from task.
@@ -162,9 +173,19 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 	spec := h.spec
 
 	cfg := &runtime.ContainerConfig{
-		ImageName:   info.Image,
+		ImageRef:    info.Image,
 		SnapshotKey: info.SnapshotKey,
 		Namespaces:  runtime.BuildNamespaceMap(spec),
+	}
+
+	// If CRI is available, use config-level image fields for ImageRef/ImageID.
+	if cri := h.criStatus; cri != nil {
+		if cri.ConfigImageRef != "" {
+			cfg.ImageRef = cri.ConfigImageRef
+		}
+		if cri.ConfigImageID != "" {
+			cfg.ImageID = cri.ConfigImageID
+		}
 	}
 	if info.Snapshotter != "" {
 		cfg.Backend = &runtime.LayerBackend{
@@ -183,7 +204,7 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 	// CGroup version from reader.
 	if cfg.CGroupPath != "" && h.rt.cgroupReader != nil {
 		cfg.CGroupVersion = int(h.rt.cgroupReader.GetVersion())
-		cfg.CGroupMountedPath = "/sys/fs/cgroup" + "/" + strings.TrimPrefix(cfg.CGroupPath, "/")
+		cfg.CGroupRootPath = runtime.CGroupRootPath()
 	}
 
 	// Snapshot layer paths.
@@ -251,6 +272,50 @@ func (h *containerHandle) State(ctx context.Context) (*runtime.ContainerState, e
 	}
 
 	return state, nil
+}
+
+// ---------------------------------------------------------------------------
+// runtime.Container — CGroup (aggregated config + live stats)
+// ---------------------------------------------------------------------------
+
+func (h *containerHandle) CGroup(ctx context.Context) (*runtime.ContainerCGroupInfo, error) {
+	h.ensureSpec(ctx)
+	if h.specErr != nil {
+		return nil, h.specErr
+	}
+
+	var rawPath string
+	if h.spec != nil && h.spec.Linux != nil {
+		rawPath = h.spec.Linux.CgroupsPath
+	}
+
+	info := &runtime.ContainerCGroupInfo{
+		RootPath: runtime.CGroupRootPath(),
+	}
+	if rawPath != "" {
+		info.Driver = runtime.InferCGroupDriver(rawPath)
+	}
+
+	if h.rt.cgroupReader != nil {
+		info.Version = int(h.rt.cgroupReader.GetVersion())
+	}
+	if task, err := h.raw.Task(ctx, nil); err == nil {
+		info.Path = runtime.ResolveCGroupPath(rawPath, info.Version, task.Pid(), h.rt.procReader)
+	} else {
+		info.Path = runtime.NormalizeCGroupPath(rawPath)
+	}
+	if info.Driver == "" && info.Path != "" {
+		info.Driver = runtime.InferCGroupDriver(info.Path)
+	}
+
+	// Platform-specific live stats collection.
+	if info.Path != "" {
+		loadCGroupStats(info, h.rt.cgroupReader)
+	}
+
+	info.SpecResources = runtime.ExtractSpecResources(h.spec)
+
+	return info, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -451,12 +516,7 @@ func (h *containerHandle) ProcessStats(ctx context.Context) (*runtime.ProcessSta
 	if err != nil {
 		return nil, fmt.Errorf("container is not running")
 	}
-	h.ensureSpec(ctx)
-	var cgroupPath string
-	if h.spec != nil && h.spec.Linux != nil {
-		cgroupPath = h.spec.Linux.CgroupsPath
-	}
-	return runtime.CollectProcessStats(h.rt.processCollector, task.Pid(), cgroupPath)
+	return runtime.CollectProcessStats(h.rt.processCollector, task.Pid(), h.resolvedCGroupPath(ctx, task.Pid()))
 }
 
 func (h *containerHandle) GetProcessStats(ctx context.Context, pid string) (*runtime.ProcessStats, error) {
@@ -464,12 +524,7 @@ func (h *containerHandle) GetProcessStats(ctx context.Context, pid string) (*run
 	if err != nil {
 		return nil, fmt.Errorf("container is not running")
 	}
-	h.ensureSpec(ctx)
-	var cgroupPath string
-	if h.spec != nil && h.spec.Linux != nil {
-		cgroupPath = h.spec.Linux.CgroupsPath
-	}
-	return runtime.CollectSingleProcessStats(h.rt.processCollector, task.Pid(), cgroupPath, pid)
+	return runtime.CollectSingleProcessStats(h.rt.processCollector, task.Pid(), h.resolvedCGroupPath(ctx, task.Pid()), pid)
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +557,19 @@ func containerName(info containers.Container) string {
 		return info.ID[:12]
 	}
 	return info.ID
+}
+
+func (h *containerHandle) resolvedCGroupPath(ctx context.Context, pid uint32) string {
+	h.ensureSpec(ctx)
+	var rawPath string
+	if h.spec != nil && h.spec.Linux != nil {
+		rawPath = h.spec.Linux.CgroupsPath
+	}
+	version := 0
+	if h.rt.cgroupReader != nil {
+		version = int(h.rt.cgroupReader.GetVersion())
+	}
+	return runtime.ResolveCGroupPath(rawPath, version, pid, h.rt.procReader)
 }
 
 // ---------------------------------------------------------------------------

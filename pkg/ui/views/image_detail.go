@@ -1649,7 +1649,7 @@ func (v *ImageDetailView) resolveUsedBy(ctx context.Context, info *runtime.Image
 			continue
 		}
 		cCfg, _ := c.Config(ctx)
-		if !imageRefMatches(aliases, cInfo.Image, cCfg) {
+		if !imageRefMatches(aliases, cInfo.ImageRef, cInfo.ImageID, cCfg) {
 			continue
 		}
 		pod := ""
@@ -1662,7 +1662,7 @@ func (v *ImageDetailView) resolveUsedBy(ctx context.Context, info *runtime.Image
 			Pod:           pod,
 			Status:        cInfo.Status,
 			CreatedAt:     cInfo.CreatedAt,
-			ImageRef:      cInfo.Image,
+			ImageRef:      cInfo.ImageRef,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -1674,10 +1674,10 @@ func (v *ImageDetailView) resolveUsedBy(ctx context.Context, info *runtime.Image
 	return result, nil
 }
 
-func imageRefMatches(aliases map[string]bool, infoImage string, cfg *runtime.ContainerConfig) bool {
-	candidates := []string{strings.TrimSpace(infoImage)}
+func imageRefMatches(aliases map[string]bool, imageRef string, imageID string, cfg *runtime.ContainerConfig) bool {
+	candidates := []string{strings.TrimSpace(imageRef), strings.TrimSpace(imageID)}
 	if cfg != nil {
-		candidates = append(candidates, strings.TrimSpace(cfg.ImageName))
+		candidates = append(candidates, strings.TrimSpace(cfg.ImageRef))
 	}
 	for _, c := range candidates {
 		if c == "" {

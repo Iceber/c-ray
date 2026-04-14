@@ -186,29 +186,38 @@ cray -socket /run/containerd/containerd.sock -namespace k8s.io -timeout 30
 
 ### CLI 模式
 
-适用于非交互式环境（CI/CD、远程执行）：
+适用于非交互式环境（CI/CD、远程执行）。
+资源名支持单数和复数两种写法（如 `container`/`containers`），语义和作用相同。
 
 ```bash
 # 容器操作
-cray test list-containers
-cray test container-detail <container-id>
-cray test container-processes <container-id>
-cray test container-top <container-id>
-cray test container-mounts <container-id>
-cray test container-layers <container-id>
-cray test crio-container-storage <container-id>
+cray containers list
+cray container info <id>
+cray container config <id>
+cray container state <id>
+cray container runtime <id>
+cray container mounts <id>
+cray container network <id>
+cray container storage <id>
+cray container stdio <id>
+cray container processes <id>
+cray container process-stats <id> <pid>
+cray container cgroup <id>
+cray container image <id>
+cray container all <id>
 
 # 镜像操作
-cray test list-images
-cray test image-detail <image-ref>
-cray test image-layers <image-id>
-cray test crio-image-storage <image-ref>
+cray images list
+cray image info <ref>
+cray image config <ref>
+cray image layers <ref> [snapshotter]
 
 # Pod 操作
-cray test list-pods
+cray pods list
+cray pod info <uid>
 
-# CRI-O 存储视图
-cray test crio-store-info
+# 运行时操作
+cray runtime info
 ```
 
 ### TUI 快捷键
@@ -232,7 +241,7 @@ cray test crio-store-info
 # 手动复制到 kind 节点
 GOOS=linux GOARCH=arm64 go build -o bin/cray-linux ./cmd/cray
 cat bin/cray-linux | docker exec -i kind-control-plane bash -c "cat > /usr/local/bin/cray && chmod +x /usr/local/bin/cray"
-docker exec kind-control-plane cray test list-containers
+docker exec kind-control-plane cray containers list
 ```
 
 ## 项目结构

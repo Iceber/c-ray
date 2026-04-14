@@ -230,8 +230,8 @@ func (v *ContainerDetailView) renderHeader() {
 	if v.info.PodNamespace != "" || v.info.PodName != "" {
 		ctx = append(ctx, components.KV("pod ", fallbackValue(v.info.PodNamespace, "?")+"/"+fallbackValue(v.info.PodName, "?")))
 	}
-	if v.info.Image != "" {
-		ctx = append(ctx, components.KV("image ", truncateForCard(v.info.Image, 40)))
+	if v.info.ImageRef != "" {
+		ctx = append(ctx, components.KV("image ", truncateForCard(v.info.ImageRef, 40)))
 	}
 	ctx = append(ctx, components.KV("created ", detailTimeLabel(v.info.CreatedAt)))
 	if !v.refreshedAt.IsZero() {

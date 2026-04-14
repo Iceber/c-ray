@@ -120,6 +120,45 @@ func TestReadUnifiedCGroupPath(t *testing.T) {
 	}
 }
 
+func TestReadCGroupPathV2(t *testing.T) {
+	procRoot := t.TempDir()
+	pidDir := filepath.Join(procRoot, "100")
+	if err := os.MkdirAll(pidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pidDir, "cgroup"), []byte("0::/kubepods/burstable/pod1/ctr1\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	reader := NewProcReaderWithRoot(procRoot)
+	got, err := reader.ReadCGroupPath(100)
+	if err != nil {
+		t.Fatalf("ReadCGroupPath() error: %v", err)
+	}
+	if got != "/kubepods/burstable/pod1/ctr1" {
+		t.Fatalf("ReadCGroupPath() = %q, want /kubepods/burstable/pod1/ctr1", got)
+	}
+}
+
+func TestReadCGroupPathV1PrefersMemory(t *testing.T) {
+	procRoot := t.TempDir()
+	pidDir := filepath.Join(procRoot, "200")
+	if err := os.MkdirAll(pidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := "12:pids:/kubepods/pod1/ctr1\n11:memory:/kubepods/pod1/ctr1\n10:cpu,cpuacct:/kubepods/pod1/ctr1\n"
+	if err := os.WriteFile(filepath.Join(pidDir, "cgroup"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	reader := NewProcReaderWithRoot(procRoot)
+	got, err := reader.ReadCGroupPath(200)
+	if err != nil {
+		t.Fatalf("ReadCGroupPath() error: %v", err)
+	}
+	if got != "/kubepods/pod1/ctr1" {
+		t.Fatalf("ReadCGroupPath() = %q, want /kubepods/pod1/ctr1", got)
+	}
+}
+
 func TestReadProcess(t *testing.T) {
 	if _, err := os.Stat("/proc"); os.IsNotExist(err) {
 		t.Skip("Skipping test - /proc not available (not Linux)")

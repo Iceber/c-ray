@@ -36,10 +36,10 @@ const (
 // by list or header views. Richer data is split between ContainerMetadata and
 // ContainerState.
 type ContainerInfo struct {
-	ID      string
-	Name    string
-	Image   string
-	ImageID string // 未使用
+	ID       string
+	Name     string
+	ImageRef string
+	ImageID  string
 
 	PodName      string
 	PodNamespace string
@@ -56,12 +56,13 @@ type ContainerInfo struct {
 type ContainerConfig struct {
 	Environment []EnvVar
 
-	CGroupDriver      string
-	CGroupPath        string
-	CGroupMountedPath string
-	CGroupVersion     int
+	CGroupDriver   string
+	CGroupPath     string
+	CGroupRootPath string
+	CGroupVersion  int
 
-	ImageName string
+	ImageRef string
+	ImageID  string
 
 	Backend           *LayerBackend
 	SnapshotKey       string
@@ -189,23 +190,11 @@ type ContainerdShimInfo struct {
 // Container Stdio — IO configuration, log paths, and attach metadata
 // ---------------------------------------------------------------------------
 
-// AttachInfo holds attach/control socket paths for CRI-O containers.
-type AttachInfo struct {
-	Socket        string
-	ControlSocket string
-	ResizeFile    string
-}
-
 // ContainerStdio is the top-level stdio metadata returned by Container.Stdio().
 type ContainerStdio struct {
 	TTY       *bool
 	OpenStdin *bool
 	StdinOnce *bool
-
-	// Docker-specific attach flags
-	AttachStdin  *bool
-	AttachStdout *bool
-	AttachStderr *bool
 
 	LogPath string
 
@@ -213,11 +202,10 @@ type ContainerStdio struct {
 	Stdout *string
 	Stderr *string
 
-	Attach *AttachInfo
-
 	// Runtime-specific extensions
-	CRI  *CRIStdioInfo
-	CRIO *CRIOStdioInfo
+	CRI    *CRIStdioInfo
+	CRIO   *CRIOStdioInfo
+	Docker *DockerStdioInfo
 }
 
 // CRIStdioInfo holds CRI-sourced stdio metadata.
@@ -226,8 +214,23 @@ type CRIStdioInfo struct {
 	StatusLogPath string
 }
 
+// AttachInfo holds attach/control socket paths for CRI-O containers.
+type AttachInfo struct {
+	Socket        string
+	ControlSocket string
+	ResizeFile    string
+}
+
 // CRIOStdioInfo holds CRI-O-specific stdio metadata.
 type CRIOStdioInfo struct {
 	AnnotationLogPath    string
 	LogPathFromConmonCmd string
+	Attach               *AttachInfo
+}
+
+// DockerStdioInfo holds Docker-specific stdio attach flags.
+type DockerStdioInfo struct {
+	AttachStdin  *bool
+	AttachStdout *bool
+	AttachStderr *bool
 }

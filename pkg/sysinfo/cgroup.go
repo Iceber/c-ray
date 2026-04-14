@@ -229,3 +229,103 @@ func (r *CGroupReader) readFile(path string) (string, error) {
 	}
 	return string(data), nil
 }
+
+// CGroupCPUStats contains CPU usage and throttling statistics read from
+// the cgroup filesystem. Values are normalised to microseconds regardless
+// of cgroup version.
+type CGroupCPUStats struct {
+	UsageUsec     uint64
+	UserUsec      uint64
+	SystemUsec    uint64
+	NrPeriods     uint64
+	NrThrottled   uint64
+	ThrottledUsec uint64
+}
+
+// ReadCGroupCPUStats reads CPU usage and throttling counters for a given
+// cgroup path. It handles both v1 (cpuacct + cpu controllers) and v2
+// (unified cpu.stat) transparently.
+func (r *CGroupReader) ReadCGroupCPUStats(cgroupPath string) (*CGroupCPUStats, error) {
+	if r.version == CGroupV2 {
+		return r.readCGroupV2CPUStats(cgroupPath)
+	}
+	return r.readCGroupV1CPUStats(cgroupPath)
+}
+
+// readCGroupV1CPUStats reads v1 cpuacct usage (nanoseconds → usec) and
+// cpu.stat throttling counters.
+func (r *CGroupReader) readCGroupV1CPUStats(cgroupPath string) (*CGroupCPUStats, error) {
+	cgroupPath = strings.TrimPrefix(cgroupPath, "/")
+	stats := &CGroupCPUStats{}
+
+	// cpuacct.usage  — total CPU in nanoseconds
+	if v, err := r.readInt64(filepath.Join(r.rootDir, "cpuacct", cgroupPath, "cpuacct.usage")); err == nil {
+		stats.UsageUsec = uint64(v) / 1000
+	}
+	// cpuacct.usage_user
+	if v, err := r.readInt64(filepath.Join(r.rootDir, "cpuacct", cgroupPath, "cpuacct.usage_user")); err == nil {
+		stats.UserUsec = uint64(v) / 1000
+	}
+	// cpuacct.usage_sys
+	if v, err := r.readInt64(filepath.Join(r.rootDir, "cpuacct", cgroupPath, "cpuacct.usage_sys")); err == nil {
+		stats.SystemUsec = uint64(v) / 1000
+	}
+
+	// cpu.stat — "nr_periods N\nnr_throttled N\nthrottled_time N\n"
+	// throttled_time is in nanoseconds.
+	if content, err := r.readFile(filepath.Join(r.rootDir, "cpu", cgroupPath, "cpu.stat")); err == nil {
+		stats.parseCPUStat(content, true)
+	}
+
+	return stats, nil
+}
+
+// readCGroupV2CPUStats reads the unified v2 cpu.stat file whose values
+// are already in microseconds.
+func (r *CGroupReader) readCGroupV2CPUStats(cgroupPath string) (*CGroupCPUStats, error) {
+	cgroupPath = strings.TrimPrefix(cgroupPath, "/")
+	basePath := filepath.Join(r.rootDir, cgroupPath)
+	stats := &CGroupCPUStats{}
+
+	if content, err := r.readFile(filepath.Join(basePath, "cpu.stat")); err == nil {
+		stats.parseCPUStat(content, false)
+	}
+
+	return stats, nil
+}
+
+// parseCPUStat parses a cpu.stat style "key value\n" file. When nsToUsec
+// is true, throttled_time is treated as nanoseconds and converted to usec
+// (cgroup v1 semantics); otherwise values are already in usec (v2).
+func (s *CGroupCPUStats) parseCPUStat(content string, nsToUsec bool) {
+	for _, line := range strings.Split(content, "\n") {
+		parts := strings.Fields(line)
+		if len(parts) != 2 {
+			continue
+		}
+		val, err := strconv.ParseUint(parts[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		switch parts[0] {
+		case "usage_usec":
+			s.UsageUsec = val
+		case "user_usec":
+			s.UserUsec = val
+		case "system_usec":
+			s.SystemUsec = val
+		case "nr_periods":
+			s.NrPeriods = val
+		case "nr_throttled":
+			s.NrThrottled = val
+		case "throttled_usec":
+			s.ThrottledUsec = val
+		case "throttled_time":
+			if nsToUsec {
+				s.ThrottledUsec = val / 1000
+			} else {
+				s.ThrottledUsec = val
+			}
+		}
+	}
+}

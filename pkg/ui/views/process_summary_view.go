@@ -158,7 +158,7 @@ func buildCGroupSection(config *runtime.ContainerConfig) processSummarySection {
 		versionLabel = fmt.Sprintf("v%d", config.CGroupVersion)
 	}
 	pathLabel := fallbackValue(config.CGroupPath, "unknown")
-	mountLabel := fallbackValue(config.CGroupMountedPath, "unknown")
+	mountLabel := fallbackValue(config.CGroupRootPath, "unknown")
 
 	return processSummarySection{
 		Title:   "CGroup",

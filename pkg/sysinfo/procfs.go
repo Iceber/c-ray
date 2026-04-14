@@ -131,6 +131,50 @@ func (r *ProcReader) ReadUnifiedCGroupPath(pid int) (string, error) {
 	return "", fmt.Errorf("unified cgroup path not found")
 }
 
+// ReadCGroupPath reads the real cgroup path from /proc/[pid]/cgroup.
+// For cgroup v2 (unified) it returns the single "0::" entry.
+// For cgroup v1 it returns the path from the first controller entry
+// (controllers typically share the same hierarchy path).
+func (r *ProcReader) ReadCGroupPath(pid int) (string, error) {
+	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "cgroup")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+
+	var v1Fallback string
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		cgPath := strings.TrimSpace(parts[2])
+		if cgPath == "" {
+			continue
+		}
+		// v2 unified: "0::<path>"
+		if parts[0] == "0" && parts[1] == "" {
+			return cgPath, nil
+		}
+		// v1: prefer "memory" controller, fallback to first non-empty.
+		controllers := parts[1]
+		if strings.Contains(controllers, "memory") {
+			return cgPath, nil
+		}
+		if v1Fallback == "" {
+			v1Fallback = cgPath
+		}
+	}
+
+	if v1Fallback != "" {
+		return v1Fallback, nil
+	}
+	return "", fmt.Errorf("cgroup path not found in /proc/%d/cgroup", pid)
+}
+
 // readStat reads /proc/[pid]/stat
 func (r *ProcReader) readStat(pid int, process *models.Process) error {
 	statFields, err := r.readStatFields(pid)

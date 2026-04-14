@@ -97,7 +97,7 @@ func (h *containerHandle) infoFromSummary() *runtime.ContainerInfo {
 	ci := &runtime.ContainerInfo{
 		ID:        s.ID,
 		Name:      dockerContainerName(s.Names),
-		Image:     s.Image,
+		ImageRef:  s.Image,
 		ImageID:   s.ImageID,
 		Status:    convertDockerStatus(s.State),
 		CreatedAt: time.Unix(s.Created, 0),
@@ -113,9 +113,10 @@ func (h *containerHandle) infoFromSummary() *runtime.ContainerInfo {
 func (h *containerHandle) infoFromInspect() *runtime.ContainerInfo {
 	i := h.inspect
 	ci := &runtime.ContainerInfo{
-		ID:    i.ID,
-		Name:  strings.TrimPrefix(i.Name, "/"),
-		Image: i.Config.Image,
+		ID:       i.ID,
+		Name:     strings.TrimPrefix(i.Name, "/"),
+		ImageRef: i.Config.Image,
+		ImageID:  i.Image,
 	}
 	if i.State != nil {
 		ci.Status = convertDockerStatus(i.State.Status)
@@ -152,7 +153,10 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 
 	// Image.
 	if i.Config != nil {
-		cfg.ImageName = i.Config.Image
+		cfg.ImageRef = i.Config.Image
+	}
+	if i.Image != "" {
+		cfg.ImageID = i.Image
 	}
 
 	// CGroup path.
@@ -274,6 +278,121 @@ func (h *containerHandle) State(ctx context.Context) (*runtime.ContainerState, e
 	}
 
 	return state, nil
+}
+
+// ---------------------------------------------------------------------------
+// runtime.Container — CGroup
+// ---------------------------------------------------------------------------
+
+func (h *containerHandle) CGroup(ctx context.Context) (*runtime.ContainerCGroupInfo, error) {
+	h.ensureInspect(ctx)
+	if h.inspectErr != nil {
+		return nil, h.inspectErr
+	}
+
+	var rawPath string
+	var pid uint32
+	if h.inspect != nil {
+		if h.inspect.HostConfig != nil {
+			rawPath = h.inspect.HostConfig.CgroupParent
+		}
+		if h.inspect.State != nil && h.inspect.State.Pid > 0 {
+			pid = uint32(h.inspect.State.Pid)
+		}
+	}
+
+	info := &runtime.ContainerCGroupInfo{
+		RootPath: runtime.CGroupRootPath(),
+	}
+
+	if h.rt.cgroupReader != nil {
+		info.Version = int(h.rt.cgroupReader.GetVersion())
+	}
+	if rawPath != "" {
+		info.Driver = inferDockerCGroupDriver(rawPath)
+	}
+	info.Path = runtime.ResolveCGroupPath(rawPath, info.Version, pid, h.rt.procReader)
+	if info.Driver == "" && info.Path != "" {
+		info.Driver = runtime.InferCGroupDriver(info.Path)
+	}
+
+	runtime.PopulateCGroupStatsFromReader(info, h.rt.cgroupReader)
+
+	info.SpecResources = extractDockerSpecResources(h.inspect)
+
+	return info, nil
+}
+
+// extractDockerSpecResources builds CGroupSpecResources from Docker inspect data.
+func extractDockerSpecResources(inspect *dockertypes.ContainerJSON) *runtime.CGroupSpecResources {
+	if inspect == nil || inspect.HostConfig == nil {
+		return nil
+	}
+	hc := inspect.HostConfig
+	sr := &runtime.CGroupSpecResources{}
+	hasValue := false
+
+	if hc.CPUShares > 0 {
+		shares := uint64(hc.CPUShares)
+		sr.CPUShares = &shares
+		hasValue = true
+	}
+	if hc.CPUQuota > 0 {
+		sr.CPUQuota = &hc.CPUQuota
+		hasValue = true
+	}
+	if hc.CPUPeriod > 0 {
+		period := uint64(hc.CPUPeriod)
+		sr.CPUPeriod = &period
+		hasValue = true
+	}
+	if hc.NanoCPUs > 0 {
+		quota := hc.NanoCPUs / 1000
+		period := uint64(100000)
+		sr.CPUQuota = &quota
+		sr.CPUPeriod = &period
+		hasValue = true
+	}
+	if hc.CpusetCpus != "" {
+		sr.CPUSetCPUs = hc.CpusetCpus
+		hasValue = true
+	}
+	if hc.CpusetMems != "" {
+		sr.CPUSetMems = hc.CpusetMems
+		hasValue = true
+	}
+
+	if hc.Memory > 0 {
+		sr.MemoryLimit = &hc.Memory
+		hasValue = true
+	}
+	if hc.MemoryReservation > 0 {
+		sr.MemoryReservation = &hc.MemoryReservation
+		hasValue = true
+	}
+	if hc.MemorySwap != 0 {
+		sr.MemorySwap = &hc.MemorySwap
+		hasValue = true
+	}
+	if hc.MemorySwappiness != nil {
+		swappiness := uint64(*hc.MemorySwappiness)
+		sr.MemorySwappiness = &swappiness
+		hasValue = true
+	}
+	if hc.OomKillDisable != nil {
+		sr.OOMKillDisable = hc.OomKillDisable
+		hasValue = true
+	}
+
+	if hc.PidsLimit != nil && *hc.PidsLimit != 0 {
+		sr.PidsLimit = hc.PidsLimit
+		hasValue = true
+	}
+
+	if !hasValue {
+		return nil
+	}
+	return sr
 }
 
 // ---------------------------------------------------------------------------
@@ -589,7 +708,7 @@ func (h *containerHandle) ProcessStats(ctx context.Context) (*runtime.ProcessSta
 	if err != nil {
 		return nil, err
 	}
-	return runtime.CollectProcessStats(h.rt.processCollector, pid, h.cgroupPath())
+	return runtime.CollectProcessStats(h.rt.processCollector, pid, h.cgroupPath(ctx))
 }
 
 func (h *containerHandle) GetProcessStats(ctx context.Context, pid string) (*runtime.ProcessStats, error) {
@@ -597,7 +716,7 @@ func (h *containerHandle) GetProcessStats(ctx context.Context, pid string) (*run
 	if err != nil {
 		return nil, err
 	}
-	return runtime.CollectSingleProcessStats(h.rt.processCollector, containerPID, h.cgroupPath(), pid)
+	return runtime.CollectSingleProcessStats(h.rt.processCollector, containerPID, h.cgroupPath(ctx), pid)
 }
 
 // ---------------------------------------------------------------------------
@@ -640,11 +759,28 @@ func (h *containerHandle) containerPID(ctx context.Context) (uint32, error) {
 	return uint32(h.inspect.State.Pid), nil
 }
 
-func (h *containerHandle) cgroupPath() string {
-	if h.inspect != nil && h.inspect.HostConfig != nil {
-		return h.inspect.HostConfig.CgroupParent
+func (h *containerHandle) cgroupPath(ctx context.Context) string {
+	h.ensureInspect(ctx)
+	if h.inspectErr != nil {
+		return ""
 	}
-	return ""
+
+	var rawPath string
+	var pid uint32
+	if h.inspect != nil {
+		if h.inspect.HostConfig != nil {
+			rawPath = h.inspect.HostConfig.CgroupParent
+		}
+		if h.inspect.State != nil && h.inspect.State.Pid > 0 {
+			pid = uint32(h.inspect.State.Pid)
+		}
+	}
+
+	version := 0
+	if h.rt.cgroupReader != nil {
+		version = int(h.rt.cgroupReader.GetVersion())
+	}
+	return runtime.ResolveCGroupPath(rawPath, version, pid, h.rt.procReader)
 }
 
 type liveRootPaths struct {
@@ -746,9 +882,11 @@ func (h *containerHandle) Stdio(ctx context.Context) (*runtime.ContainerStdio, e
 		s.TTY = runtime.BoolPtr(i.Config.Tty)
 		s.OpenStdin = runtime.BoolPtr(i.Config.OpenStdin)
 		s.StdinOnce = runtime.BoolPtr(i.Config.StdinOnce)
-		s.AttachStdin = runtime.BoolPtr(i.Config.AttachStdin)
-		s.AttachStdout = runtime.BoolPtr(i.Config.AttachStdout)
-		s.AttachStderr = runtime.BoolPtr(i.Config.AttachStderr)
+		s.Docker = &runtime.DockerStdioInfo{
+			AttachStdin:  runtime.BoolPtr(i.Config.AttachStdin),
+			AttachStdout: runtime.BoolPtr(i.Config.AttachStdout),
+			AttachStderr: runtime.BoolPtr(i.Config.AttachStderr),
+		}
 	}
 
 	// Log path.

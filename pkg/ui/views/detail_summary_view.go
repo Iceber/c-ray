@@ -164,10 +164,10 @@ func buildKPIStrip(info *runtime.ContainerInfo, state *runtime.ContainerState, c
 
 	// Image
 	imageName := "-"
-	if config != nil && config.ImageName != "" {
-		imageName = truncateForCard(config.ImageName, 28)
-	} else if info != nil && info.Image != "" {
-		imageName = truncateForCard(info.Image, 28)
+	if config != nil && config.ImageRef != "" {
+		imageName = truncateForCard(config.ImageRef, 28)
+	} else if info != nil && info.ImageRef != "" {
+		imageName = truncateForCard(info.ImageRef, 28)
 	}
 	cards = append(cards, kpiCard("Image", imageName))
 
@@ -236,16 +236,18 @@ func buildImageRuntimePanel(info *runtime.ContainerInfo, config *runtime.Contain
 
 	// Image section
 	imageName := "unknown"
-	if config != nil && config.ImageName != "" {
-		imageName = config.ImageName
-	} else if info != nil && info.Image != "" {
-		imageName = info.Image
+	if config != nil && config.ImageRef != "" {
+		imageName = config.ImageRef
+	} else if info != nil && info.ImageRef != "" {
+		imageName = info.ImageRef
 	}
 	lines = append(lines, summaryKV("Image", imageName))
 
 	imageID := "unknown"
-	if info != nil && info.Image != "" {
-		imageID = info.Image
+	if info != nil && info.ImageID != "" {
+		imageID = info.ImageID
+	} else if info != nil && info.ImageRef != "" {
+		imageID = info.ImageRef
 	}
 	lines = append(lines, summaryKV("Image ID", imageID))
 

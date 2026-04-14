@@ -52,39 +52,234 @@ func newRuntime(config *runtime.Config) (runtime.Runtime, error) {
 	}
 }
 
-func runTests(args []string) {
+// ---------------------------------------------------------------------------
+// CLI dispatch: container(s)
+// ---------------------------------------------------------------------------
+
+func printContainerUsage() {
+	fmt.Println("Usage: cray container(s) <action> [args]")
+	fmt.Println()
+	fmt.Println("Actions:")
+	fmt.Println("  list, ls                     List all containers")
+	fmt.Println("  info <id>                    Show container info")
+	fmt.Println("  config <id>                  Show container config")
+	fmt.Println("  state <id>                   Show container state")
+	fmt.Println("  runtime <id>                 Show container runtime profile")
+	fmt.Println("  mounts <id>                  Show container mounts")
+	fmt.Println("  network <id>                 Show container network")
+	fmt.Println("  storage <id>                 Show container storage / layers")
+	fmt.Println("  stdio <id>                   Show container stdio (stdin/stdout/stderr)")
+	fmt.Println("  processes <id>               Show container processes")
+	fmt.Println("  process-stats <id> <pid>     Show single process stats")
+	fmt.Println("  cgroup <id>                  Show container cgroup info and live stats")
+	fmt.Println("  image <id>                   Show container's image info")
+	fmt.Println("  all <id>                     Show all container details")
+}
+
+func runContainerCommand(args []string) {
 	if len(args) < 1 {
-		fmt.Println("Usage: cray test <command>")
-		fmt.Println("\nAvailable commands:")
-		fmt.Println("  Containers:")
-		fmt.Println("    list-containers                    List all containers")
-		fmt.Println("    container-info <id>                Show container info")
-		fmt.Println("    container-config <id>              Show container config")
-		fmt.Println("    container-state <id>               Show container state")
-		fmt.Println("    container-runtime <id>             Show container runtime profile")
-		fmt.Println("    container-mounts <id>              Show container mounts")
-		fmt.Println("    container-network <id>             Show container network")
-		fmt.Println("    container-storage <id>             Show container storage / layers")
-		fmt.Println("    container-stdio <id>               Show container stdio (stdin/stdout/stderr)")
-		fmt.Println("    container-processes <id>           Show container processes")
-		fmt.Println("    container-process-stats <id> <pid> Show single process stats")
-		fmt.Println("    container-image <id>               Show container's image info")
-		fmt.Println("    container-all <id>                 Show all container details")
-		fmt.Println("\n  Images:")
-		fmt.Println("    list-images                        List all images")
-		fmt.Println("    image-info <ref>                   Show image info")
-		fmt.Println("    image-config <ref>                 Show image config")
-		fmt.Println("    image-layers <ref> [snapshotter]   Show image layers")
-		fmt.Println("\n  Pods:")
-		fmt.Println("    list-pods                          List all pods")
-		fmt.Println("    pod-info <uid>                     Show pod details")
-		fmt.Println("\n  Runtime:")
-		fmt.Println("    runtime-info                       Show runtime / storage backend info")
+		printContainerUsage()
 		os.Exit(1)
 	}
 
-	command := args[0]
+	action := args[0]
+	rest := args[1:]
 
+	if action == "help" || action == "-h" || action == "--help" {
+		printContainerUsage()
+		return
+	}
+
+	ctx, rt := mustConnect()
+	defer rt.Close()
+
+	switch action {
+	case "list", "ls":
+		listContainers(ctx, rt)
+	case "info":
+		requireActionArg(rest, "container info <id>")
+		containerInfo(ctx, rt, rest[0])
+	case "config":
+		requireActionArg(rest, "container config <id>")
+		containerConfig(ctx, rt, rest[0])
+	case "state":
+		requireActionArg(rest, "container state <id>")
+		containerState(ctx, rt, rest[0])
+	case "runtime":
+		requireActionArg(rest, "container runtime <id>")
+		containerRuntime(ctx, rt, rest[0])
+	case "mounts":
+		requireActionArg(rest, "container mounts <id>")
+		containerMounts(ctx, rt, rest[0])
+	case "network":
+		requireActionArg(rest, "container network <id>")
+		containerNetwork(ctx, rt, rest[0])
+	case "storage":
+		requireActionArg(rest, "container storage <id>")
+		containerStorage(ctx, rt, rest[0])
+	case "stdio":
+		requireActionArg(rest, "container stdio <id>")
+		containerStdio(ctx, rt, rest[0])
+	case "processes":
+		requireActionArg(rest, "container processes <id>")
+		containerProcesses(ctx, rt, rest[0])
+	case "process-stats":
+		requireActionArgN(rest, 2, "container process-stats <id> <pid>")
+		containerProcessStatsByPID(ctx, rt, rest[0], rest[1])
+	case "cgroup":
+		requireActionArg(rest, "container cgroup <id>")
+		containerCGroup(ctx, rt, rest[0])
+	case "image":
+		requireActionArg(rest, "container image <id>")
+		containerImage(ctx, rt, rest[0])
+	case "all":
+		requireActionArg(rest, "container all <id>")
+		containerAll(ctx, rt, rest[0])
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown container action: %s\n\n", action)
+		printContainerUsage()
+		os.Exit(1)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CLI dispatch: image(s)
+// ---------------------------------------------------------------------------
+
+func printImageUsage() {
+	fmt.Println("Usage: cray image(s) <action> [args]")
+	fmt.Println()
+	fmt.Println("Actions:")
+	fmt.Println("  list, ls                     List all images")
+	fmt.Println("  info <ref>                   Show image info")
+	fmt.Println("  config <ref>                 Show image config")
+	fmt.Println("  layers <ref> [snapshotter]   Show image layers")
+}
+
+func runImageCommand(args []string) {
+	if len(args) < 1 {
+		printImageUsage()
+		os.Exit(1)
+	}
+
+	action := args[0]
+	rest := args[1:]
+
+	if action == "help" || action == "-h" || action == "--help" {
+		printImageUsage()
+		return
+	}
+
+	ctx, rt := mustConnect()
+	defer rt.Close()
+
+	switch action {
+	case "list", "ls":
+		listImages(ctx, rt)
+	case "info":
+		requireActionArg(rest, "image info <ref>")
+		imageInfo(ctx, rt, rest[0])
+	case "config":
+		requireActionArg(rest, "image config <ref>")
+		imageConfig(ctx, rt, rest[0])
+	case "layers":
+		requireActionArg(rest, "image layers <ref>")
+		snap := ""
+		if len(rest) >= 2 {
+			snap = rest[1]
+		}
+		imageLayers(ctx, rt, rest[0], snap)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown image action: %s\n\n", action)
+		printImageUsage()
+		os.Exit(1)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CLI dispatch: pod(s)
+// ---------------------------------------------------------------------------
+
+func printPodUsage() {
+	fmt.Println("Usage: cray pod(s) <action> [args]")
+	fmt.Println()
+	fmt.Println("Actions:")
+	fmt.Println("  list, ls                     List all pods")
+	fmt.Println("  info <uid>                   Show pod details")
+}
+
+func runPodCommand(args []string) {
+	if len(args) < 1 {
+		printPodUsage()
+		os.Exit(1)
+	}
+
+	action := args[0]
+	rest := args[1:]
+
+	if action == "help" || action == "-h" || action == "--help" {
+		printPodUsage()
+		return
+	}
+
+	ctx, rt := mustConnect()
+	defer rt.Close()
+
+	switch action {
+	case "list", "ls":
+		listPods(ctx, rt)
+	case "info":
+		requireActionArg(rest, "pod info <uid>")
+		podInfo(ctx, rt, rest[0])
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown pod action: %s\n\n", action)
+		printPodUsage()
+		os.Exit(1)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CLI dispatch: runtime
+// ---------------------------------------------------------------------------
+
+func printRuntimeUsage() {
+	fmt.Println("Usage: cray runtime <action>")
+	fmt.Println()
+	fmt.Println("Actions:")
+	fmt.Println("  info                         Show runtime / storage backend info")
+}
+
+func runRuntimeCommand(args []string) {
+	if len(args) < 1 {
+		printRuntimeUsage()
+		os.Exit(1)
+	}
+
+	action := args[0]
+
+	if action == "help" || action == "-h" || action == "--help" {
+		printRuntimeUsage()
+		return
+	}
+
+	ctx, rt := mustConnect()
+	defer rt.Close()
+
+	switch action {
+	case "info":
+		runtimeInfo(ctx, rt)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown runtime action: %s\n\n", action)
+		printRuntimeUsage()
+		os.Exit(1)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Connect helper
+// ---------------------------------------------------------------------------
+
+func mustConnect() (context.Context, runtime.Runtime) {
 	config := &runtime.Config{
 		SocketPath: socketPath,
 		Namespace:  namespace,
@@ -102,85 +297,20 @@ func runTests(args []string) {
 		fmt.Fprintf(os.Stderr, "Failed to connect: %v\n", err)
 		os.Exit(1)
 	}
-	defer rt.Close()
 
-	switch command {
-	case "list-containers":
-		listContainers(ctx, rt)
-	case "container-info":
-		requireArg(args, "container-info <id>")
-		containerInfo(ctx, rt, args[1])
-	case "container-config":
-		requireArg(args, "container-config <id>")
-		containerConfig(ctx, rt, args[1])
-	case "container-state":
-		requireArg(args, "container-state <id>")
-		containerState(ctx, rt, args[1])
-	case "container-runtime":
-		requireArg(args, "container-runtime <id>")
-		containerRuntime(ctx, rt, args[1])
-	case "container-mounts":
-		requireArg(args, "container-mounts <id>")
-		containerMounts(ctx, rt, args[1])
-	case "container-network":
-		requireArg(args, "container-network <id>")
-		containerNetwork(ctx, rt, args[1])
-	case "container-storage":
-		requireArg(args, "container-storage <id>")
-		containerStorage(ctx, rt, args[1])
-	case "container-stdio":
-		requireArg(args, "container-stdio <id>")
-		containerStdio(ctx, rt, args[1])
-	case "container-processes":
-		requireArg(args, "container-processes <id>")
-		containerProcesses(ctx, rt, args[1])
-	case "container-process-stats":
-		requireArgN(args, 3, "container-process-stats <id> <pid>")
-		containerProcessStatsByPID(ctx, rt, args[1], args[2])
-	case "container-image":
-		requireArg(args, "container-image <id>")
-		containerImage(ctx, rt, args[1])
-	case "container-all":
-		requireArg(args, "container-all <id>")
-		containerAll(ctx, rt, args[1])
-	case "list-images":
-		listImages(ctx, rt)
-	case "image-info":
-		requireArg(args, "image-info <ref>")
-		imageInfo(ctx, rt, args[1])
-	case "image-config":
-		requireArg(args, "image-config <ref>")
-		imageConfig(ctx, rt, args[1])
-	case "image-layers":
-		requireArg(args, "image-layers <ref>")
-		snap := ""
-		if len(args) >= 3 {
-			snap = args[2]
-		}
-		imageLayers(ctx, rt, args[1], snap)
-	case "list-pods":
-		listPods(ctx, rt)
-	case "pod-info":
-		requireArg(args, "pod-info <uid>")
-		podInfo(ctx, rt, args[1])
-	case "runtime-info":
-		runtimeInfo(ctx, rt)
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown test command: %s\n", command)
+	return ctx, rt
+}
+
+func requireActionArg(rest []string, usage string) {
+	if len(rest) < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: cray %s\n", usage)
 		os.Exit(1)
 	}
 }
 
-func requireArg(args []string, usage string) {
-	if len(args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: cray test %s\n", usage)
-		os.Exit(1)
-	}
-}
-
-func requireArgN(args []string, n int, usage string) {
-	if len(args) < n {
-		fmt.Fprintf(os.Stderr, "Usage: cray test %s\n", usage)
+func requireActionArgN(rest []string, n int, usage string) {
+	if len(rest) < n {
+		fmt.Fprintf(os.Stderr, "Usage: cray %s\n", usage)
 		os.Exit(1)
 	}
 }
@@ -209,10 +339,7 @@ func listContainers(ctx context.Context, rt runtime.Runtime) {
 		entries = append(entries, entry)
 	}
 
-	printJSONSection("List Containers", map[string]any{
-		"count":      len(entries),
-		"containers": entries,
-	})
+	printJSON(entries)
 }
 
 func containerInfo(ctx context.Context, rt runtime.Runtime, id string) {
@@ -220,10 +347,7 @@ func containerInfo(ctx context.Context, rt runtime.Runtime, id string) {
 	info, err := c.Info(ctx)
 	exitOnErr("Info", err)
 
-	printJSONSection(fmt.Sprintf("Container Info: %s", shortID(id)), map[string]any{
-		"container_id": id,
-		"info":         info,
-	})
+	printJSON(info)
 }
 
 func containerConfig(ctx context.Context, rt runtime.Runtime, id string) {
@@ -231,10 +355,7 @@ func containerConfig(ctx context.Context, rt runtime.Runtime, id string) {
 	cfg, err := c.Config(ctx)
 	exitOnErr("Config", err)
 
-	printJSONSection(fmt.Sprintf("Container Config: %s", shortID(id)), map[string]any{
-		"container_id": id,
-		"config":       cfg,
-	})
+	printJSON(cfg)
 }
 
 func containerState(ctx context.Context, rt runtime.Runtime, id string) {
@@ -242,10 +363,7 @@ func containerState(ctx context.Context, rt runtime.Runtime, id string) {
 	state, err := c.State(ctx)
 	exitOnErr("State", err)
 
-	printJSONSection(fmt.Sprintf("Container State: %s", shortID(id)), map[string]any{
-		"container_id": id,
-		"state":        state,
-	})
+	printJSON(state)
 }
 
 func containerRuntime(ctx context.Context, rt runtime.Runtime, id string) {
@@ -253,10 +371,7 @@ func containerRuntime(ctx context.Context, rt runtime.Runtime, id string) {
 	profile, err := c.Runtime(ctx)
 	exitOnErr("Runtime", err)
 
-	printJSONSection(fmt.Sprintf("Container Runtime: %s", shortID(id)), map[string]any{
-		"container_id": id,
-		"runtime":      profile,
-	})
+	printJSON(profile)
 }
 
 func containerMounts(ctx context.Context, rt runtime.Runtime, id string) {
@@ -264,11 +379,7 @@ func containerMounts(ctx context.Context, rt runtime.Runtime, id string) {
 	mounts, err := c.Mounts(ctx)
 	exitOnErr("Mounts", err)
 
-	printJSONSection(fmt.Sprintf("Container Mounts: %s", shortID(id)), map[string]any{
-		"container_id": id,
-		"count":        len(mounts),
-		"mounts":       mounts,
-	})
+	printJSON(mounts)
 }
 
 func containerNetwork(ctx context.Context, rt runtime.Runtime, id string) {
@@ -276,10 +387,7 @@ func containerNetwork(ctx context.Context, rt runtime.Runtime, id string) {
 	net, err := c.Network(ctx)
 	exitOnErr("Network", err)
 
-	printJSONSection(fmt.Sprintf("Container Network: %s", shortID(id)), map[string]any{
-		"container_id": id,
-		"network":      net,
-	})
+	printJSON(net)
 }
 
 func containerStorage(ctx context.Context, rt runtime.Runtime, id string) {
@@ -298,12 +406,14 @@ func containerStorage(ctx context.Context, rt runtime.Runtime, id string) {
 		}
 	}
 
-	printJSONSection(fmt.Sprintf("Container Storage: %s", shortID(id)), map[string]any{
-		"container_id":   id,
+	result := map[string]any{
 		"storage":        storage,
 		"rw_layer_stats": rwStats,
-		"crio_storage":   crioInfo,
-	})
+	}
+	if crioInfo != nil {
+		result["crio_storage"] = crioInfo
+	}
+	printJSON(result)
 }
 
 func containerProcesses(ctx context.Context, rt runtime.Runtime, id string) {
@@ -316,12 +426,11 @@ func containerProcesses(ctx context.Context, rt runtime.Runtime, id string) {
 		stats = nil
 	}
 
-	printJSONSection(fmt.Sprintf("Container Processes: %s", shortID(id)), map[string]any{
-		"container_id": id,
-		"count":        len(procs),
-		"processes":    procs,
-		"top_process":  stats,
-	})
+	result := map[string]any{
+		"processes":   procs,
+		"top_process": stats,
+	}
+	printJSON(result)
 }
 
 func containerProcessStatsByPID(ctx context.Context, rt runtime.Runtime, id, pid string) {
@@ -329,11 +438,7 @@ func containerProcessStatsByPID(ctx context.Context, rt runtime.Runtime, id, pid
 	stats, err := c.GetProcessStats(ctx, pid)
 	exitOnErr("GetProcessStats", err)
 
-	printJSONSection(fmt.Sprintf("Process Stats: container=%s pid=%s", shortID(id), pid), map[string]any{
-		"container_id": id,
-		"pid":          pid,
-		"stats":        stats,
-	})
+	printJSON(stats)
 }
 
 func containerImage(ctx context.Context, rt runtime.Runtime, id string) {
@@ -346,12 +451,19 @@ func containerImage(ctx context.Context, rt runtime.Runtime, id string) {
 	cfg, err := img.Config(ctx)
 	exitOnErr("Image.Config", err)
 
-	printJSONSection(fmt.Sprintf("Container Image: %s", shortID(id)), map[string]any{
-		"container_id": id,
-		"ref":          img.Ref(),
-		"info":         info,
-		"config":       cfg,
+	printJSON(map[string]any{
+		"ref":    img.Ref(),
+		"info":   info,
+		"config": cfg,
 	})
+}
+
+func containerCGroup(ctx context.Context, rt runtime.Runtime, id string) {
+	c := mustGetContainer(ctx, rt, id)
+	info, err := c.CGroup(ctx)
+	exitOnErr("CGroup", err)
+
+	printJSON(info)
 }
 
 func containerAll(ctx context.Context, rt runtime.Runtime, id string) {
@@ -373,6 +485,8 @@ func containerAll(ctx context.Context, rt runtime.Runtime, id string) {
 	fmt.Println()
 	containerProcesses(ctx, rt, id)
 	fmt.Println()
+	containerCGroup(ctx, rt, id)
+	fmt.Println()
 	containerImage(ctx, rt, id)
 }
 
@@ -381,10 +495,7 @@ func containerStdio(ctx context.Context, rt runtime.Runtime, id string) {
 	stdio, err := c.Stdio(ctx)
 	exitOnErr("Stdio", err)
 
-	printJSONSection(fmt.Sprintf("Container Stdio: %s", shortID(id)), map[string]any{
-		"container_id": id,
-		"stdio":        stdio,
-	})
+	printJSON(stdio)
 }
 
 // ---------------------------------------------------------------------------
@@ -411,10 +522,7 @@ func listImages(ctx context.Context, rt runtime.Runtime) {
 		entries = append(entries, entry)
 	}
 
-	printJSONSection("List Images", map[string]any{
-		"count":  len(entries),
-		"images": entries,
-	})
+	printJSON(entries)
 }
 
 func imageInfo(ctx context.Context, rt runtime.Runtime, ref string) {
@@ -431,11 +539,11 @@ func imageInfo(ctx context.Context, rt runtime.Runtime, ref string) {
 		}
 	}
 
-	printJSONSection(fmt.Sprintf("Image Info: %s", ref), map[string]any{
-		"ref":          ref,
-		"info":         info,
-		"crio_storage": crioInfo,
-	})
+	result := map[string]any{"info": info}
+	if crioInfo != nil {
+		result["crio_storage"] = crioInfo
+	}
+	printJSON(result)
 }
 
 func imageConfig(ctx context.Context, rt runtime.Runtime, ref string) {
@@ -443,10 +551,7 @@ func imageConfig(ctx context.Context, rt runtime.Runtime, ref string) {
 	cfg, err := img.Config(ctx)
 	exitOnErr("Config", err)
 
-	printJSONSection(fmt.Sprintf("Image Config: %s", ref), map[string]any{
-		"ref":    ref,
-		"config": cfg,
-	})
+	printJSON(cfg)
 }
 
 func imageLayers(ctx context.Context, rt runtime.Runtime, ref, snapshotter string) {
@@ -454,24 +559,16 @@ func imageLayers(ctx context.Context, rt runtime.Runtime, ref, snapshotter strin
 	layers, err := img.Layers(ctx, runtime.LayerQuery{Snapshotter: snapshotter})
 	exitOnErr("Layers", err)
 
-	printJSONSection(fmt.Sprintf("Image Layers: %s", ref), map[string]any{
-		"ref":         ref,
-		"snapshotter": snapshotter,
-		"count":       len(layers),
-		"layers":      layers,
-	})
+	printJSON(layers)
 }
 
 func runtimeInfo(ctx context.Context, rt runtime.Runtime) {
 	if inspector, ok := rt.(runtimecrio.StoreIntrospector); ok {
 		info, err := inspector.CRIOStoreInfo(ctx)
 		exitOnErr("CRI-O store info", err)
-		printJSONSection("Runtime Info (CRI-O)", map[string]any{
-			"runtime": "crio",
-			"store":   info,
-		})
+		printJSON(info)
 	} else {
-		printJSONSection("Runtime Info", map[string]any{
+		printJSON(map[string]any{
 			"message": "No extended runtime introspection available for current backend.",
 		})
 	}
@@ -735,10 +832,7 @@ func listPods(ctx context.Context, rt runtime.Runtime) {
 		entries = append(entries, entry)
 	}
 
-	printJSONSection("List Pods", map[string]any{
-		"count": len(entries),
-		"pods":  entries,
-	})
+	printJSON(entries)
 }
 
 func podInfo(ctx context.Context, rt runtime.Runtime, uid string) {
@@ -776,8 +870,7 @@ func podInfo(ctx context.Context, rt runtime.Runtime, uid string) {
 		containerEntries = append(containerEntries, entry)
 	}
 
-	printJSONSection(fmt.Sprintf("Pod Info: %s", uid), map[string]any{
-		"uid":        uid,
+	printJSON(map[string]any{
 		"info":       info,
 		"containers": containerEntries,
 	})
@@ -812,8 +905,7 @@ func exitOnErr(label string, err error) {
 	}
 }
 
-func printJSONSection(title string, value any) {
-	fmt.Printf("=== %s ===\n", title)
+func printJSON(value any) {
 	data, err := marshalPrettyJSON(value)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "JSON encode error: %v\n", err)

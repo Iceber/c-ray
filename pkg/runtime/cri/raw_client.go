@@ -64,6 +64,10 @@ type ContainerStatusInfo struct {
 	StdinOnce     *bool
 	ConfigLogPath string // ContainerConfig.log_path (may be relative)
 	StatusLogPath string // ContainerStatus.log_path (usually absolute)
+
+	// Config-level image fields from CRI verbose info (info.config.image).
+	ConfigImageID  string // info.config.image.image
+	ConfigImageRef string // info.config.image.user_specified_image
 }
 
 // PortMapping captures CRI PodSandbox port mappings used by runtime inspection.
@@ -526,6 +530,12 @@ func decodeContainerStatus(resp *runtimeapi.ContainerStatusResponse) *ContainerS
 			continue
 		}
 		result.Envs = append(result.Envs, ContainerEnv{Key: env.GetKey(), Value: env.GetValue()})
+	}
+
+	// Config-level image fields (info.config.image).
+	if img := info.Config.GetImage(); img != nil {
+		result.ConfigImageID = img.GetImage()
+		result.ConfigImageRef = img.GetUserSpecifiedImage()
 	}
 
 	if linux := info.Config.GetLinux(); linux != nil && linux.GetSecurityContext() != nil {

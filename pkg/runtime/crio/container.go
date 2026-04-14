@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -233,15 +232,22 @@ func (h *containerHandle) Info(ctx context.Context) (*runtime.ContainerInfo, err
 	info := &runtime.ContainerInfo{
 		ID:        h.id,
 		Name:      h.containerName(),
-		Image:     h.imageID,
 		CreatedAt: h.createdAt,
 		PID:       h.pid(ctx),
 	}
 
 	if h.cri != nil {
-		if h.cri.image != "" {
-			info.Image = h.cri.image
+		// ImageRef from io.kubernetes.cri-o.ImageName annotation.
+		if v := h.cri.annotations["io.kubernetes.cri-o.ImageName"]; v != "" {
+			info.ImageRef = v
+		} else if h.cri.image != "" {
+			info.ImageRef = h.cri.image
 		}
+		// ImageID from io.kubernetes.cri-o.ImageRef annotation.
+		if v := h.cri.annotations["io.kubernetes.cri-o.ImageRef"]; v != "" {
+			info.ImageID = v
+		}
+
 		// Spoofed containers are not visible to CRI; skip status call.
 		if !h.spoofed {
 			status, _ := h.rt.criClient.InspectContainerStatus(ctx, h.id)
@@ -276,10 +282,15 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 		}
 	}
 
-	if h.cri != nil && h.cri.image != "" {
-		cfg.ImageName = h.cri.image
-	} else {
-		cfg.ImageName = h.imageID
+	if h.cri != nil {
+		if v := h.cri.annotations["io.kubernetes.cri-o.ImageName"]; v != "" {
+			cfg.ImageRef = v
+		} else if h.cri.image != "" {
+			cfg.ImageRef = h.cri.image
+		}
+		if v := h.cri.annotations["io.kubernetes.cri-o.ImageRef"]; v != "" {
+			cfg.ImageID = v
+		}
 	}
 
 	if h.spec != nil {
@@ -298,7 +309,7 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 
 	if cfg.CGroupPath != "" && h.rt.cgroupReader != nil {
 		cfg.CGroupVersion = int(h.rt.cgroupReader.GetVersion())
-		cfg.CGroupMountedPath = "/sys/fs/cgroup" + "/" + strings.TrimPrefix(cfg.CGroupPath, "/")
+		cfg.CGroupRootPath = runtime.CGroupRootPath()
 	}
 
 	// RW layer path from storage.
@@ -359,6 +370,41 @@ func (h *containerHandle) State(ctx context.Context) (*runtime.ContainerState, e
 	}
 
 	return state, nil
+}
+
+// ---------------------------------------------------------------------------
+// runtime.Container — CGroup
+// ---------------------------------------------------------------------------
+
+func (h *containerHandle) CGroup(ctx context.Context) (*runtime.ContainerCGroupInfo, error) {
+	h.ensureSpec(ctx)
+
+	var rawPath string
+	if h.spec != nil && h.spec.Linux != nil {
+		rawPath = h.spec.Linux.CgroupsPath
+	}
+
+	info := &runtime.ContainerCGroupInfo{
+		RootPath: runtime.CGroupRootPath(),
+	}
+	if rawPath != "" {
+		info.Driver = runtime.InferCGroupDriver(rawPath)
+	}
+
+	if h.rt.cgroupReader != nil {
+		info.Version = int(h.rt.cgroupReader.GetVersion())
+		info.Path = runtime.ResolveCGroupPath(rawPath, info.Version, h.pid(ctx), h.rt.procReader)
+	} else {
+		info.Path = runtime.NormalizeCGroupPath(rawPath)
+	}
+	if info.Driver == "" && info.Path != "" {
+		info.Driver = runtime.InferCGroupDriver(info.Path)
+	}
+	runtime.PopulateCGroupStatsFromReader(info, h.rt.cgroupReader)
+
+	info.SpecResources = runtime.ExtractSpecResources(h.spec)
+
+	return info, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -583,12 +629,7 @@ func (h *containerHandle) ProcessStats(ctx context.Context) (*runtime.ProcessSta
 	if pid == 0 {
 		return nil, fmt.Errorf("container is not running")
 	}
-	h.ensureSpec(ctx)
-	var cgroupPath string
-	if h.spec != nil && h.spec.Linux != nil {
-		cgroupPath = h.spec.Linux.CgroupsPath
-	}
-	return runtime.CollectProcessStats(h.rt.processCollector, pid, cgroupPath)
+	return runtime.CollectProcessStats(h.rt.processCollector, pid, h.resolvedCGroupPath(ctx, pid))
 }
 
 func (h *containerHandle) GetProcessStats(ctx context.Context, pidStr string) (*runtime.ProcessStats, error) {
@@ -596,12 +637,7 @@ func (h *containerHandle) GetProcessStats(ctx context.Context, pidStr string) (*
 	if pid == 0 {
 		return nil, fmt.Errorf("container is not running")
 	}
-	h.ensureSpec(ctx)
-	var cgroupPath string
-	if h.spec != nil && h.spec.Linux != nil {
-		cgroupPath = h.spec.Linux.CgroupsPath
-	}
-	return runtime.CollectSingleProcessStats(h.rt.processCollector, pid, cgroupPath, pidStr)
+	return runtime.CollectSingleProcessStats(h.rt.processCollector, pid, h.resolvedCGroupPath(ctx, pid), pidStr)
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +661,19 @@ func (h *containerHandle) Image(ctx context.Context) (runtime.Image, error) {
 		}
 	}
 	return nil, fmt.Errorf("container has no image reference")
+}
+
+func (h *containerHandle) resolvedCGroupPath(ctx context.Context, pid uint32) string {
+	h.ensureSpec(ctx)
+	var rawPath string
+	if h.spec != nil && h.spec.Linux != nil {
+		rawPath = h.spec.Linux.CgroupsPath
+	}
+	version := 0
+	if h.rt.cgroupReader != nil {
+		version = int(h.rt.cgroupReader.GetVersion())
+	}
+	return runtime.ResolveCGroupPath(rawPath, version, pid, h.rt.procReader)
 }
 
 // ---------------------------------------------------------------------------
@@ -700,7 +749,7 @@ func (h *containerHandle) Stdio(ctx context.Context) (*runtime.ContainerStdio, e
 
 	// Build AttachInfo.
 	if attachSocket != "" || controlFile != "" {
-		s.Attach = &runtime.AttachInfo{
+		crioInfo.Attach = &runtime.AttachInfo{
 			Socket:        attachSocket,
 			ControlSocket: controlFile,
 			ResizeFile:    winszFile,

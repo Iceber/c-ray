@@ -60,6 +60,8 @@ type Container interface {
 
 	State(ctx context.Context) (*ContainerState, error)
 
+	CGroup(ctx context.Context) (*ContainerCGroupInfo, error)
+
 	RWLayerStats(ctx context.Context) (ContainerRWLayerStats, error)
 
 	Processes(ctx context.Context) ([]*Process, error)

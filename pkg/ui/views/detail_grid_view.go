@@ -622,11 +622,11 @@ func buildGridStdioPanel(stdio *runtime.ContainerStdio) (string, []string) {
 	renderEndpoint("stderr", stdio.Stderr)
 
 	// Attach info.
-	if stdio.Attach != nil {
+	if stdio.CRIO != nil && stdio.CRIO.Attach != nil {
 		lines = append(lines, "")
 		lines = append(lines, gridKV("Attach", components.Bright("yes")))
-		if stdio.Attach.Socket != "" {
-			lines = append(lines, gridKV("Socket", truncatePath(stdio.Attach.Socket, 35)))
+		if stdio.CRIO.Attach.Socket != "" {
+			lines = append(lines, gridKV("Socket", truncatePath(stdio.CRIO.Attach.Socket, 35)))
 		}
 	}
 
@@ -895,8 +895,8 @@ func wrapImageValue(value string, width int) []string {
 }
 
 func imagePanelName(config *runtime.ContainerConfig, imgInfo *runtime.ImageInfo) string {
-	if config != nil && strings.TrimSpace(config.ImageName) != "" {
-		return config.ImageName
+	if config != nil && strings.TrimSpace(config.ImageRef) != "" {
+		return config.ImageRef
 	}
 	if imgInfo != nil && len(imgInfo.Names) > 0 && strings.TrimSpace(imgInfo.Names[0]) != "" {
 		return imgInfo.Names[0]
