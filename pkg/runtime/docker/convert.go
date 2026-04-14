@@ -11,12 +11,18 @@ func convertDockerStatus(state string) runtime.ContainerStatus {
 	switch strings.ToLower(state) {
 	case "created":
 		return runtime.ContainerStatusCreated
-	case "running", "restarting":
+	case "running":
 		return runtime.ContainerStatusRunning
+	case "restarting":
+		return runtime.ContainerStatusRestarting
+	case "pausing":
+		return runtime.ContainerStatusPausing
 	case "paused":
 		return runtime.ContainerStatusPaused
-	case "exited", "dead", "removing":
+	case "exited", "removing":
 		return runtime.ContainerStatusStopped
+	case "dead":
+		return runtime.ContainerStatusDead
 	default:
 		return runtime.ContainerStatusUnknown
 	}

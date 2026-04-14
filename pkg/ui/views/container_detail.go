@@ -216,26 +216,26 @@ func (v *ContainerDetailView) renderHeader() {
 
 	name := v.info.Name
 	if name == "" {
-		name = shortID(v.info.ID)
+		name = v.info.ID
 	}
 
-	v.headerBar.SetText(fmt.Sprintf(
-		" %s  %s  %s",
-		components.Bright(name),
-		components.Muted(shortID(v.info.ID)),
-		detailStateTag(v.info, v.state),
-	))
-
-	var ctx []string
+	// Line 1: <name>  <full ID>  <pod ns>/<pod name>
+	line1 := fmt.Sprintf(" %s  %s", components.Bright(name), components.Muted(v.info.ID))
 	if v.info.PodNamespace != "" || v.info.PodName != "" {
-		ctx = append(ctx, components.KV("pod ", fallbackValue(v.info.PodNamespace, "?")+"/"+fallbackValue(v.info.PodName, "?")))
+		line1 += fmt.Sprintf("  %s", components.Dim(fallbackValue(v.info.PodNamespace, "?")+"/"+fallbackValue(v.info.PodName, "?")))
 	}
-	if v.info.ImageRef != "" {
-		ctx = append(ctx, components.KV("image ", truncateForCard(v.info.ImageRef, 40)))
-	}
+	v.headerBar.SetText(line1)
+
+	// Line 2: created <time>  <status>  PID(<pid>)
+	var ctx []string
 	ctx = append(ctx, components.KV("created ", detailTimeLabel(v.info.CreatedAt)))
-	if !v.refreshedAt.IsZero() {
-		ctx = append(ctx, components.Dim("refreshed "+v.refreshedAt.Format("15:04:05")))
+	ctx = append(ctx, detailStateTag(v.info, v.state))
+	pid := v.info.PID
+	if v.state != nil && v.state.PID > 0 {
+		pid = v.state.PID
+	}
+	if pid > 0 {
+		ctx = append(ctx, components.Dim(fmt.Sprintf("PID(%d)", pid)))
 	}
 	v.contextBar.SetText(" " + joinSpaced(ctx))
 }
@@ -385,23 +385,22 @@ func detailStateTag(info *runtime.ContainerInfo, state *runtime.ContainerState) 
 	}
 	switch status {
 	case runtime.ContainerStatusRunning:
-		pid := info.PID
-		if state != nil && state.PID > 0 {
-			pid = state.PID
-		}
-		if pid > 0 {
-			return components.StatusTag(fmt.Sprintf("RUNNING PID %d", pid), components.ColorFgTag, components.ColorBgTagRun)
-		}
 		return components.StatusTag("RUNNING", components.ColorFgTag, components.ColorBgTagRun)
+	case runtime.ContainerStatusRestarting:
+		return components.StatusTag("RESTARTING", components.ColorFgTag, components.ColorBgTagWarn)
+	case runtime.ContainerStatusPausing:
+		return components.StatusTag("PAUSING", components.ColorFgTag, components.ColorBgTagWarn)
+	case runtime.ContainerStatusPaused:
+		return components.StatusTag("PAUSED", components.ColorFgTag, components.ColorBgTagWarn)
 	case runtime.ContainerStatusStopped:
 		if state != nil && state.ExitCode != nil {
 			return components.StatusTag(fmt.Sprintf("EXITED %d", *state.ExitCode), components.ColorFgTag, components.ColorBgTagStop)
 		}
 		return components.StatusTag("EXITED", components.ColorFgTag, components.ColorBgTagStop)
+	case runtime.ContainerStatusDead:
+		return components.StatusTag("DEAD", components.ColorFgTag, components.ColorBgTagStop)
 	case runtime.ContainerStatusCreated:
 		return components.StatusTag("CREATED", components.ColorFgTag, components.ColorBgTagInfo)
-	case runtime.ContainerStatusPaused:
-		return components.StatusTag("PAUSED", components.ColorFgTag, components.ColorBgTagWarn)
 	default:
 		return components.StatusTag("UNKNOWN", components.ColorFgMuted, components.ColorBgTabOff)
 	}

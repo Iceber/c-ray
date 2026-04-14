@@ -38,7 +38,7 @@ type DetailGridView struct {
 	stdioPanel   *tview.TextView
 	nsPanel      *tview.TextView
 	processTree  *tview.TreeView
-	cgroupPanel  *tview.TextView
+	cgroupPanel  *tview.TreeView
 	fsPanel      *tview.TreeView
 	podPanel     *tview.TextView
 	imagePanel   *tview.TreeView
@@ -49,6 +49,7 @@ type detailGridFocusPane int
 
 const (
 	detailGridFocusProcesses detailGridFocusPane = iota
+	detailGridFocusCgroup
 	detailGridFocusFilesystem
 	detailGridFocusImage
 )
@@ -95,12 +96,22 @@ func NewDetailGridView(app *tview.Application) *DetailGridView {
 		v.updateDetailPanelForNode(detailGridFocusProcesses, node)
 	})
 
-	v.cgroupPanel = newGridPanel("Cgroup")
+	v.cgroupPanel = tview.NewTreeView()
+	components.InitTreeView(v.cgroupPanel)
+	v.cgroupPanel.SetBorder(true).SetBorderColor(components.ColorFgBorder)
+	v.cgroupPanel.SetTitle(fmt.Sprintf(" %s%s ", components.Accent("Cgroup"), components.Dim("(c)"))).SetTitleAlign(tview.AlignLeft)
+	v.cgroupPanel.SetBackgroundColor(components.ColorBg)
+	v.cgroupPanel.SetTopLevel(1)
+	v.cgroupPanel.SetRoot(components.NewTreeNode(components.Muted("No data")))
+	v.cgroupPanel.SetChangedFunc(func(node *tview.TreeNode) {
+		v.updateDetailPanelForNode(detailGridFocusCgroup, node)
+	})
 	v.fsPanel = tview.NewTreeView()
 	components.InitTreeView(v.fsPanel)
 	v.fsPanel.SetBorder(true).SetBorderColor(components.ColorFgBorder)
 	v.fsPanel.SetTitle(fmt.Sprintf(" %s%s ", components.Accent("Filesystem"), components.Dim("(f)"))).SetTitleAlign(tview.AlignLeft)
 	v.fsPanel.SetBackgroundColor(components.ColorBg)
+	v.fsPanel.SetTopLevel(1)
 	v.fsPanel.SetRoot(components.NewTreeNode(components.Muted("No data")))
 	v.fsPanel.SetChangedFunc(func(node *tview.TreeNode) {
 		v.updateDetailPanelForNode(detailGridFocusFilesystem, node)
@@ -120,6 +131,7 @@ func NewDetailGridView(app *tview.Application) *DetailGridView {
 	v.imagePanel.SetBorder(true).SetBorderColor(components.ColorFgBorder)
 	v.imagePanel.SetTitle(fmt.Sprintf(" %s%s ", components.Accent("Image"), components.Dim("(i)"))).SetTitleAlign(tview.AlignLeft)
 	v.imagePanel.SetBackgroundColor(components.ColorBg)
+	v.imagePanel.SetTopLevel(1)
 	v.imagePanel.SetRoot(components.NewTreeNode(components.Muted("No data")))
 	v.imagePanel.SetChangedFunc(func(node *tview.TreeNode) {
 		v.updateDetailPanelForNode(detailGridFocusImage, node)
@@ -187,6 +199,7 @@ func (v *DetailGridView) Refresh(ctx context.Context) {
 	processes, _ := c.Processes(ctx)
 	storage, _ := c.Storage(ctx)
 	mounts, _ := c.Mounts(ctx)
+	cgroupInfo, _ := c.CGroup(ctx)
 
 	var imageInfo *runtime.ImageInfo
 	var imageConfig *runtime.ImageConfigInfo
@@ -202,25 +215,29 @@ func (v *DetailGridView) Refresh(ctx context.Context) {
 	stdioText, sp := buildGridStdioPanel(stdio)
 	placeholders = append(placeholders, sp...)
 	nsText := buildGridNamespacePanel(config)
-	cgroupText, cp := buildGridCgroupPanel(config)
-	placeholders = append(placeholders, cp...)
+	cgroupRoot := buildGridCgroupTree(cgroupInfo, config)
 	fsRoot := buildGridFilesystemTree(config, storage, mounts)
 	podText := buildGridPodPanel(info, profile)
 	processRoot := buildGridProcessTree(c, ctx, processes)
-
-	// Append placeholder summary to cgroup panel (smallest panel, good anchor)
-	if len(placeholders) > 0 {
-		cgroupText += fmt.Sprintf("\n\n  %s\n  %s",
-			components.Accent("⚠ Not yet in runtime:"),
-			components.Muted(strings.Join(placeholders, ", ")))
-	}
 
 	count := len(processes)
 	queueUpdateDraw(v.app, func() {
 		v.networkPanel.SetText(networkText)
 		v.stdioPanel.SetText(stdioText)
 		v.nsPanel.SetText(nsText)
-		v.cgroupPanel.SetText(cgroupText)
+		v.cgroupPanel.SetRoot(cgroupRoot)
+		currentCGNode := cgroupRoot
+		if children := cgroupRoot.GetChildren(); len(children) > 0 {
+			currentCGNode = children[0]
+		}
+		v.cgroupPanel.SetCurrentNode(currentCGNode)
+		// Append placeholder summary to cgroup panel title if needed
+		if len(placeholders) > 0 {
+			v.cgroupPanel.SetTitle(fmt.Sprintf(" %s%s %s ",
+				components.Accent("Cgroup"),
+				components.Dim("(c)"),
+				components.Muted("⚠ "+strings.Join(placeholders, ", "))))
+		}
 		v.fsPanel.SetRoot(fsRoot)
 		currentFSNode := fsRoot
 		if len(fsRoot.GetChildren()) > 0 {
@@ -245,7 +262,9 @@ func (v *DetailGridView) Refresh(ctx context.Context) {
 			components.Accent("Processes"),
 			components.Dim("(p)"),
 			components.Muted(fmt.Sprintf("%d total", count))))
-		if v.focusPane == detailGridFocusFilesystem {
+		if v.focusPane == detailGridFocusCgroup {
+			v.updateDetailPanelForNode(detailGridFocusCgroup, currentCGNode)
+		} else if v.focusPane == detailGridFocusFilesystem {
 			v.updateDetailPanelForNode(detailGridFocusFilesystem, currentFSNode)
 		} else if v.focusPane == detailGridFocusImage {
 			v.updateDetailPanelForNode(detailGridFocusImage, currentImageNode)
@@ -259,6 +278,8 @@ func (v *DetailGridView) Refresh(ctx context.Context) {
 // GetFocusPrimitive returns the focusable primitive (process tree).
 func (v *DetailGridView) GetFocusPrimitive() tview.Primitive {
 	switch v.focusPane {
+	case detailGridFocusCgroup:
+		return v.cgroupPanel
 	case detailGridFocusFilesystem:
 		return v.fsPanel
 	case detailGridFocusImage:
@@ -282,6 +303,14 @@ func (v *DetailGridView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
 		v.updateFocusStyles()
 		v.updateDetailPanelForNode(detailGridFocusProcesses, v.processTree.GetCurrentNode())
 		return nil
+	case 'c', 'C':
+		v.focusPane = detailGridFocusCgroup
+		if v.app != nil {
+			v.app.SetFocus(v.cgroupPanel)
+		}
+		v.updateFocusStyles()
+		v.updateDetailPanelForNode(detailGridFocusCgroup, v.cgroupPanel.GetCurrentNode())
+		return nil
 	case 'f', 'F':
 		v.focusPane = detailGridFocusFilesystem
 		if v.app != nil {
@@ -300,6 +329,8 @@ func (v *DetailGridView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 	switch v.focusPane {
+	case detailGridFocusCgroup:
+		return components.HandleTreeInput(event, v.cgroupPanel, nil, nil)
 	case detailGridFocusFilesystem:
 		return components.HandleTreeInput(event, v.fsPanel, nil, nil)
 	case detailGridFocusImage:
@@ -335,7 +366,9 @@ func (v *DetailGridView) renderEmpty() {
 		v.networkPanel.SetText(empty)
 		v.stdioPanel.SetText(empty)
 		v.nsPanel.SetText(empty)
-		v.cgroupPanel.SetText(empty)
+		cgRoot := components.NewTreeNode(components.Muted("Loading...")).SetSelectable(false)
+		v.cgroupPanel.SetRoot(cgRoot)
+		v.cgroupPanel.SetCurrentNode(cgRoot)
 		fsRoot := components.NewTreeNode(components.Muted("Loading...")).SetSelectable(false)
 		v.fsPanel.SetRoot(fsRoot)
 		v.fsPanel.SetCurrentNode(fsRoot)
@@ -351,6 +384,7 @@ func (v *DetailGridView) renderEmpty() {
 
 func (v *DetailGridView) updateFocusStyles() {
 	components.ApplyTreeFocusStyle(v.processTree, v.focusPane == detailGridFocusProcesses)
+	components.ApplyTreeFocusStyle(v.cgroupPanel, v.focusPane == detailGridFocusCgroup)
 	components.ApplyTreeFocusStyle(v.fsPanel, v.focusPane == detailGridFocusFilesystem)
 	components.ApplyTreeFocusStyle(v.imagePanel, v.focusPane == detailGridFocusImage)
 }
@@ -362,6 +396,8 @@ func (v *DetailGridView) updateDetailPanelForNode(pane detailGridFocusPane, node
 	var title string
 	var lines []string
 	switch pane {
+	case detailGridFocusCgroup:
+		title, lines = cgroupNodeDetail(node)
 	case detailGridFocusFilesystem:
 		title, lines = filesystemNodeDetail(node)
 	case detailGridFocusImage:
@@ -527,14 +563,50 @@ func buildGridNetworkPanel(net *runtime.ContainerNetworkState) string {
 
 	pn := net.PodNetwork
 
+	// Build observed traffic lookup by interface name.
+	observedMap := make(map[string]*runtime.NetworkStats, len(pn.ObservedInterfaces))
+	for _, s := range pn.ObservedInterfaces {
+		observedMap[s.Interface] = s
+	}
+
+	// Detect veth <-> eth0 pair from CNI interfaces.
+	var eth0If, vethIf *runtime.CNIInterface
+	if pn.CNI != nil {
+		for _, iface := range pn.CNI.Interfaces {
+			switch {
+			case iface.Name == "eth0" && eth0If == nil:
+				eth0If = iface
+			case strings.HasPrefix(iface.Name, "veth") && vethIf == nil:
+				vethIf = iface
+			}
+		}
+	}
+
 	// Interfaces
-	if len(pn.ObservedInterfaces) > 0 {
-		lines = append(lines, fmt.Sprintf("  [%s::b]Interfaces[-:-:-]", components.ColorName(components.ColorFgAccent)))
+	lines = append(lines, fmt.Sprintf("  [%s::b]Interfaces[-:-:-]", components.ColorName(components.ColorFgAccent)))
+
+	if eth0If != nil && vethIf != nil {
+		// Show merged veth -> eth0 pair with IP and traffic.
+		lines = append(lines, fmt.Sprintf("   %s → %s",
+			components.Bright(vethIf.Name), components.Bright(eth0If.Name)))
+		for _, addr := range eth0If.Addresses {
+			lines = append(lines, fmt.Sprintf("   %s %s",
+				components.Muted("IP:"), components.Bright(fallbackValue(addr.CIDR, "-"))))
+		}
+		if stats, ok := observedMap[eth0If.Name]; ok {
+			lines = append(lines, fmt.Sprintf("   %s %s  %s %s",
+				components.Muted("RX:"), components.Bright(formatBytes(int64(stats.RxBytes))),
+				components.Muted("TX:"), components.Bright(formatBytes(int64(stats.TxBytes)))))
+		}
+	} else if len(pn.ObservedInterfaces) > 0 {
 		for _, iface := range pn.ObservedInterfaces {
-			lines = append(lines, fmt.Sprintf("   %s", components.Bright(iface.Interface)))
+			lines = append(lines, fmt.Sprintf("   %s  %s %s  %s %s",
+				components.Bright(iface.Interface),
+				components.Muted("RX:"), components.Bright(formatBytes(int64(iface.RxBytes))),
+				components.Muted("TX:"), components.Bright(formatBytes(int64(iface.TxBytes)))))
 		}
 	} else {
-		lines = append(lines, gridKV("Interfaces", "-"))
+		lines = append(lines, gridKV("", "-"))
 	}
 
 	lines = append(lines, "")
@@ -765,34 +837,270 @@ func buildGridProcessTree(c runtime.Container, ctx context.Context, processes []
 	return rootNode
 }
 
-func buildGridCgroupPanel(config *runtime.ContainerConfig) (string, []string) {
-	var lines []string
-	var placeholders []string
+// buildGridCgroupTree builds a selectable tree for the Cgroup panel.
+func buildGridCgroupTree(cg *runtime.ContainerCGroupInfo, config *runtime.ContainerConfig) *tview.TreeNode {
+	root := components.NewTreeNode(components.Accent("Cgroup")).SetSelectable(false).SetExpanded(true)
 
-	if config != nil {
-		lines = append(lines, gridKV("Driver", fallbackValue(config.CGroupDriver, "-")))
-		if config.CGroupVersion > 0 {
-			lines = append(lines, gridKV("Version", fmt.Sprintf("v%d", config.CGroupVersion)))
-		} else {
-			lines = append(lines, gridKV("Version", "-"))
+	// --- Driver/Version + Path ---
+	driver := "-"
+	version := "-"
+	cgPath := "-"
+	rootPath := ""
+	if cg != nil {
+		driver = fallbackValue(cg.Driver, "-")
+		if cg.Version > 0 {
+			version = fmt.Sprintf("v%d", cg.Version)
 		}
-		lines = append(lines, gridKVBlock("Path", fallbackValue(config.CGroupPath, "-")))
-	} else {
-		lines = append(lines, gridKV("Driver", "-"))
-		lines = append(lines, gridKV("Version", "-"))
-		lines = append(lines, gridKVBlock("Path", "-"))
+		cgPath = fallbackValue(cg.Path, "-")
+		rootPath = cg.RootPath
+	} else if config != nil {
+		driver = fallbackValue(config.CGroupDriver, "-")
+		if config.CGroupVersion > 0 {
+			version = fmt.Sprintf("v%d", config.CGroupVersion)
+		}
+		cgPath = fallbackValue(config.CGroupPath, "-")
+		rootPath = config.CGroupRootPath
 	}
 
-	// CPU / Memory / PIDs limits and usage are NOT available in current runtime interface.
-	placeholders = append(placeholders,
-		"Cgroup.CPULimit", "Cgroup.CPUUsage",
-		"Cgroup.MemoryLimit", "Cgroup.MemoryUsage",
-		"Cgroup.PIDsLimit", "Cgroup.PIDsCurrent")
-	lines = append(lines, gridKVBlock("CPU", components.Muted("(not available)")))
-	lines = append(lines, gridKVBlock("Memory", components.Muted("(not available)")))
-	lines = append(lines, gridKVBlock("PIDs", components.Muted("(not available)")))
+	root.AddChild(cgroupLeaf("Driver", driver+"/"+version, nil))
 
-	return joinGridBlocks(lines), placeholders
+	// Path — detail shows full absolute path
+	fullPath := cgPath
+	if rootPath != "" && cgPath != "" && cgPath != "-" {
+		fullPath = strings.TrimSuffix(rootPath, "/") + "/" + strings.TrimPrefix(cgPath, "/")
+	}
+	pathDetail := &detailGridSelectionDetail{
+		Title: "Cgroup Path",
+		Lines: detailLines(
+			detailField("Full Path", fullPath),
+		),
+	}
+	root.AddChild(cgroupLeaf("Path", cgPath, pathDetail))
+
+	if cg == nil {
+		root.AddChild(cgroupLeaf("CPU", components.Muted("(n/a)"), nil))
+		root.AddChild(cgroupLeaf("Memory", components.Muted("(n/a)"), nil))
+		root.AddChild(cgroupLeaf("PIDs", components.Muted("(n/a)"), nil))
+		return root
+	}
+
+	sr := cg.SpecResources
+
+	// --- CPU ---
+	cpuDetail := buildCgroupCPUDetail(cg, sr)
+	root.AddChild(cgroupLeaf("CPU Limit", formatCPULimit(cg), cpuDetail))
+	if cg.CPUNrPeriods > 0 {
+		root.AddChild(cgroupLeaf("Throttled", formatThrottleRate(cg.CPUThrottled, cg.CPUNrPeriods), cpuDetail))
+	}
+	if sr != nil && sr.CPUSetCPUs != "" {
+		root.AddChild(cgroupLeaf("Cpuset", sr.CPUSetCPUs, cpuDetail))
+	}
+
+	// --- Memory ---
+	memDetail := buildCgroupMemoryDetail(cg, sr)
+	memUsage := "-"
+	if cg.MemoryUsage > 0 {
+		memUsage = formatBytes(int64(cg.MemoryUsage))
+	}
+	memLimit := "unlimited"
+	if cg.MemoryLimit > 0 {
+		memLimit = formatBytes(int64(cg.MemoryLimit))
+	}
+	root.AddChild(cgroupLeaf("Memory", fmt.Sprintf("%s / %s", memUsage, memLimit), memDetail))
+	if cg.MemorySwap > 0 {
+		root.AddChild(cgroupLeaf("Swap", formatBytes(int64(cg.MemorySwap)), memDetail))
+	}
+	if sr != nil && sr.OOMKillDisable != nil {
+		root.AddChild(cgroupLeaf("OOM Kill", fmt.Sprintf("%v", !*sr.OOMKillDisable), memDetail))
+	}
+
+	// --- PIDs ---
+	pidsDetail := buildCgroupPidsDetail(cg, sr)
+	pidsStr := "-"
+	if cg.PidsCurrent > 0 {
+		if cg.PidsLimit > 0 {
+			pidsStr = fmt.Sprintf("%d / %d", cg.PidsCurrent, cg.PidsLimit)
+		} else {
+			pidsStr = fmt.Sprintf("%d / unlimited", cg.PidsCurrent)
+		}
+	} else if cg.PidsLimit > 0 {
+		pidsStr = fmt.Sprintf("- / %d", cg.PidsLimit)
+	}
+	root.AddChild(cgroupLeaf("PIDs", pidsStr, pidsDetail))
+
+	// --- Blkio ---
+	if cg.BlkioWeight > 0 {
+		blkioDetail := &detailGridSelectionDetail{
+			Title: "Cgroup Block I/O",
+			Lines: detailLines(
+				detailField("Blkio Weight", fmt.Sprintf("%d", cg.BlkioWeight)),
+			),
+		}
+		if sr != nil && sr.BlkioWeight != nil {
+			blkioDetail.Lines = detailLines(
+				detailField("Blkio Weight (live)", fmt.Sprintf("%d", cg.BlkioWeight)),
+				detailField("Blkio Weight (spec)", fmt.Sprintf("%d", *sr.BlkioWeight)),
+			)
+		}
+		root.AddChild(cgroupLeaf("Blkio Wt", fmt.Sprintf("%d", cg.BlkioWeight), blkioDetail))
+	}
+
+	// --- Unified knobs ---
+	if sr != nil && len(sr.Unified) > 0 {
+		keys := make([]string, 0, len(sr.Unified))
+		for k := range sr.Unified {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		uLines := make([]string, 0, len(keys))
+		for _, k := range keys {
+			uLines = append(uLines, gridKV(k, sr.Unified[k]))
+		}
+		uDetail := &detailGridSelectionDetail{Title: "Cgroup Unified", Lines: uLines}
+		for _, k := range keys {
+			root.AddChild(cgroupLeaf(k, sr.Unified[k], uDetail))
+		}
+	}
+
+	return root
+}
+
+func cgroupLeaf(key, value string, detail *detailGridSelectionDetail) *tview.TreeNode {
+	text := fmt.Sprintf("%s %s", components.Muted(key+":"), components.Bright(value))
+	node := components.NewTreeNode(text).SetSelectable(detail != nil)
+	if detail != nil {
+		node.SetReference(detail)
+	}
+	return node
+}
+
+func cgroupNodeDetail(node *tview.TreeNode) (string, []string) {
+	if node == nil {
+		return "Detail", []string{"  " + components.Muted("No cgroup field selected")}
+	}
+	if detail, ok := node.GetReference().(*detailGridSelectionDetail); ok && detail != nil {
+		return detail.Title, detail.Lines
+	}
+	return "Cgroup Detail", []string{
+		"  " + components.Muted("Select a resource field to inspect full cgroup and spec values."),
+	}
+}
+
+func buildCgroupCPUDetail(cg *runtime.ContainerCGroupInfo, sr *runtime.CGroupSpecResources) *detailGridSelectionDetail {
+	var pairs []string // collect key=value pairs, then pack two per line
+	pairs = append(pairs, gridKV("Limit", formatCPULimit(cg)))
+	if cg.CPUQuota != 0 {
+		pairs = append(pairs, gridKV("Quota", fmt.Sprintf("%d µs", cg.CPUQuota)))
+	}
+	if cg.CPUPeriod > 0 {
+		pairs = append(pairs, gridKV("Period", fmt.Sprintf("%d µs", cg.CPUPeriod)))
+	}
+	if cg.CPUNrPeriods > 0 || cg.CPUThrottled > 0 {
+		pairs = append(pairs, gridKV("Throttled", formatThrottleRate(cg.CPUThrottled, cg.CPUNrPeriods)))
+	}
+	if sr != nil {
+		if sr.CPUShares != nil {
+			pairs = append(pairs, gridKV("Spec Shares", fmt.Sprintf("%d", *sr.CPUShares)))
+		}
+		if sr.CPUQuota != nil {
+			pairs = append(pairs, gridKV("Spec Quota", fmt.Sprintf("%d µs", *sr.CPUQuota)))
+		}
+		if sr.CPUPeriod != nil {
+			pairs = append(pairs, gridKV("Spec Period", fmt.Sprintf("%d µs", *sr.CPUPeriod)))
+		}
+		if sr.CPUBurst != nil {
+			pairs = append(pairs, gridKV("Spec Burst", fmt.Sprintf("%d µs", *sr.CPUBurst)))
+		}
+		if sr.CPUSetCPUs != "" {
+			pairs = append(pairs, gridKV("Cpuset CPUs", sr.CPUSetCPUs))
+		}
+		if sr.CPUSetMems != "" {
+			pairs = append(pairs, gridKV("Cpuset Mems", sr.CPUSetMems))
+		}
+		if sr.CPURealtimeRuntime != nil {
+			pairs = append(pairs, gridKV("RT Runtime", fmt.Sprintf("%d µs", *sr.CPURealtimeRuntime)))
+		}
+		if sr.CPURealtimePeriod != nil {
+			pairs = append(pairs, gridKV("RT Period", fmt.Sprintf("%d µs", *sr.CPURealtimePeriod)))
+		}
+	}
+	return &detailGridSelectionDetail{Title: "Cgroup CPU", Lines: packTwoPerLine(pairs)}
+}
+
+func buildCgroupMemoryDetail(cg *runtime.ContainerCGroupInfo, sr *runtime.CGroupSpecResources) *detailGridSelectionDetail {
+	lines := []string{}
+	if cg.MemoryUsage > 0 {
+		lines = append(lines, gridKV("Usage", formatBytes(int64(cg.MemoryUsage))))
+	}
+	if cg.MemoryLimit > 0 {
+		lines = append(lines, gridKV("Limit", formatBytes(int64(cg.MemoryLimit))))
+	} else {
+		lines = append(lines, gridKV("Limit", "unlimited"))
+	}
+	if cg.MemorySwap > 0 {
+		lines = append(lines, gridKV("Swap", formatBytes(int64(cg.MemorySwap))))
+	}
+	if sr != nil {
+		if sr.MemoryLimit != nil {
+			lines = append(lines, gridKV("Spec Limit", formatBytes(*sr.MemoryLimit)))
+		}
+		if sr.MemoryReservation != nil {
+			lines = append(lines, gridKV("Spec Resv", formatBytes(*sr.MemoryReservation)))
+		}
+		if sr.MemorySwap != nil {
+			lines = append(lines, gridKV("Spec Swap", formatBytes(*sr.MemorySwap)))
+		}
+		if sr.MemorySwappiness != nil {
+			lines = append(lines, gridKV("Swappiness", fmt.Sprintf("%d", *sr.MemorySwappiness)))
+		}
+		if sr.OOMKillDisable != nil {
+			lines = append(lines, gridKV("OOM Kill", fmt.Sprintf("%v", !*sr.OOMKillDisable)))
+		}
+	}
+	return &detailGridSelectionDetail{Title: "Cgroup Memory", Lines: lines}
+}
+
+func buildCgroupPidsDetail(cg *runtime.ContainerCGroupInfo, sr *runtime.CGroupSpecResources) *detailGridSelectionDetail {
+	lines := []string{}
+	if cg.PidsCurrent > 0 {
+		lines = append(lines, gridKV("Current", fmt.Sprintf("%d", cg.PidsCurrent)))
+	}
+	if cg.PidsLimit > 0 {
+		lines = append(lines, gridKV("Limit", fmt.Sprintf("%d", cg.PidsLimit)))
+	} else {
+		lines = append(lines, gridKV("Limit", "unlimited"))
+	}
+	if sr != nil && sr.PidsLimit != nil {
+		lines = append(lines, gridKV("Spec Limit", fmt.Sprintf("%d", *sr.PidsLimit)))
+	}
+	return &detailGridSelectionDetail{Title: "Cgroup PIDs", Lines: lines}
+}
+
+// formatCPULimit returns a human-readable CPU limit string.
+func formatCPULimit(cg *runtime.ContainerCGroupInfo) string {
+	if cg.CPUQuota > 0 && cg.CPUPeriod > 0 {
+		cores := float64(cg.CPUQuota) / float64(cg.CPUPeriod)
+		return fmt.Sprintf("%.2f cores (%d/%d µs)", cores, cg.CPUQuota, cg.CPUPeriod)
+	}
+	if cg.CPUQuota == -1 {
+		if cg.CPUWeight > 0 {
+			return fmt.Sprintf("unlimited (weight %d)", cg.CPUWeight)
+		}
+		return "unlimited"
+	}
+	if cg.CPUWeight > 0 {
+		return fmt.Sprintf("weight %d", cg.CPUWeight)
+	}
+	return "-"
+}
+
+// formatThrottleRate formats throttled periods as a percentage.
+func formatThrottleRate(throttled, total uint64) string {
+	if total == 0 {
+		return "0%"
+	}
+	pct := float64(throttled) / float64(total) * 100
+	return fmt.Sprintf("%.1f%% (%d / %d periods)", pct, throttled, total)
 }
 
 func buildGridFilesystemTree(config *runtime.ContainerConfig, storage *runtime.ContainerStorage, mounts []*runtime.Mount) *tview.TreeNode {
@@ -1032,6 +1340,19 @@ func gridKV(key, value string) string {
 		components.ColorName(components.ColorFgBright), value)
 }
 
+// packTwoPerLine pairs adjacent items on the same line separated by a tab.
+func packTwoPerLine(items []string) []string {
+	lines := make([]string, 0, (len(items)+1)/2)
+	for i := 0; i < len(items); i += 2 {
+		if i+1 < len(items) {
+			lines = append(lines, items[i]+"\t"+items[i+1])
+		} else {
+			lines = append(lines, items[i])
+		}
+	}
+	return lines
+}
+
 func gridKVBlock(key, value string) string {
 	return fmt.Sprintf("  [%s]%s[-]\n    [%s]%s[-]",
 		components.ColorName(components.ColorFgMuted), key,
@@ -1061,7 +1382,7 @@ func layerTreeID(layer *runtime.ImageLayer) string {
 }
 
 func buildFilesystemMountsNode(mounts []*runtime.Mount) *tview.TreeNode {
-	rootMount, criMounts, runtimeMounts, otherMounts := splitMounts(mounts)
+	rootMount, userMounts, criMounts, runtimeMounts, otherMounts := splitMounts(mounts)
 	rootTarget := "/"
 	if rootMount != nil && rootMount.Destination != "" {
 		rootTarget = rootMount.Destination
@@ -1072,6 +1393,7 @@ func buildFilesystemMountsNode(mounts []*runtime.Mount) *tview.TreeNode {
 		Lines: detailLines(
 			detailField("Total", fmt.Sprintf("%d", len(mounts))),
 			detailField("Root", rootTarget),
+			detailField("User", fmt.Sprintf("%d", len(userMounts))),
 			detailField("CRI", fmt.Sprintf("%d", len(criMounts))),
 			detailField("Runtime/Other", fmt.Sprintf("%d / %d", len(runtimeMounts), len(otherMounts))),
 		),
@@ -1080,6 +1402,7 @@ func buildFilesystemMountsNode(mounts []*runtime.Mount) *tview.TreeNode {
 		filesystemLeafNode("Total", fmt.Sprintf("%d", len(mounts)), "Mount Count", detailLines(
 			detailField("Count", fmt.Sprintf("%d", len(mounts))),
 			detailField("Root", rootTarget),
+			detailField("User", fmt.Sprintf("%d", len(userMounts))),
 			detailField("CRI", fmt.Sprintf("%d", len(criMounts))),
 			detailField("Runtime", fmt.Sprintf("%d", len(runtimeMounts))),
 		)),
@@ -1089,11 +1412,17 @@ func buildFilesystemMountsNode(mounts []*runtime.Mount) *tview.TreeNode {
 			detailField("Scope", "Container filesystem"),
 			detailField("Source", fallbackValue(mountSource(rootMount), "-")),
 		)),
+		filesystemLeafNode("User", fmt.Sprintf("%d", len(userMounts)), "User Mounts", detailLines(
+			detailField("Count", fmt.Sprintf("%d", len(userMounts))),
+			detailField("Type", "User"),
+			detailField("Source", "PodSpec volumes"),
+			detailField("Scope", "User-declared mounts"),
+		)),
 		filesystemLeafNode("CRI", fmt.Sprintf("%d", len(criMounts)), "CRI Mounts", detailLines(
 			detailField("Count", fmt.Sprintf("%d", len(criMounts))),
 			detailField("Type", "CRI"),
 			detailField("Source", "Config / status"),
-			detailField("Scope", "Declared mounts"),
+			detailField("Scope", "Kubelet-injected mounts"),
 		)),
 		filesystemLeafNode("Runtime", fmt.Sprintf("%d", len(runtimeMounts)), "Runtime Mounts", detailLines(
 			detailField("Count", fmt.Sprintf("%d", len(runtimeMounts))),
@@ -1245,5 +1574,5 @@ func mountSource(mount *runtime.Mount) string {
 }
 
 func joinGridBlocks(blocks []string) string {
-	return strings.Join(blocks, "\n\n")
+	return strings.Join(blocks, "\n")
 }

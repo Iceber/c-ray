@@ -311,7 +311,7 @@ func summaryKV(key, value string) string {
 
 func resolveSandboxID(runtime *runtime.RuntimeProfile) string {
 	if runtime != nil && runtime.OCI != nil && runtime.OCI.SandboxID != "" {
-		return runtime.OCI.SandboxID
+		return strings.TrimSpace(runtime.OCI.SandboxID)
 	}
 	return ""
 }

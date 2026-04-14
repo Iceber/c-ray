@@ -440,6 +440,9 @@ func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile,
 
 	profile.OCI.RuntimeName = info.Runtime.Name
 	profile.OCI.StateDir = ociStateDir
+	if statePath := runtime.ExistingPath(ociStateDir + "/state.json"); statePath != "" {
+		profile.OCI.StatePath = statePath
+	}
 	profile.OCI.BundleDir = bundleDir
 	profile.OCI.SandboxID = info.SandboxID
 

@@ -220,6 +220,9 @@ func buildOCINodeV1(runtime *runtime.RuntimeProfile) *tview.TreeNode {
 	if oci.StateDir != "" {
 		rows = append(rows, "State Dir: "+oci.StateDir)
 	}
+	if oci.StatePath != "" {
+		rows = append(rows, "State Path: "+oci.StatePath)
+	}
 	if oci.ConfigPath != "" {
 		rows = append(rows, "Config Path: "+oci.ConfigPath)
 	}

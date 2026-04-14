@@ -9,6 +9,19 @@ import (
 	"github.com/icebergu/c-ray/pkg/runtime"
 )
 
+// KubeletInjectedMountPrefixes lists destination prefixes of mounts that
+// kubelet injects automatically rather than originating from user PodSpec.
+var KubeletInjectedMountPrefixes = []string{
+	"/var/run/secrets/kubernetes.io/serviceaccount",
+}
+
+// KubeletInjectedMountTargets lists exact destinations of mounts that
+// kubelet injects automatically rather than originating from user PodSpec.
+var KubeletInjectedMountTargets = map[string]struct{}{
+	"/etc/hosts":           {},
+	"/dev/termination-log": {},
+}
+
 // RuntimeDefaultMountTargets lists destinations commonly injected by the
 // container runtime rather than declared via CRI config.
 var RuntimeDefaultMountTargets = map[string]struct{}{
@@ -177,7 +190,7 @@ func buildCRIMount(cfg, status *Mount, spec, live *runtime.Mount) *runtime.Mount
 		Type:        bestType(spec, live, cfg),
 		Options:     bestOptions(spec, live, MountOptions(cfg)),
 		HostPath:    hostPath,
-		Origin:      runtime.MountOriginCRI,
+		Origin:      criMountOrigin(cfg.ContainerPath),
 		LiveSource:  liveSource(live),
 		State:       declaredState(status != nil || live != nil),
 		Note:        criMountNote(cfg, status, live),
@@ -191,7 +204,7 @@ func buildCRIStatusOnlyMount(status *Mount, live *runtime.Mount) *runtime.Mount 
 		Type:        bestType(nil, live, status),
 		Options:     bestOptions(nil, live, MountOptions(status)),
 		HostPath:    status.HostPath,
-		Origin:      runtime.MountOriginCRI,
+		Origin:      criMountOrigin(status.ContainerPath),
 		LiveSource:  liveSource(live),
 		State:       runtime.MountStateLiveOnly,
 		Note:        "status-only CRI mount",
@@ -277,6 +290,22 @@ func bestOptions(spec, live *runtime.Mount, criOpts []string) []string {
 	return nil
 }
 
+// criMountOrigin returns MountOriginKubelet for kubelet-injected paths
+// (/etc/hosts, /dev/termination-log, /var/run/secrets/kubernetes.io/serviceaccount)
+// and MountOriginUser for all other CRI config mounts.
+func criMountOrigin(dest string) runtime.MountOrigin {
+	cleaned := cleanDest(dest)
+	if _, ok := KubeletInjectedMountTargets[cleaned]; ok {
+		return runtime.MountOriginKubelet
+	}
+	for _, prefix := range KubeletInjectedMountPrefixes {
+		if cleaned == prefix || strings.HasPrefix(cleaned, prefix+"/") {
+			return runtime.MountOriginKubelet
+		}
+	}
+	return runtime.MountOriginUser
+}
+
 func declaredState(live bool) runtime.MountState {
 	if live {
 		return runtime.MountStateDeclaredLive
@@ -349,14 +378,16 @@ func RuntimeDefaultNote(m *runtime.Mount) string {
 
 func mountOriginRank(origin runtime.MountOrigin) int {
 	switch origin {
-	case runtime.MountOriginCRI:
+	case runtime.MountOriginUser:
 		return 0
-	case runtime.MountOriginRuntimeDefault:
+	case runtime.MountOriginKubelet:
 		return 1
-	case runtime.MountOriginLiveExtra:
+	case runtime.MountOriginRuntimeDefault:
 		return 2
-	default:
+	case runtime.MountOriginLiveExtra:
 		return 3
+	default:
+		return 4
 	}
 }
 

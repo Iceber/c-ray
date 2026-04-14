@@ -548,6 +548,9 @@ func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile,
 
 	bundleDir := crioContainerBundleDir(h.rt.storageRunRoot, h.id)
 	profile.OCI.BundleDir = bundleDir
+	if statePath := runtime.ExistingPath(bundleDir + "/state.json"); statePath != "" {
+		profile.OCI.StatePath = statePath
+	}
 	profile.OCI.RuntimeName = "cri-o"
 
 	if h.cri != nil {

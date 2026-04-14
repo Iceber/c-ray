@@ -17,7 +17,8 @@ type Mount struct {
 type MountOrigin string
 
 const (
-	MountOriginCRI            MountOrigin = "cri"
+	MountOriginUser           MountOrigin = "user"
+	MountOriginKubelet        MountOrigin = "kubelet"
 	MountOriginRuntimeDefault MountOrigin = "runtime-default"
 	MountOriginLiveExtra      MountOrigin = "live-extra"
 )

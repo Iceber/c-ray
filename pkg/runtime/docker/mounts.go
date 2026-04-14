@@ -17,7 +17,7 @@ func convertDockerMounts(mounts []dockertypes.MountPoint) []*runtime.Mount {
 			Destination: m.Destination,
 			Type:        string(m.Type),
 			HostPath:    m.Source,
-			Origin:      runtime.MountOriginCRI,
+			Origin:      runtime.MountOriginKubelet,
 			State:       runtime.MountStateDeclaredLive,
 		}
 		if !m.RW {

@@ -128,10 +128,11 @@ func (v *MountsView) render() {
 	if len(mounts) == 0 {
 		root.AddChild(components.NewTreeNode(components.Muted("Refresh to resolve mounts")).SetSelectable(false))
 	} else {
-		rootMount, criMounts, runtimeMounts, otherMounts := splitMounts(mounts)
+		rootMount, userMounts, criMounts, runtimeMounts, otherMounts := splitMounts(mounts)
 		if rootMount != nil {
 			root.AddChild(buildMountNodeV1(rootMount, runtimePath))
 		}
+		root.AddChild(buildMountGroupNodeV1("User Mounts", userMounts, true, runtimePath))
 		root.AddChild(buildMountGroupNodeV1("CRI Mounts", criMounts, true, runtimePath))
 		root.AddChild(buildMountGroupNodeV1("Runtime Mounts", runtimeMounts, false, runtimePath))
 		root.AddChild(buildMountGroupNodeV1("Kernel / Other", otherMounts, false, runtimePath))
@@ -193,9 +194,9 @@ func (v *MountsView) updateStatusBar() {
 
 // --- Helpers ---
 
-func splitMounts(mounts []*runtime.Mount) (*runtime.Mount, []*runtime.Mount, []*runtime.Mount, []*runtime.Mount) {
+func splitMounts(mounts []*runtime.Mount) (*runtime.Mount, []*runtime.Mount, []*runtime.Mount, []*runtime.Mount, []*runtime.Mount) {
 	var rootMount *runtime.Mount
-	var criMounts, runtimeMounts, other []*runtime.Mount
+	var userMounts, criMounts, runtimeMounts, other []*runtime.Mount
 	for _, m := range mounts {
 		if m == nil {
 			continue
@@ -205,7 +206,9 @@ func splitMounts(mounts []*runtime.Mount) (*runtime.Mount, []*runtime.Mount, []*
 			continue
 		}
 		switch m.Origin {
-		case runtime.MountOriginCRI:
+		case runtime.MountOriginUser:
+			userMounts = append(userMounts, m)
+		case runtime.MountOriginKubelet:
 			criMounts = append(criMounts, m)
 		case runtime.MountOriginRuntimeDefault:
 			runtimeMounts = append(runtimeMounts, m)
@@ -213,10 +216,11 @@ func splitMounts(mounts []*runtime.Mount) (*runtime.Mount, []*runtime.Mount, []*
 			other = append(other, m)
 		}
 	}
+	sortMounts(userMounts)
 	sortMounts(criMounts)
 	sortMounts(runtimeMounts)
 	sortMounts(other)
-	return rootMount, criMounts, runtimeMounts, other
+	return rootMount, userMounts, criMounts, runtimeMounts, other
 }
 
 func sortMounts(mounts []*runtime.Mount) {
@@ -317,8 +321,10 @@ func joinOpts(opts []string) string {
 
 func mountOriginStr(origin runtime.MountOrigin) string {
 	switch origin {
-	case runtime.MountOriginCRI:
-		return "CRI"
+	case runtime.MountOriginUser:
+		return "User"
+	case runtime.MountOriginKubelet:
+		return "Kubelet"
 	case runtime.MountOriginRuntimeDefault:
 		return "runtime-default"
 	case runtime.MountOriginLiveExtra:

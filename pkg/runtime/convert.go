@@ -166,6 +166,8 @@ func ConvertOCIContainerStatus(status string) ContainerStatus {
 		return ContainerStatusCreated
 	case "running":
 		return ContainerStatusRunning
+	case "pausing":
+		return ContainerStatusPausing
 	case "paused":
 		return ContainerStatusPaused
 	case "stopped":

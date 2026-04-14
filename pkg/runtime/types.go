@@ -23,11 +23,14 @@ const (
 type ContainerStatus string
 
 const (
-	ContainerStatusCreated ContainerStatus = "created"
-	ContainerStatusRunning ContainerStatus = "running"
-	ContainerStatusPaused  ContainerStatus = "paused"
-	ContainerStatusStopped ContainerStatus = "stopped"
-	ContainerStatusUnknown ContainerStatus = "unknown"
+	ContainerStatusCreated    ContainerStatus = "created"
+	ContainerStatusRunning    ContainerStatus = "running"
+	ContainerStatusPausing    ContainerStatus = "pausing"
+	ContainerStatusPaused     ContainerStatus = "paused"
+	ContainerStatusRestarting ContainerStatus = "restarting"
+	ContainerStatusStopped    ContainerStatus = "stopped"
+	ContainerStatusDead       ContainerStatus = "dead"
+	ContainerStatusUnknown    ContainerStatus = "unknown"
 )
 
 // ContainerInfo is a lightweight container summary returned by handle lookup.
@@ -173,6 +176,7 @@ type OCIInfo struct {
 	RuntimeName   string
 	RuntimeBinary string
 	StateDir      string
+	StatePath     string
 	BundleDir     string
 	ConfigPath    string
 	SandboxID     string

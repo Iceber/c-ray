@@ -468,10 +468,16 @@ func containerStatusColor(status runtime.ContainerStatus) tcell.Color {
 	switch status {
 	case runtime.ContainerStatusRunning:
 		return tcell.ColorGreen
+	case runtime.ContainerStatusRestarting:
+		return tcell.ColorDarkGreen
+	case runtime.ContainerStatusPausing:
+		return tcell.ColorDarkGoldenrod
 	case runtime.ContainerStatusPaused:
 		return tcell.ColorYellow
 	case runtime.ContainerStatusStopped:
 		return tcell.ColorRed
+	case runtime.ContainerStatusDead:
+		return tcell.ColorDarkRed
 	case runtime.ContainerStatusCreated:
 		return tcell.ColorDarkCyan
 	default:
