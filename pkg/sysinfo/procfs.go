@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/icebergu/c-ray/pkg/models"
 )
 
 // ProcReader reads process information from /proc
@@ -32,8 +30,8 @@ func NewProcReaderWithRoot(root string) *ProcReader {
 }
 
 // ReadProcess reads process information for a given PID
-func (r *ProcReader) ReadProcess(pid int) (*models.Process, error) {
-	process := &models.Process{
+func (r *ProcReader) ReadProcess(pid int) (*Process, error) {
+	process := &Process{
 		PID: pid,
 	}
 
@@ -176,7 +174,7 @@ func (r *ProcReader) ReadCGroupPath(pid int) (string, error) {
 }
 
 // readStat reads /proc/[pid]/stat
-func (r *ProcReader) readStat(pid int, process *models.Process) error {
+func (r *ProcReader) readStat(pid int, process *Process) error {
 	statFields, err := r.readStatFields(pid)
 	if err != nil {
 		return err
@@ -246,7 +244,7 @@ func parseProcStat(content string) (*procStatFields, error) {
 }
 
 // readCmdline reads /proc/[pid]/cmdline
-func (r *ProcReader) readCmdline(pid int, process *models.Process) error {
+func (r *ProcReader) readCmdline(pid int, process *Process) error {
 	args, err := r.ReadCmdlineRaw(pid)
 	if err != nil {
 		return err
@@ -261,7 +259,7 @@ func (r *ProcReader) readCmdline(pid int, process *models.Process) error {
 }
 
 // readStatus reads /proc/[pid]/status
-func (r *ProcReader) readStatus(pid int, process *models.Process) error {
+func (r *ProcReader) readStatus(pid int, process *Process) error {
 	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "status")
 	file, err := os.Open(path)
 	if err != nil {
@@ -297,7 +295,7 @@ func (r *ProcReader) readStatus(pid int, process *models.Process) error {
 }
 
 // readIO reads /proc/[pid]/io
-func (r *ProcReader) readIO(pid int, process *models.Process) error {
+func (r *ProcReader) readIO(pid int, process *Process) error {
 	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "io")
 	file, err := os.Open(path)
 	if err != nil {
@@ -362,7 +360,7 @@ func (r *ProcReader) ListPIDs() ([]int, error) {
 }
 
 // ReadNetDev reads network interface statistics from /proc/[pid]/net/dev
-func (r *ProcReader) ReadNetDev(pid int) ([]*models.NetworkStats, error) {
+func (r *ProcReader) ReadNetDev(pid int) ([]*NetworkStats, error) {
 	path := filepath.Join(r.procRoot, strconv.Itoa(pid), "net", "dev")
 	file, err := os.Open(path)
 	if err != nil {
@@ -370,7 +368,7 @@ func (r *ProcReader) ReadNetDev(pid int) ([]*models.NetworkStats, error) {
 	}
 	defer file.Close()
 
-	var stats []*models.NetworkStats
+	var stats []*NetworkStats
 	scanner := bufio.NewScanner(file)
 	lineNo := 0
 	for scanner.Scan() {
@@ -397,7 +395,7 @@ func (r *ProcReader) ReadNetDev(pid int) ([]*models.NetworkStats, error) {
 			continue
 		}
 
-		ns := &models.NetworkStats{Interface: iface}
+		ns := &NetworkStats{Interface: iface}
 		ns.RxBytes, _ = strconv.ParseUint(fields[0], 10, 64)
 		ns.RxPackets, _ = strconv.ParseUint(fields[1], 10, 64)
 		ns.RxErrors, _ = strconv.ParseUint(fields[2], 10, 64)

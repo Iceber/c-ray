@@ -3,8 +3,6 @@ package sysinfo
 import (
 	"sync"
 	"time"
-
-	"github.com/icebergu/c-ray/pkg/models"
 )
 
 // clkTck is the number of clock ticks per second (USER_HZ).
@@ -70,7 +68,7 @@ func (s *Sampler) ensureContainer(containerID string) {
 // in containerID automatically resets the snapshot cache.
 // cpuCores is the container's CPU limit (quota/period). Pass 0 for unlimited.
 // memoryLimit is the container's memory limit in bytes. Pass 0 for unlimited.
-func (s *Sampler) CalculateProcessRates(containerID string, processes []*models.Process, cpuCores float64, memoryLimit int64) {
+func (s *Sampler) CalculateProcessRates(containerID string, processes []*Process, cpuCores float64, memoryLimit int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -141,7 +139,7 @@ func maxFloat(a, b float64) float64 {
 }
 
 // CalculateNetworkRates computes RX/TX rates and stores the current snapshot.
-func (s *Sampler) CalculateNetworkRates(stats []*models.NetworkStats) {
+func (s *Sampler) CalculateNetworkRates(stats []*NetworkStats) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

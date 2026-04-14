@@ -1,4 +1,4 @@
-package models
+package sysinfo
 
 type Process struct {
 	PID  int

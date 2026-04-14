@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/icebergu/c-ray/pkg/runtime"
 	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -70,52 +71,6 @@ type ContainerStatusInfo struct {
 	ConfigImageRef string // info.config.image.user_specified_image
 }
 
-// PortMapping captures CRI PodSandbox port mappings used by runtime inspection.
-type PortMapping struct {
-	HostIP        string
-	HostPort      uint16
-	ContainerPort uint16
-	Protocol      string
-}
-
-// DNSConfig captures CRI sandbox DNS settings relevant to network inspection.
-type DNSConfig struct {
-	Domain   string
-	Servers  []string
-	Searches []string
-	Options  []string
-}
-
-// CNIInterfaceAddress describes one CNI-assigned address in CIDR form.
-type CNIInterfaceAddress struct {
-	CIDR    string
-	Gateway string
-	Family  string
-}
-
-// CNIInterface describes one interface returned by CNI result.
-type CNIInterface struct {
-	Name       string
-	MAC        string
-	Sandbox    string
-	PciID      string
-	SocketPath string
-	Addresses  []*CNIInterfaceAddress
-}
-
-// CNIRoute describes one route returned by CNI result.
-type CNIRoute struct {
-	Destination string
-	Gateway     string
-}
-
-// CNIResultInfo contains normalized network data from CNI result.
-type CNIResultInfo struct {
-	Interfaces []*CNIInterface
-	Routes     []*CNIRoute
-	DNS        *DNSConfig
-}
-
 // PodSandboxNetwork contains PodSandbox-scoped network metadata from CRI.
 type PodSandboxNetwork struct {
 	SandboxID         string
@@ -127,12 +82,12 @@ type PodSandboxNetwork struct {
 	NamespaceTargetID string
 	NetNSPath         string
 	Hostname          string
-	DNS               *DNSConfig
-	PortMappings      []*PortMapping
+	DNS               *runtime.DNSConfig
+	PortMappings      []*runtime.PortMapping
 	StatusSource      string
 	ConfigSource      string
 	NamespaceSource   string
-	CNI               *CNIResultInfo
+	CNI               *runtime.CNIResultInfo
 	Warnings          []string
 }
 
@@ -382,7 +337,7 @@ func decodePodSandboxNetwork(resp *runtimeapi.PodSandboxStatusResponse) *PodSand
 		result.Hostname = info.Config.GetHostname()
 		result.PortMappings = copyProtoPortMappings(info.Config.GetPortMappings())
 		if dns := info.Config.GetDnsConfig(); dns != nil {
-			result.DNS = &DNSConfig{
+			result.DNS = &runtime.DNSConfig{
 				Servers:  append([]string(nil), dns.GetServers()...),
 				Searches: append([]string(nil), dns.GetSearches()...),
 				Options:  append([]string(nil), dns.GetOptions()...),
@@ -561,12 +516,12 @@ func decodeContainerStatus(resp *runtimeapi.ContainerStatusResponse) *ContainerS
 	return result
 }
 
-func normalizeCNIResult(result *cniResultPayload) *CNIResultInfo {
+func normalizeCNIResult(result *cniResultPayload) *runtime.CNIResultInfo {
 	if result == nil {
 		return nil
 	}
 
-	info := &CNIResultInfo{}
+	info := &runtime.CNIResultInfo{}
 	if len(result.Interfaces) > 0 {
 		names := make([]string, 0, len(result.Interfaces))
 		for name := range result.Interfaces {
@@ -578,7 +533,7 @@ func normalizeCNIResult(result *cniResultPayload) *CNIResultInfo {
 			if cfg == nil {
 				continue
 			}
-			iface := &CNIInterface{
+			iface := &runtime.CNIInterface{
 				Name:       name,
 				MAC:        cfg.Mac,
 				Sandbox:    cfg.Sandbox,
@@ -589,7 +544,7 @@ func normalizeCNIResult(result *cniResultPayload) *CNIResultInfo {
 				if ipConfig == nil {
 					continue
 				}
-				addr := &CNIInterfaceAddress{}
+				addr := &runtime.CNIInterfaceAddress{}
 				if ipConfig.IP != "" {
 					addr.CIDR = ipConfig.IP
 					if parsedIP := net.ParseIP(ipConfig.IP); parsedIP != nil && parsedIP.To4() != nil {
@@ -611,7 +566,7 @@ func normalizeCNIResult(result *cniResultPayload) *CNIResultInfo {
 		if route == nil {
 			continue
 		}
-		entry := &CNIRoute{}
+		entry := &runtime.CNIRoute{}
 		entry.Destination = route.Dst
 		if route.GW != "" {
 			entry.Gateway = route.GW
@@ -626,7 +581,7 @@ func normalizeCNIResult(result *cniResultPayload) *CNIResultInfo {
 	})
 
 	if len(result.DNS) > 0 {
-		dns := &DNSConfig{}
+		dns := &runtime.DNSConfig{}
 		serverSet := map[string]struct{}{}
 		searchSet := map[string]struct{}{}
 		optionSet := map[string]struct{}{}
@@ -665,19 +620,19 @@ func normalizeCNIResult(result *cniResultPayload) *CNIResultInfo {
 	return info
 }
 
-// normalizeCrioCNIResult converts CRI-O's standard CNI spec format to CNIResultInfo.
+// normalizeCrioCNIResult converts CRI-O's standard CNI spec format to runtime.CNIResultInfo.
 // CRI-O returns interfaces as an array and IPs reference interfaces by index.
-func normalizeCrioCNIResult(result *crioCNIResultPayload) *CNIResultInfo {
+func normalizeCrioCNIResult(result *crioCNIResultPayload) *runtime.CNIResultInfo {
 	if result == nil {
 		return nil
 	}
 
-	info := &CNIResultInfo{}
+	info := &runtime.CNIResultInfo{}
 
 	// Build interface list and map IPs to interfaces by index.
-	ifaces := make([]*CNIInterface, len(result.Interfaces))
+	ifaces := make([]*runtime.CNIInterface, len(result.Interfaces))
 	for i, ifc := range result.Interfaces {
-		ifaces[i] = &CNIInterface{
+		ifaces[i] = &runtime.CNIInterface{
 			Name:    ifc.Name,
 			MAC:     ifc.Mac,
 			Sandbox: ifc.Sandbox,
@@ -685,7 +640,7 @@ func normalizeCrioCNIResult(result *crioCNIResultPayload) *CNIResultInfo {
 	}
 
 	for _, ip := range result.IPs {
-		addr := &CNIInterfaceAddress{
+		addr := &runtime.CNIInterfaceAddress{
 			Gateway: ip.Gateway,
 		}
 		if ip.Address != "" {
@@ -712,7 +667,7 @@ func normalizeCrioCNIResult(result *crioCNIResultPayload) *CNIResultInfo {
 	info.Interfaces = ifaces
 
 	for _, route := range result.Routes {
-		entry := &CNIRoute{Destination: route.Dst}
+		entry := &runtime.CNIRoute{Destination: route.Dst}
 		if route.GW != "" {
 			entry.Gateway = route.GW
 		}
@@ -727,7 +682,7 @@ func normalizeCrioCNIResult(result *crioCNIResultPayload) *CNIResultInfo {
 
 	dns := result.DNS
 	if len(dns.Nameservers) > 0 || len(dns.Search) > 0 || len(dns.Options) > 0 || dns.Domain != "" {
-		info.DNS = &DNSConfig{
+		info.DNS = &runtime.DNSConfig{
 			Domain:   dns.Domain,
 			Servers:  append([]string(nil), dns.Nameservers...),
 			Searches: append([]string(nil), dns.Search...),
@@ -787,17 +742,17 @@ func runtimeSpecNetworkPath(spec *runtimespec.Spec) string {
 	return ""
 }
 
-func copyProtoPortMappings(protoMappings []*runtimeapi.PortMapping) []*PortMapping {
+func copyProtoPortMappings(protoMappings []*runtimeapi.PortMapping) []*runtime.PortMapping {
 	if len(protoMappings) == 0 {
 		return nil
 	}
 
-	mappings := make([]*PortMapping, 0, len(protoMappings))
+	mappings := make([]*runtime.PortMapping, 0, len(protoMappings))
 	for _, mapping := range protoMappings {
 		if mapping == nil {
 			continue
 		}
-		mappings = append(mappings, &PortMapping{
+		mappings = append(mappings, &runtime.PortMapping{
 			HostIP:        mapping.GetHostIp(),
 			HostPort:      uint16(mapping.GetHostPort()),
 			ContainerPort: uint16(mapping.GetContainerPort()),

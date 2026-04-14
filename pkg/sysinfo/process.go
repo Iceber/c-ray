@@ -4,21 +4,19 @@ import (
 	"fmt"
 	"sort"
 	"time"
-
-	"github.com/icebergu/c-ray/pkg/models"
 )
 
 // ProcessTree represents a tree of processes
 type ProcessTree struct {
 	procReader *ProcReader
-	processes  map[int]*models.Process
+	processes  map[int]*Process
 }
 
 // NewProcessTree creates a new process tree
 func NewProcessTree(procReader *ProcReader) *ProcessTree {
 	return &ProcessTree{
 		procReader: procReader,
-		processes:  make(map[int]*models.Process),
+		processes:  make(map[int]*Process),
 	}
 }
 
@@ -38,7 +36,7 @@ func (t *ProcessTree) Build(pids []int) error {
 	for _, process := range t.processes {
 		if parent, exists := t.processes[process.PPID]; exists {
 			if parent.Children == nil {
-				parent.Children = make([]*models.Process, 0)
+				parent.Children = make([]*Process, 0)
 			}
 			parent.Children = append(parent.Children, process)
 		}
@@ -48,8 +46,8 @@ func (t *ProcessTree) Build(pids []int) error {
 }
 
 // GetRootProcesses returns processes without parents in the tree
-func (t *ProcessTree) GetRootProcesses() []*models.Process {
-	roots := make([]*models.Process, 0)
+func (t *ProcessTree) GetRootProcesses() []*Process {
+	roots := make([]*Process, 0)
 	for _, process := range t.processes {
 		// A process is a root if its parent is not in our process map
 		if _, exists := t.processes[process.PPID]; !exists {
@@ -66,8 +64,8 @@ func (t *ProcessTree) GetRootProcesses() []*models.Process {
 }
 
 // GetAllProcesses returns all processes in the tree
-func (t *ProcessTree) GetAllProcesses() []*models.Process {
-	processes := make([]*models.Process, 0, len(t.processes))
+func (t *ProcessTree) GetAllProcesses() []*Process {
+	processes := make([]*Process, 0, len(t.processes))
 	for _, process := range t.processes {
 		processes = append(processes, process)
 	}
@@ -81,7 +79,7 @@ func (t *ProcessTree) GetAllProcesses() []*models.Process {
 }
 
 // GetProcess returns a specific process by PID
-func (t *ProcessTree) GetProcess(pid int) (*models.Process, bool) {
+func (t *ProcessTree) GetProcess(pid int) (*Process, bool) {
 	process, exists := t.processes[pid]
 	return process, exists
 }
@@ -155,7 +153,7 @@ func (c *ProcessCollector) buildNsPIDToHostPIDMap(containerPID uint32) map[int]i
 // outside the namespace, showing as PPID=0 inside) are left as zero by
 // this function; callers should follow up with resolveHostPIDs to fill
 // those gaps via the host procfs.
-func applyHostPIDs(procs []*models.Process, nsPIDToHostPID map[int]int) {
+func applyHostPIDs(procs []*Process, nsPIDToHostPID map[int]int) {
 	if nsPIDToHostPID == nil {
 		return
 	}
@@ -178,7 +176,7 @@ func applyHostPIDs(procs []*models.Process, nsPIDToHostPID map[int]int) {
 // absent from the namespace map, so HostPPID stays 0 after applyHostPIDs.
 // The fallback reads /proc/<HostPID>/stat on the host, which shows the real
 // parent (e.g. the shim) and fills HostPPID correctly.
-func (c *ProcessCollector) resolveHostPIDs(procs []*models.Process, containerPID uint32) {
+func (c *ProcessCollector) resolveHostPIDs(procs []*Process, containerPID uint32) {
 	applyHostPIDs(procs, c.buildNsPIDToHostPIDMap(containerPID))
 
 	// Fallback: for any process where HostPID is known but HostPPID is still
@@ -196,7 +194,7 @@ func (c *ProcessCollector) resolveHostPIDs(procs []*models.Process, containerPID
 
 // CollectContainerProcesses collects all processes for a container.
 // containerPID is the main process PID of the container (host namespace).
-func (c *ProcessCollector) CollectContainerProcesses(containerPID uint32) ([]*models.Process, error) {
+func (c *ProcessCollector) CollectContainerProcesses(containerPID uint32) ([]*Process, error) {
 	// For containers, we need to read processes from the container's namespace
 	// This is done by reading /proc/[containerPID]/root/proc
 	containerProcRoot := fmt.Sprintf("/proc/%d/root/proc", containerPID)
@@ -217,7 +215,7 @@ func (c *ProcessCollector) CollectContainerProcesses(containerPID uint32) ([]*mo
 		if ppid, err := c.procReader.GetProcessPPID(process.PID); err == nil {
 			process.HostPPID = ppid
 		}
-		return []*models.Process{process}, nil
+		return []*Process{process}, nil
 	}
 
 	// Build process tree using container-namespace proc reader.
@@ -236,13 +234,13 @@ func (c *ProcessCollector) CollectContainerProcesses(containerPID uint32) ([]*mo
 
 // CollectProcessTop collects top-like process information with CPU%, IO rate,
 // memory percent, and container-level network IO.
-func (c *ProcessCollector) CollectProcessTop(containerPID uint32, cgroupPath string, targetPIDs ...int) (*models.ProcessTop, error) {
+func (c *ProcessCollector) CollectProcessTop(containerPID uint32, cgroupPath string, targetPIDs ...int) (*ProcessTop, error) {
 	processes, err := c.collectTopProcesses(containerPID, targetPIDs...)
 	if err != nil {
 		return nil, err
 	}
 
-	top := &models.ProcessTop{
+	top := &ProcessTop{
 		Processes: processes,
 		Timestamp: time.Now().Unix(),
 	}
@@ -270,7 +268,7 @@ func (c *ProcessCollector) CollectProcessTop(containerPID uint32, cgroupPath str
 	return top, nil
 }
 
-func (c *ProcessCollector) collectTopProcesses(containerPID uint32, targetPIDs ...int) ([]*models.Process, error) {
+func (c *ProcessCollector) collectTopProcesses(containerPID uint32, targetPIDs ...int) ([]*Process, error) {
 	if len(targetPIDs) == 0 || targetPIDs[0] <= 0 {
 		return c.CollectContainerProcesses(containerPID)
 	}
@@ -283,15 +281,15 @@ func (c *ProcessCollector) collectTopProcesses(containerPID uint32, targetPIDs .
 		return nil, err
 	}
 
-	procs := []*models.Process{process}
+	procs := []*Process{process}
 	c.resolveHostPIDs(procs, containerPID)
 	return procs, nil
 }
 
 // BuildProcessTree builds a process tree from a list of processes
-func BuildProcessTree(processes []*models.Process) *ProcessTree {
+func BuildProcessTree(processes []*Process) *ProcessTree {
 	tree := &ProcessTree{
-		processes: make(map[int]*models.Process),
+		processes: make(map[int]*Process),
 	}
 
 	// Add all processes to the map
@@ -303,7 +301,7 @@ func BuildProcessTree(processes []*models.Process) *ProcessTree {
 	for _, process := range tree.processes {
 		if parent, exists := tree.processes[process.PPID]; exists {
 			if parent.Children == nil {
-				parent.Children = make([]*models.Process, 0)
+				parent.Children = make([]*Process, 0)
 			}
 			parent.Children = append(parent.Children, process)
 		}
@@ -313,8 +311,8 @@ func BuildProcessTree(processes []*models.Process) *ProcessTree {
 }
 
 // FilterProcesses filters processes by a predicate function
-func FilterProcesses(processes []*models.Process, predicate func(*models.Process) bool) []*models.Process {
-	filtered := make([]*models.Process, 0)
+func FilterProcesses(processes []*Process, predicate func(*Process) bool) []*Process {
+	filtered := make([]*Process, 0)
 	for _, process := range processes {
 		if predicate(process) {
 			filtered = append(filtered, process)
@@ -324,14 +322,14 @@ func FilterProcesses(processes []*models.Process, predicate func(*models.Process
 }
 
 // SortProcessesByMemory sorts processes by memory usage (descending)
-func SortProcessesByMemory(processes []*models.Process) {
+func SortProcessesByMemory(processes []*Process) {
 	sort.Slice(processes, func(i, j int) bool {
 		return processes[i].MemoryRSS > processes[j].MemoryRSS
 	})
 }
 
 // SortProcessesByIO sorts processes by I/O (descending)
-func SortProcessesByIO(processes []*models.Process) {
+func SortProcessesByIO(processes []*Process) {
 	sort.Slice(processes, func(i, j int) bool {
 		return (processes[i].ReadBytes + processes[i].WriteBytes) >
 			(processes[j].ReadBytes + processes[j].WriteBytes)

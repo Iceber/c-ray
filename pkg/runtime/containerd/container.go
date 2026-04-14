@@ -3,7 +3,6 @@ package containerd
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -98,12 +97,6 @@ func (h *containerHandle) ensureCRIMounts(ctx context.Context) {
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) ID() string { return h.id }
-
-// CRIInfo triggers eager caching of CRI container status.
-func (h *containerHandle) CRIInfo() {}
-
-// OCISepc triggers eager caching of the OCI spec.
-func (h *containerHandle) OCISepc() {}
 
 // ---------------------------------------------------------------------------
 // runtime.Container — Info
@@ -469,7 +462,7 @@ func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile,
 
 	// RootFS path from OCI spec root.
 	if h.spec != nil && h.spec.Root != nil && h.spec.Root.Path != "" {
-		profile.RootFSPath = resolveSpecRootPath(h.spec.Root.Path, bundleDir)
+		profile.RootFSPath = runtime.ResolveSpecRootPath(h.spec.Root.Path, bundleDir)
 	}
 
 	return profile, nil
@@ -707,15 +700,6 @@ func resolveRuntimeBinary(runtimeInfo containers.RuntimeInfo) string {
 
 func isRuncRuntime(name string) bool {
 	return strings.Contains(name, ".runc.") || strings.HasSuffix(name, "runc")
-}
-
-// resolveSpecRootPath resolves the OCI spec root.path. Per OCI spec, if
-// the path is relative it is resolved relative to the bundle directory.
-func resolveSpecRootPath(rootPath, bundleDir string) string {
-	if filepath.IsAbs(rootPath) {
-		return rootPath
-	}
-	return filepath.Join(bundleDir, rootPath)
 }
 
 // ---------------------------------------------------------------------------

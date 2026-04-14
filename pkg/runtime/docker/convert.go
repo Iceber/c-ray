@@ -37,17 +37,7 @@ func dockerContainerName(names []string) string {
 	return strings.TrimPrefix(names[0], "/")
 }
 
-// parseDockerEnv converts Docker-style "KEY=VALUE" env strings.
-func parseDockerEnv(env []string) []runtime.EnvVar {
-	return runtime.ParseEnvVars(env)
-}
-
-// inferDockerCGroupDriver guesses the cgroup driver from the cgroup parent path.
-func inferDockerCGroupDriver(cgroupParent string) string {
-	return runtime.InferCGroupDriver(cgroupParent)
-}
-
-// convertNetworkStats converts models.NetworkStats to runtime.NetworkStats.
+// convertNetworkStats converts sysinfo.NetworkStats to runtime.NetworkStats.
 var convertNetworkStats = runtime.ConvertNetworkStats
 
 // dirDiskUsage walks a directory and returns total size and inode count.

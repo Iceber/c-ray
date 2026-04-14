@@ -219,8 +219,6 @@ func (h *containerHandle) resolveRWLayerPath() string {
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) ID() string { return h.id }
-func (h *containerHandle) CRIInfo()   {}
-func (h *containerHandle) OCISepc()   {}
 
 // ---------------------------------------------------------------------------
 // runtime.Container — Info
@@ -580,7 +578,7 @@ func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile,
 
 	// RootFS path from OCI spec root.
 	if h.spec != nil && h.spec.Root != nil && h.spec.Root.Path != "" {
-		profile.RootFSPath = resolveSpecRootPath(h.spec.Root.Path, bundleDir)
+		profile.RootFSPath = runtime.ResolveSpecRootPath(h.spec.Root.Path, bundleDir)
 	}
 
 	return profile, nil

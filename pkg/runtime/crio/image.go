@@ -211,7 +211,7 @@ func resolveImageConfigInfo(store cstorage.Store, img *cstorage.Image) imageConf
 	// Build all platform manifests from index descriptors.
 	if indexManifest != nil && len(indexManifest.Manifests) > 0 {
 		for _, desc := range indexManifest.Manifests {
-			platform := formatPlatform(desc.OS, desc.Architecture, desc.Variant)
+			platform := runtime.FormatPlatform(desc.OS, desc.Architecture, desc.Variant)
 			res.manifests = append(res.manifests, &runtime.ImageManifest{
 				Digest:   desc.Digest,
 				Platform: platform,
@@ -246,7 +246,7 @@ func resolveImageConfigInfo(store cstorage.Store, img *cstorage.Image) imageConf
 			continue
 		}
 		if res.platform == "" {
-			res.platform = formatPlatform(configInfo.OS, configInfo.Architecture, configInfo.Variant)
+			res.platform = runtime.FormatPlatform(configInfo.OS, configInfo.Architecture, configInfo.Variant)
 		}
 		if path != "" {
 			res.contentPath = path
@@ -277,17 +277,6 @@ func resolveConfigMetadata(store cstorage.Store, img *cstorage.Image, name, imag
 		return configInfo, path, true
 	}
 	return configInfo, "", true
-}
-
-func formatPlatform(osName, arch, variant string) string {
-	if osName == "" || arch == "" {
-		return ""
-	}
-	platform := osName + "/" + arch
-	if variant != "" {
-		platform += "/" + variant
-	}
-	return platform
 }
 
 func imageBigDataDir(store cstorage.Store, imageID string) string {

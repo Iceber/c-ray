@@ -18,20 +18,15 @@ func ApplyCRINetwork(dst *runtime.PodNetworkInfo, src *PodSandboxNetwork) {
 	dst.Hostname = src.Hostname
 
 	if len(src.PortMappings) > 0 {
-		dst.PortMappings = ConvertPortMappings(src.PortMappings)
+		dst.PortMappings = src.PortMappings
 	}
 
 	if src.DNS != nil {
-		dst.DNS = &runtime.DNSConfig{
-			Domain:   src.DNS.Domain,
-			Servers:  append([]string(nil), src.DNS.Servers...),
-			Searches: append([]string(nil), src.DNS.Searches...),
-			Options:  append([]string(nil), src.DNS.Options...),
-		}
+		dst.DNS = src.DNS
 	}
 
 	if src.CNI != nil {
-		dst.CNI = ConvertCNIResult(src.CNI)
+		dst.CNI = src.CNI
 	}
 
 	if src.NetNSPath != "" {
@@ -43,76 +38,6 @@ func ApplyCRINetwork(dst *runtime.PodNetworkInfo, src *PodSandboxNetwork) {
 	}
 
 	dst.Warnings = append(dst.Warnings, src.Warnings...)
-}
-
-// ConvertPortMappings converts CRI port mappings to v1 port mappings.
-func ConvertPortMappings(src []*PortMapping) []*runtime.PortMapping {
-	out := make([]*runtime.PortMapping, 0, len(src))
-	for _, pm := range src {
-		if pm == nil {
-			continue
-		}
-		out = append(out, &runtime.PortMapping{
-			HostIP:        pm.HostIP,
-			HostPort:      pm.HostPort,
-			ContainerPort: pm.ContainerPort,
-			Protocol:      pm.Protocol,
-		})
-	}
-	return out
-}
-
-// ConvertCNIResult converts a CRI CNI result tree to v1 types.
-func ConvertCNIResult(src *CNIResultInfo) *runtime.CNIResultInfo {
-	if src == nil {
-		return nil
-	}
-	dst := &runtime.CNIResultInfo{}
-
-	for _, iface := range src.Interfaces {
-		if iface == nil {
-			continue
-		}
-		entry := &runtime.CNIInterface{
-			Name:       iface.Name,
-			MAC:        iface.MAC,
-			Sandbox:    iface.Sandbox,
-			PciID:      iface.PciID,
-			SocketPath: iface.SocketPath,
-		}
-		for _, addr := range iface.Addresses {
-			if addr == nil {
-				continue
-			}
-			entry.Addresses = append(entry.Addresses, &runtime.CNIInterfaceAddress{
-				CIDR:    addr.CIDR,
-				Gateway: addr.Gateway,
-				Family:  addr.Family,
-			})
-		}
-		dst.Interfaces = append(dst.Interfaces, entry)
-	}
-
-	for _, route := range src.Routes {
-		if route == nil {
-			continue
-		}
-		dst.Routes = append(dst.Routes, &runtime.CNIRoute{
-			Destination: route.Destination,
-			Gateway:     route.Gateway,
-		})
-	}
-
-	if src.DNS != nil {
-		dst.DNS = &runtime.DNSConfig{
-			Domain:   src.DNS.Domain,
-			Servers:  append([]string(nil), src.DNS.Servers...),
-			Searches: append([]string(nil), src.DNS.Searches...),
-			Options:  append([]string(nil), src.DNS.Options...),
-		}
-	}
-
-	return dst
 }
 
 // ShouldAttachPodNetwork reports whether a PodNetworkInfo carries enough

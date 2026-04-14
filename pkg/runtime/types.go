@@ -50,7 +50,6 @@ type ContainerInfo struct {
 
 	PID       uint32
 	Status    ContainerStatus
-	StartedAt time.Time // 未使用
 	CreatedAt time.Time
 }
 

@@ -3,9 +3,9 @@ package containerd
 import (
 	"context"
 
-	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/icebergu/c-ray/pkg/runtime/cri"
+	"github.com/icebergu/c-ray/pkg/sysinfo"
 	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
 )
 
@@ -46,10 +46,10 @@ func (r *Runtime) resolveRootFSPath(pid uint32) string {
 }
 
 // ---------------------------------------------------------------------------
-// Conversion between models.Mount (sysinfo) ↔ runtime.Mount
+// Conversion between sysinfo.Mount ↔ runtime.Mount
 // ---------------------------------------------------------------------------
 
-func resolveRootFS(r *Runtime, mounts []*models.Mount) string {
+func resolveRootFS(r *Runtime, mounts []*sysinfo.Mount) string {
 	rootMount := r.mountReader.FindRootMount(mounts)
 	if rootMount == nil {
 		return ""

@@ -365,7 +365,7 @@ func parseImageConfigMeta(ctx context.Context, cs content.Store, configDesc ocis
 		return imageConfigMeta{}, err
 	}
 	return imageConfigMeta{
-		platform: formatPlatform(config.OS, config.Architecture, config.Variant),
+		platform: runtime.FormatPlatform(config.OS, config.Architecture, config.Variant),
 		diffIDs:  config.RootFS.DiffIDs,
 	}, nil
 }
@@ -376,17 +376,6 @@ func resolveConfigPlatform(ctx context.Context, cs content.Store, configDesc oci
 		return ""
 	}
 	return meta.platform
-}
-
-func formatPlatform(osName, arch, variant string) string {
-	if osName == "" || arch == "" {
-		return ""
-	}
-	platform := osName + "/" + arch
-	if variant != "" {
-		platform += "/" + variant
-	}
-	return platform
 }
 
 func calculateChainIDs(diffIDs []digest.Digest) []digest.Digest {

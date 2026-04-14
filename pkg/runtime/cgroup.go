@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"os"
 	"strings"
 
 	"github.com/icebergu/c-ray/pkg/sysinfo"
@@ -11,23 +10,11 @@ import (
 // cgroupRootPath is the detected cgroup filesystem mount point, initialised
 // once at package init. All backends use this value instead of hard-coding
 // "/sys/fs/cgroup".
-var cgroupRootPath string
-
-func init() {
-	cgroupRootPath = detectCGroupRootPath()
-}
+var cgroupRootPath = "/sys/fs/cgroup"
 
 // CGroupRootPath returns the cgroup filesystem mount point (singleton).
 func CGroupRootPath() string {
 	return cgroupRootPath
-}
-
-func detectCGroupRootPath() string {
-	const defaultRoot = "/sys/fs/cgroup"
-	if _, err := os.Stat(defaultRoot); err == nil {
-		return defaultRoot
-	}
-	return defaultRoot
 }
 
 // ResolveCGroupPath returns a cgroupfs path that can be used to read live

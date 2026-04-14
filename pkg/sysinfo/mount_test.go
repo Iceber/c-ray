@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/icebergu/c-ray/pkg/models"
 )
 
 func TestNewMountReader(t *testing.T) {
@@ -85,7 +83,7 @@ func TestParseOverlayFS(t *testing.T) {
 	reader := NewMountReader()
 
 	// Create a mock overlay mount
-	mount := &models.Mount{
+	mount := &Mount{
 		Type: "overlay",
 		Options: []string{
 			"rw",
@@ -149,7 +147,7 @@ func TestReadMountsIncludesOverlaySuperOptions(t *testing.T) {
 func TestGetOverlayLayers(t *testing.T) {
 	reader := NewMountReader()
 
-	mount := &models.Mount{
+	mount := &Mount{
 		Type: "overlay",
 		Options: []string{
 			"lowerdir=/layer1:/layer2:/layer3",

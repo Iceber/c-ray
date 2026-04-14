@@ -45,9 +45,6 @@ type PodRuntime interface {
 type Container interface {
 	ID() string
 
-	CRIInfo()
-	OCISepc()
-
 	Info(ctx context.Context) (*ContainerInfo, error)
 	Config(ctx context.Context) (*ContainerConfig, error)
 

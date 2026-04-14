@@ -65,8 +65,6 @@ func (h *containerHandle) loadInspect(ctx context.Context) (*dockertypes.Contain
 // ---------------------------------------------------------------------------
 
 func (h *containerHandle) ID() string { return h.id }
-func (h *containerHandle) CRIInfo()   {}
-func (h *containerHandle) OCISepc()   {}
 
 // ---------------------------------------------------------------------------
 // runtime.Container — Info
@@ -148,7 +146,7 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 
 	// Environment.
 	if i.Config != nil && len(i.Config.Env) > 0 {
-		cfg.Environment = parseDockerEnv(i.Config.Env)
+		cfg.Environment = runtime.ParseEnvVars(i.Config.Env)
 	}
 
 	// Image.
@@ -162,7 +160,7 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 	// CGroup path.
 	if i.HostConfig != nil && i.HostConfig.CgroupParent != "" {
 		cfg.CGroupPath = i.HostConfig.CgroupParent
-		cfg.CGroupDriver = inferDockerCGroupDriver(i.HostConfig.CgroupParent)
+		cfg.CGroupDriver = runtime.InferCGroupDriver(i.HostConfig.CgroupParent)
 	}
 
 	// CGroup version from reader.
@@ -309,7 +307,7 @@ func (h *containerHandle) CGroup(ctx context.Context) (*runtime.ContainerCGroupI
 		info.Version = int(h.rt.cgroupReader.GetVersion())
 	}
 	if rawPath != "" {
-		info.Driver = inferDockerCGroupDriver(rawPath)
+		info.Driver = runtime.InferCGroupDriver(rawPath)
 	}
 	info.Path = runtime.ResolveCGroupPath(rawPath, info.Version, pid, h.rt.procReader)
 	if info.Driver == "" && info.Path != "" {

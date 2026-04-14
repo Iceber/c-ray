@@ -7,13 +7,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/icebergu/c-ray/pkg/models"
 	"github.com/icebergu/c-ray/pkg/sysinfo"
 	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
 )
 
-// ConvertProcesses converts models.Process to runtime.Process.
-func ConvertProcesses(procs []*models.Process) []*Process {
+// ConvertProcesses converts sysinfo.Process to runtime.Process.
+func ConvertProcesses(procs []*sysinfo.Process) []*Process {
 	if len(procs) == 0 {
 		return nil
 	}
@@ -32,8 +31,8 @@ func ConvertProcesses(procs []*models.Process) []*Process {
 	return out
 }
 
-// ConvertProcessStats converts a models.Process (with stats) to runtime.ProcessStats.
-func ConvertProcessStats(p *models.Process) *ProcessStats {
+// ConvertProcessStats converts a sysinfo.Process (with stats) to runtime.ProcessStats.
+func ConvertProcessStats(p *sysinfo.Process) *ProcessStats {
 	if p == nil {
 		return nil
 	}
@@ -64,8 +63,8 @@ func ConvertProcessStats(p *models.Process) *ProcessStats {
 	return ps
 }
 
-// ConvertNetworkStats converts models.NetworkStats to runtime.NetworkStats.
-func ConvertNetworkStats(stats []*models.NetworkStats) []*NetworkStats {
+// ConvertNetworkStats converts sysinfo.NetworkStats to runtime.NetworkStats.
+func ConvertNetworkStats(stats []*sysinfo.NetworkStats) []*NetworkStats {
 	if len(stats) == 0 {
 		return nil
 	}
@@ -159,6 +158,28 @@ func ExistingPath(path string) string {
 	return ""
 }
 
+// FormatPlatform formats an OS/architecture/variant triple into a
+// slash-separated platform string (e.g. "linux/amd64").
+func FormatPlatform(osName, arch, variant string) string {
+	if osName == "" || arch == "" {
+		return ""
+	}
+	platform := osName + "/" + arch
+	if variant != "" {
+		platform += "/" + variant
+	}
+	return platform
+}
+
+// ResolveSpecRootPath resolves the OCI spec root.path. Per OCI spec, if
+// the path is relative it is resolved relative to the bundle directory.
+func ResolveSpecRootPath(rootPath, bundleDir string) string {
+	if filepath.IsAbs(rootPath) {
+		return rootPath
+	}
+	return filepath.Join(bundleDir, rootPath)
+}
+
 // ConvertOCIContainerStatus maps OCI/CRI runtime status strings to ContainerStatus.
 func ConvertOCIContainerStatus(status string) ContainerStatus {
 	switch status {
@@ -206,8 +227,8 @@ func SpecToV1Mounts(specMounts []runtimespec.Mount) []*Mount {
 	return out
 }
 
-// ModelMountsToV1 converts models.Mount to runtime.Mount.
-func ModelMountsToV1(mounts []*models.Mount) []*Mount {
+// ModelMountsToV1 converts sysinfo.Mount to runtime.Mount.
+func ModelMountsToV1(mounts []*sysinfo.Mount) []*Mount {
 	if len(mounts) == 0 {
 		return nil
 	}

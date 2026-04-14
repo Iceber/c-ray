@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/icebergu/c-ray/pkg/models"
 )
 
 // MountInfo represents a mount entry from /proc/[pid]/mountinfo
@@ -42,7 +40,7 @@ func NewMountReaderWithRoot(root string) *MountReader {
 }
 
 // ReadMounts reads mount information for a given PID
-func (r *MountReader) ReadMounts(pid int) ([]*models.Mount, error) {
+func (r *MountReader) ReadMounts(pid int) ([]*Mount, error) {
 	procRoot := r.procRoot
 	if procRoot == "" {
 		procRoot = "/proc"
@@ -54,7 +52,7 @@ func (r *MountReader) ReadMounts(pid int) ([]*models.Mount, error) {
 	}
 	defer file.Close()
 
-	mounts := make([]*models.Mount, 0)
+	mounts := make([]*Mount, 0)
 	scanner := bufio.NewScanner(file)
 
 	for scanner.Scan() {
@@ -64,7 +62,7 @@ func (r *MountReader) ReadMounts(pid int) ([]*models.Mount, error) {
 			continue // Skip invalid lines
 		}
 
-		mount := &models.Mount{
+		mount := &Mount{
 			Source:      mountInfo.MountSource,
 			Destination: mountInfo.MountPoint,
 			Type:        mountInfo.FSType,
@@ -143,7 +141,7 @@ func (r *MountReader) parseMountInfoLine(line string) (*MountInfo, error) {
 }
 
 // ParseOverlayFS parses overlayfs mount options to extract layer information
-func (r *MountReader) ParseOverlayFS(mount *models.Mount) (lowerdir, upperdir, workdir string) {
+func (r *MountReader) ParseOverlayFS(mount *Mount) (lowerdir, upperdir, workdir string) {
 	if mount.Type != "overlay" && mount.Type != "overlayfs" {
 		return
 	}
@@ -169,7 +167,7 @@ func (r *MountReader) ParseOverlayFS(mount *models.Mount) (lowerdir, upperdir, w
 }
 
 // GetOverlayLayers returns the layers of an overlayfs mount
-func (r *MountReader) GetOverlayLayers(mount *models.Mount) []string {
+func (r *MountReader) GetOverlayLayers(mount *Mount) []string {
 	lowerdir, _, _ := r.ParseOverlayFS(mount)
 	if lowerdir == "" {
 		return nil
@@ -181,7 +179,7 @@ func (r *MountReader) GetOverlayLayers(mount *models.Mount) []string {
 }
 
 // FindRootMount finds the root mount for a container
-func (r *MountReader) FindRootMount(mounts []*models.Mount) *models.Mount {
+func (r *MountReader) FindRootMount(mounts []*Mount) *Mount {
 	for _, mount := range mounts {
 		if mount.Destination == "/" {
 			return mount
@@ -191,8 +189,8 @@ func (r *MountReader) FindRootMount(mounts []*models.Mount) *models.Mount {
 }
 
 // FilterMountsByType filters mounts by filesystem type
-func (r *MountReader) FilterMountsByType(mounts []*models.Mount, fsType string) []*models.Mount {
-	filtered := make([]*models.Mount, 0)
+func (r *MountReader) FilterMountsByType(mounts []*Mount, fsType string) []*Mount {
+	filtered := make([]*Mount, 0)
 	for _, mount := range mounts {
 		if mount.Type == fsType {
 			filtered = append(filtered, mount)

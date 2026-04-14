@@ -80,7 +80,7 @@ func (h *imageHandle) Config(ctx context.Context) (*runtime.ImageConfigInfo, err
 	}
 
 	manifest := &runtime.ImageManifest{
-		Platform:   formatPlatform(i.Os, i.Architecture, i.Variant),
+		Platform:   runtime.FormatPlatform(i.Os, i.Architecture, i.Variant),
 		ConfigPath: dockerClassicConfigPath(h.rt, i.ID),
 	}
 
@@ -157,17 +157,6 @@ func dockerClassicConfigPath(rt *Runtime, imageID string) string {
 		return ""
 	}
 	return filepath.Join(rootDir, "image", driver, "imagedb", "content", algorithm, encoded)
-}
-
-func formatPlatform(osName, arch, variant string) string {
-	if osName == "" || arch == "" {
-		return ""
-	}
-	platform := osName + "/" + arch
-	if variant != "" {
-		platform += "/" + variant
-	}
-	return platform
 }
 
 func (h *imageHandle) Layers(ctx context.Context, query runtime.LayerQuery) ([]*runtime.ImageLayer, error) {

@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/icebergu/c-ray/pkg/models"
 )
 
 // CGroupVersion represents the cgroup version
@@ -59,7 +57,7 @@ func (r *CGroupReader) GetVersion() CGroupVersion {
 }
 
 // ReadCGroupLimits reads cgroup limits for a given cgroup path
-func (r *CGroupReader) ReadCGroupLimits(cgroupPath string) (*models.CGroupLimits, error) {
+func (r *CGroupReader) ReadCGroupLimits(cgroupPath string) (*CGroupLimits, error) {
 	if r.version == CGroupV2 {
 		return r.readCGroupV2Limits(cgroupPath)
 	}
@@ -67,8 +65,8 @@ func (r *CGroupReader) ReadCGroupLimits(cgroupPath string) (*models.CGroupLimits
 }
 
 // readCGroupV1Limits reads cgroup v1 limits
-func (r *CGroupReader) readCGroupV1Limits(cgroupPath string) (*models.CGroupLimits, error) {
-	limits := &models.CGroupLimits{}
+func (r *CGroupReader) readCGroupV1Limits(cgroupPath string) (*CGroupLimits, error) {
+	limits := &CGroupLimits{}
 
 	// Remove leading slash if present
 	cgroupPath = strings.TrimPrefix(cgroupPath, "/")
@@ -121,8 +119,8 @@ func (r *CGroupReader) readCGroupV1Limits(cgroupPath string) (*models.CGroupLimi
 }
 
 // readCGroupV2Limits reads cgroup v2 limits
-func (r *CGroupReader) readCGroupV2Limits(cgroupPath string) (*models.CGroupLimits, error) {
-	limits := &models.CGroupLimits{}
+func (r *CGroupReader) readCGroupV2Limits(cgroupPath string) (*CGroupLimits, error) {
+	limits := &CGroupLimits{}
 
 	// Remove leading slash if present
 	cgroupPath = strings.TrimPrefix(cgroupPath, "/")
