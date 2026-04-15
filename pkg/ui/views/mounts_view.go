@@ -133,7 +133,7 @@ func (v *MountsView) render() {
 			root.AddChild(buildMountNodeV1(rootMount, runtimePath))
 		}
 		root.AddChild(buildMountGroupNodeV1("User Mounts", userMounts, true, runtimePath))
-		root.AddChild(buildMountGroupNodeV1("CRI Mounts", criMounts, true, runtimePath))
+		root.AddChild(buildMountGroupNodeV1("Kubelet Mounts", criMounts, true, runtimePath))
 		root.AddChild(buildMountGroupNodeV1("Runtime Mounts", runtimeMounts, false, runtimePath))
 		root.AddChild(buildMountGroupNodeV1("Kernel / Other", otherMounts, false, runtimePath))
 	}

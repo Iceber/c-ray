@@ -326,17 +326,17 @@ func listContainers(ctx context.Context, rt runtime.Runtime) {
 		os.Exit(1)
 	}
 
-	entries := make([]map[string]any, 0, len(containers))
+	entries := make([]any, 0, len(containers))
 	for _, c := range containers {
-		entry := map[string]any{"handle_id": c.ID()}
 		info, err := c.Info(ctx)
 		if err != nil {
-			entry["info_error"] = err.Error()
-			entries = append(entries, entry)
+			entries = append(entries, map[string]any{
+				"id":    c.ID(),
+				"error": err.Error(),
+			})
 			continue
 		}
-		entry["info"] = info
-		entries = append(entries, entry)
+		entries = append(entries, info)
 	}
 
 	printJSON(entries)
@@ -509,17 +509,17 @@ func listImages(ctx context.Context, rt runtime.Runtime) {
 		os.Exit(1)
 	}
 
-	entries := make([]map[string]any, 0, len(images))
+	entries := make([]any, 0, len(images))
 	for _, img := range images {
-		entry := map[string]any{"ref": img.Ref()}
 		info, err := img.Info(ctx)
 		if err != nil {
-			entry["info_error"] = err.Error()
-			entries = append(entries, entry)
+			entries = append(entries, map[string]any{
+				"ref":   img.Ref(),
+				"error": err.Error(),
+			})
 			continue
 		}
-		entry["info"] = info
-		entries = append(entries, entry)
+		entries = append(entries, info)
 	}
 
 	printJSON(entries)
@@ -539,11 +539,14 @@ func imageInfo(ctx context.Context, rt runtime.Runtime, ref string) {
 		}
 	}
 
-	result := map[string]any{"info": info}
 	if crioInfo != nil {
-		result["crio_storage"] = crioInfo
+		printJSON(map[string]any{
+			"info":         info,
+			"crio_storage": crioInfo,
+		})
+	} else {
+		printJSON(info)
 	}
-	printJSON(result)
 }
 
 func imageConfig(ctx context.Context, rt runtime.Runtime, ref string) {
@@ -810,26 +813,31 @@ func listPods(ctx context.Context, rt runtime.Runtime) {
 
 	entries := make([]map[string]any, 0, len(pods))
 	for _, pod := range pods {
-		entry := map[string]any{"uid": pod.UID()}
 		info, err := pod.Info(ctx)
 		if err != nil {
-			entry["info_error"] = err.Error()
-			entries = append(entries, entry)
+			entries = append(entries, map[string]any{
+				"uid":   pod.UID(),
+				"error": err.Error(),
+			})
 			continue
 		}
 		containers, _ := pod.Containers(ctx)
-		containerEntries := make([]map[string]any, 0, len(containers))
+		containerEntries := make([]any, 0, len(containers))
 		for _, c := range containers {
-			containerEntry := map[string]any{"handle_id": c.ID()}
-			cInfo, _ := c.Info(ctx)
-			if cInfo != nil {
-				containerEntry["info"] = cInfo
+			cInfo, err := c.Info(ctx)
+			if err != nil {
+				containerEntries = append(containerEntries, map[string]any{
+					"id":    c.ID(),
+					"error": err.Error(),
+				})
+				continue
 			}
-			containerEntries = append(containerEntries, containerEntry)
+			containerEntries = append(containerEntries, cInfo)
 		}
-		entry["info"] = info
-		entry["containers"] = containerEntries
-		entries = append(entries, entry)
+		entries = append(entries, map[string]any{
+			"info":       info,
+			"containers": containerEntries,
+		})
 	}
 
 	printJSON(entries)
@@ -857,17 +865,17 @@ func podInfo(ctx context.Context, rt runtime.Runtime, uid string) {
 	containers, err := target.Containers(ctx)
 	exitOnErr("Pod.Containers", err)
 
-	containerEntries := make([]map[string]any, 0, len(containers))
+	containerEntries := make([]any, 0, len(containers))
 	for _, c := range containers {
-		entry := map[string]any{"handle_id": c.ID()}
 		cInfo, err := c.Info(ctx)
 		if err != nil {
-			entry["info_error"] = err.Error()
-			containerEntries = append(containerEntries, entry)
+			containerEntries = append(containerEntries, map[string]any{
+				"id":    c.ID(),
+				"error": err.Error(),
+			})
 			continue
 		}
-		entry["info"] = cInfo
-		containerEntries = append(containerEntries, entry)
+		containerEntries = append(containerEntries, cInfo)
 	}
 
 	printJSON(map[string]any{

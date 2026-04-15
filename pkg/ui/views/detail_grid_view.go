@@ -1394,7 +1394,7 @@ func buildFilesystemMountsNode(mounts []*runtime.Mount) *tview.TreeNode {
 			detailField("Total", fmt.Sprintf("%d", len(mounts))),
 			detailField("Root", rootTarget),
 			detailField("User", fmt.Sprintf("%d", len(userMounts))),
-			detailField("CRI", fmt.Sprintf("%d", len(criMounts))),
+			detailField("Kubelet", fmt.Sprintf("%d", len(criMounts))),
 			detailField("Runtime/Other", fmt.Sprintf("%d / %d", len(runtimeMounts), len(otherMounts))),
 		),
 	})
@@ -1403,7 +1403,7 @@ func buildFilesystemMountsNode(mounts []*runtime.Mount) *tview.TreeNode {
 			detailField("Count", fmt.Sprintf("%d", len(mounts))),
 			detailField("Root", rootTarget),
 			detailField("User", fmt.Sprintf("%d", len(userMounts))),
-			detailField("CRI", fmt.Sprintf("%d", len(criMounts))),
+			detailField("Kubelet", fmt.Sprintf("%d", len(criMounts))),
 			detailField("Runtime", fmt.Sprintf("%d", len(runtimeMounts))),
 		)),
 		filesystemLeafNode("Root", rootTarget, "Root Mount", detailLines(
@@ -1418,9 +1418,9 @@ func buildFilesystemMountsNode(mounts []*runtime.Mount) *tview.TreeNode {
 			detailField("Source", "PodSpec volumes"),
 			detailField("Scope", "User-declared mounts"),
 		)),
-		filesystemLeafNode("CRI", fmt.Sprintf("%d", len(criMounts)), "CRI Mounts", detailLines(
+		filesystemLeafNode("Kubelet", fmt.Sprintf("%d", len(criMounts)), "Kubelet Mounts", detailLines(
 			detailField("Count", fmt.Sprintf("%d", len(criMounts))),
-			detailField("Type", "CRI"),
+			detailField("Type", "Kubelet"),
 			detailField("Source", "Config / status"),
 			detailField("Scope", "Kubelet-injected mounts"),
 		)),
