@@ -452,10 +452,10 @@ func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile,
 		pid = task.Pid()
 	}
 	if pid > 0 && h.rt.procReader != nil {
-		if shim := getShimProcessInfo(h.rt.procReader, pid); shim != nil {
-			profile.Shim.BinaryPath = shim.binaryPath
-			profile.Shim.Cmdline = append([]string(nil), shim.cmdline...)
-			profile.Shim.SocketAddress = resolveShimSocketAddress(stateDir, bundleDir, info.ID, info.SandboxID, namespace)
+		if shim := GetShimProcessInfo(h.rt.procReader, pid); shim != nil {
+			profile.Shim.BinaryPath = shim.BinaryPath
+			profile.Shim.Cmdline = append([]string(nil), shim.Cmdline...)
+			profile.Shim.SocketAddress = ResolveShimSocketAddress(stateDir, bundleDir, info.ID, info.SandboxID, namespace)
 			profile.Shim.SandboxBundleDir = resolveShimSandboxBundleDir(bundleDir, info.SandboxID)
 		}
 	}

@@ -12,6 +12,7 @@ import (
 	dockertypes "github.com/docker/docker/api/types"
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/icebergu/c-ray/pkg/runtime"
+	containerdrt "github.com/icebergu/c-ray/pkg/runtime/containerd"
 )
 
 // containerHandle implements runtime.Container backed by Docker Engine API.
@@ -157,16 +158,30 @@ func (h *containerHandle) Config(ctx context.Context) (*runtime.ContainerConfig,
 		cfg.ImageID = i.Image
 	}
 
-	// CGroup path.
+	// CGroup path — try HostConfig.CgroupParent first, fall back to live
+	// /proc/<pid>/cgroup for standalone Docker containers where CgroupParent
+	// is not explicitly set.
 	if i.HostConfig != nil && i.HostConfig.CgroupParent != "" {
 		cfg.CGroupPath = i.HostConfig.CgroupParent
 		cfg.CGroupDriver = runtime.InferCGroupDriver(i.HostConfig.CgroupParent)
 	}
+	if cfg.CGroupPath == "" {
+		cfg.CGroupPath = runtime.ResolveCGroupPath("", 0, h.liveContainerPID(), h.rt.procReader)
+	}
+	if cfg.CGroupDriver == "" && cfg.CGroupPath != "" {
+		cfg.CGroupDriver = runtime.InferCGroupDriver(cfg.CGroupPath)
+	}
 
-	// CGroup version from reader.
+	// CGroup version and root from reader.
 	if h.rt.cgroupReader != nil {
 		cfg.CGroupVersion = int(h.rt.cgroupReader.GetVersion())
 	}
+	if cfg.CGroupPath != "" {
+		cfg.CGroupRootPath = runtime.CGroupRootPath()
+	}
+
+	// Namespaces from Docker HostConfig modes.
+	cfg.Namespaces = dockerNamespaceMap(i)
 
 	if h.rt != nil && h.rt.imageStoreMode == ImageStoreModeContainerd {
 		if i.Driver != "" {
@@ -636,19 +651,76 @@ func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile,
 		return nil, h.inspectErr
 	}
 
+	i := h.inspect
 	profile := &runtime.RuntimeProfile{
-		OCI: &runtime.OCIInfo{},
+		OCI:  &runtime.OCIInfo{},
+		Shim: &runtime.ContainerdShimInfo{},
 	}
 
-	// The Docker daemon uses a runtime (typically runc) under the hood.
-	if hc := h.inspect.HostConfig; hc != nil && hc.Runtime != "" {
-		profile.OCI.RuntimeName = hc.Runtime
-	} else {
-		profile.OCI.RuntimeName = "runc"
+	// -----------------------------------------------------------------------
+	// OCI runtime name and binary
+	// -----------------------------------------------------------------------
+
+	// Determine the OCI runtime name for this container.
+	runtimeName := "runc"
+	if hc := i.HostConfig; hc != nil && hc.Runtime != "" {
+		runtimeName = hc.Runtime
+	} else if h.rt.daemonInfo != nil && h.rt.daemonInfo.DefaultRuntime != "" {
+		runtimeName = h.rt.daemonInfo.DefaultRuntime
+	}
+	profile.OCI.RuntimeName = runtimeName
+
+	// Resolve the OCI runtime binary path from daemon Runtimes map.
+	if h.rt.daemonInfo != nil && h.rt.daemonInfo.Runtimes != nil {
+		if rt, ok := h.rt.daemonInfo.Runtimes[runtimeName]; ok && rt.Path != "" {
+			profile.OCI.RuntimeBinary = rt.Path
+		}
 	}
 
-	// RootFS path from GraphDriver merged dir.
-	if merged, ok := h.inspect.GraphDriver.Data["MergedDir"]; ok {
+	// -----------------------------------------------------------------------
+	// containerd shim / bundle paths
+	// -----------------------------------------------------------------------
+
+	// Docker uses containerd under the hood; derive the containerd state dir
+	// from the containerd socket address (e.g. /run/containerd/containerd.sock → /run/containerd).
+	containerdStateDir := dockerContainerdStateDir(h.rt.daemonInfo)
+	namespace := dockerContainerdNamespace(h.rt.daemonInfo)
+
+	if containerdStateDir != "" {
+		bundleDir := containerdrt.ShimBundleDir(containerdStateDir, namespace, i.ID)
+		profile.OCI.BundleDir = bundleDir
+		profile.OCI.ConfigPath = bundleDir + "/config.json"
+	}
+
+	// Resolve runc state directory: /run/runc/<namespace>/<id>
+	runcStateDir := "/run/runc/" + namespace + "/" + i.ID
+	profile.OCI.StateDir = runcStateDir
+	profile.OCI.StatePath = runcStateDir + "/state.json"
+
+	// -----------------------------------------------------------------------
+	// Shim process detection via procfs
+	// -----------------------------------------------------------------------
+
+	pid := h.liveContainerPID()
+	if pid > 0 && h.rt.procReader != nil {
+		if shim := containerdrt.GetShimProcessInfo(h.rt.procReader, pid); shim != nil {
+			profile.Shim.BinaryPath = shim.BinaryPath
+			profile.Shim.Cmdline = append([]string(nil), shim.Cmdline...)
+
+			if containerdStateDir != "" {
+				bundleDir := containerdrt.ShimBundleDir(containerdStateDir, namespace, i.ID)
+				profile.Shim.SocketAddress = containerdrt.ResolveShimSocketAddress(
+					containerdStateDir, bundleDir, i.ID, "", namespace,
+				)
+			}
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// RootFS path
+	// -----------------------------------------------------------------------
+
+	if merged, ok := i.GraphDriver.Data["MergedDir"]; ok {
 		profile.RootFSPath = merged
 	}
 	if profile.RootFSPath == "" {
@@ -657,7 +729,33 @@ func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile,
 		}
 	}
 
+	// Trim empty Shim if nothing was populated.
+	if profile.Shim.BinaryPath == "" && profile.Shim.SocketAddress == "" && len(profile.Shim.Cmdline) == 0 {
+		profile.Shim = nil
+	}
+
 	return profile, nil
+}
+
+// dockerContainerdStateDir derives the containerd state directory from
+// daemon info. Docker's containerd socket is typically at
+// /run/containerd/containerd.sock, so the state dir is /run/containerd.
+func dockerContainerdStateDir(di *daemonInfo) string {
+	if di == nil || di.ContainerdAddr == "" {
+		return ""
+	}
+	return filepath.Dir(di.ContainerdAddr)
+}
+
+// dockerContainerdNamespace returns the containerd namespace Docker uses for
+// containers (typically "moby").
+func dockerContainerdNamespace(di *daemonInfo) string {
+	if di != nil && di.ContainerdNS != nil {
+		if ns, ok := di.ContainerdNS["containers"]; ok && ns != "" {
+			return ns
+		}
+	}
+	return "moby"
 }
 
 // ---------------------------------------------------------------------------
@@ -855,6 +953,36 @@ func (h *containerHandle) liveContainerPID() uint32 {
 		return 0
 	}
 	return uint32(h.inspect.State.Pid)
+}
+
+// dockerNamespaceMap extracts Linux namespace modes from Docker HostConfig.
+func dockerNamespaceMap(i *dockertypes.ContainerJSON) map[string]string {
+	if i.HostConfig == nil {
+		return nil
+	}
+	ns := make(map[string]string)
+	if m := string(i.HostConfig.PidMode); m != "" {
+		ns["pid"] = m
+	}
+	if m := string(i.HostConfig.NetworkMode); m != "" {
+		ns["network"] = m
+	}
+	if m := string(i.HostConfig.IpcMode); m != "" {
+		ns["ipc"] = m
+	}
+	if m := string(i.HostConfig.UTSMode); m != "" {
+		ns["uts"] = m
+	}
+	if m := string(i.HostConfig.UsernsMode); m != "" {
+		ns["user"] = m
+	}
+	if m := string(i.HostConfig.CgroupnsMode); m != "" {
+		ns["cgroup"] = m
+	}
+	if len(ns) == 0 {
+		return nil
+	}
+	return ns
 }
 
 // listDockerContainers fetches all containers from the Docker daemon.

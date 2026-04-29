@@ -101,7 +101,6 @@ func NewDetailGridView(app *tview.Application) *DetailGridView {
 	v.cgroupPanel.SetBorder(true).SetBorderColor(components.ColorFgBorder)
 	v.cgroupPanel.SetTitle(fmt.Sprintf(" %s%s ", components.Accent("Cgroup"), components.Dim("(c)"))).SetTitleAlign(tview.AlignLeft)
 	v.cgroupPanel.SetBackgroundColor(components.ColorBg)
-	v.cgroupPanel.SetTopLevel(1)
 	v.cgroupPanel.SetRoot(components.NewTreeNode(components.Muted("No data")))
 	v.cgroupPanel.SetChangedFunc(func(node *tview.TreeNode) {
 		v.updateDetailPanelForNode(detailGridFocusCgroup, node)
@@ -111,7 +110,6 @@ func NewDetailGridView(app *tview.Application) *DetailGridView {
 	v.fsPanel.SetBorder(true).SetBorderColor(components.ColorFgBorder)
 	v.fsPanel.SetTitle(fmt.Sprintf(" %s%s ", components.Accent("Filesystem"), components.Dim("(f)"))).SetTitleAlign(tview.AlignLeft)
 	v.fsPanel.SetBackgroundColor(components.ColorBg)
-	v.fsPanel.SetTopLevel(1)
 	v.fsPanel.SetRoot(components.NewTreeNode(components.Muted("No data")))
 	v.fsPanel.SetChangedFunc(func(node *tview.TreeNode) {
 		v.updateDetailPanelForNode(detailGridFocusFilesystem, node)
@@ -131,7 +129,6 @@ func NewDetailGridView(app *tview.Application) *DetailGridView {
 	v.imagePanel.SetBorder(true).SetBorderColor(components.ColorFgBorder)
 	v.imagePanel.SetTitle(fmt.Sprintf(" %s%s ", components.Accent("Image"), components.Dim("(i)"))).SetTitleAlign(tview.AlignLeft)
 	v.imagePanel.SetBackgroundColor(components.ColorBg)
-	v.imagePanel.SetTopLevel(1)
 	v.imagePanel.SetRoot(components.NewTreeNode(components.Muted("No data")))
 	v.imagePanel.SetChangedFunc(func(node *tview.TreeNode) {
 		v.updateDetailPanelForNode(detailGridFocusImage, node)
@@ -1382,7 +1379,7 @@ func layerTreeID(layer *runtime.ImageLayer) string {
 }
 
 func buildFilesystemMountsNode(mounts []*runtime.Mount) *tview.TreeNode {
-	rootMount, userMounts, criMounts, runtimeMounts, otherMounts := splitMounts(mounts)
+	rootMount, userMounts, kubeletMounts, runtimeMounts, otherMounts := splitMounts(mounts)
 	rootTarget := "/"
 	if rootMount != nil && rootMount.Destination != "" {
 		rootTarget = rootMount.Destination
@@ -1394,7 +1391,7 @@ func buildFilesystemMountsNode(mounts []*runtime.Mount) *tview.TreeNode {
 			detailField("Total", fmt.Sprintf("%d", len(mounts))),
 			detailField("Root", rootTarget),
 			detailField("User", fmt.Sprintf("%d", len(userMounts))),
-			detailField("Kubelet", fmt.Sprintf("%d", len(criMounts))),
+			detailField("Kubelet", fmt.Sprintf("%d", len(kubeletMounts))),
 			detailField("Runtime/Other", fmt.Sprintf("%d / %d", len(runtimeMounts), len(otherMounts))),
 		),
 	})
@@ -1403,7 +1400,7 @@ func buildFilesystemMountsNode(mounts []*runtime.Mount) *tview.TreeNode {
 			detailField("Count", fmt.Sprintf("%d", len(mounts))),
 			detailField("Root", rootTarget),
 			detailField("User", fmt.Sprintf("%d", len(userMounts))),
-			detailField("Kubelet", fmt.Sprintf("%d", len(criMounts))),
+			detailField("Kubelet", fmt.Sprintf("%d", len(kubeletMounts))),
 			detailField("Runtime", fmt.Sprintf("%d", len(runtimeMounts))),
 		)),
 		filesystemLeafNode("Root", rootTarget, "Root Mount", detailLines(
@@ -1415,13 +1412,13 @@ func buildFilesystemMountsNode(mounts []*runtime.Mount) *tview.TreeNode {
 		filesystemLeafNode("User", fmt.Sprintf("%d", len(userMounts)), "User Mounts", detailLines(
 			detailField("Count", fmt.Sprintf("%d", len(userMounts))),
 			detailField("Type", "User"),
-			detailField("Source", "PodSpec volumes"),
+			detailField("Source", "PodSpec volumes / docker -v"),
 			detailField("Scope", "User-declared mounts"),
 		)),
-		filesystemLeafNode("Kubelet", fmt.Sprintf("%d", len(criMounts)), "Kubelet Mounts", detailLines(
-			detailField("Count", fmt.Sprintf("%d", len(criMounts))),
+		filesystemLeafNode("Kubelet", fmt.Sprintf("%d", len(kubeletMounts)), "Kubelet Mounts", detailLines(
+			detailField("Count", fmt.Sprintf("%d", len(kubeletMounts))),
 			detailField("Type", "Kubelet"),
-			detailField("Source", "Config / status"),
+			detailField("Source", "Kubelet-injected"),
 			detailField("Scope", "Kubelet-injected mounts"),
 		)),
 		filesystemLeafNode("Runtime", fmt.Sprintf("%d", len(runtimeMounts)), "Runtime Mounts", detailLines(

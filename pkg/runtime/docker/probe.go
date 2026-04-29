@@ -49,6 +49,10 @@ type daemonInfo struct {
 	ContainerdNS   map[string]string // e.g. {"containers": "moby", "plugins": "plugins.moby"}
 	CgroupDriver   string
 	CgroupVersion  string
+
+	// OCI runtime metadata from Docker daemon info.
+	DefaultRuntime string
+	Runtimes       map[string]system.RuntimeWithStatus
 }
 
 // probeDaemon fetches Docker system info and determines the image store mode.
@@ -66,11 +70,13 @@ func (r *Runtime) probeDaemon(ctx context.Context) (*daemonInfo, ImageStoreMode,
 
 func convertDaemonInfo(info system.Info) *daemonInfo {
 	di := &daemonInfo{
-		DockerRootDir: info.DockerRootDir,
-		Driver:        info.Driver,
-		ServerVersion: info.ServerVersion,
-		CgroupDriver:  info.CgroupDriver,
-		CgroupVersion: info.CgroupVersion,
+		DockerRootDir:  info.DockerRootDir,
+		Driver:         info.Driver,
+		ServerVersion:  info.ServerVersion,
+		CgroupDriver:   info.CgroupDriver,
+		CgroupVersion:  info.CgroupVersion,
+		DefaultRuntime: info.DefaultRuntime,
+		Runtimes:       info.Runtimes,
 	}
 
 	if len(info.DriverStatus) > 0 {

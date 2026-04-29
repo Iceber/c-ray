@@ -19,13 +19,16 @@ import (
 // Shim process discovery
 // ---------------------------------------------------------------------------
 
-type shimProcessInfo struct {
-	pid        uint32
-	binaryPath string
-	cmdline    []string
+// ShimProcessInfo contains the detected shim process metadata.
+type ShimProcessInfo struct {
+	PID        uint32
+	BinaryPath string
+	Cmdline    []string
 }
 
-func getShimProcessInfo(procReader *sysinfo.ProcReader, taskPID uint32) *shimProcessInfo {
+// GetShimProcessInfo walks the process tree upward from taskPID to find the
+// containerd-shim parent process.
+func GetShimProcessInfo(procReader *sysinfo.ProcReader, taskPID uint32) *ShimProcessInfo {
 	if taskPID == 0 || procReader == nil {
 		return nil
 	}
@@ -38,10 +41,14 @@ func getShimProcessInfo(procReader *sysinfo.ProcReader, taskPID uint32) *shimPro
 		exePath, _ := procReader.ReadExePath(ppid)
 		cmdline, _ := procReader.ReadCmdlineRaw(ppid)
 		if isShimProcess(exePath, cmdline) {
-			return &shimProcessInfo{
-				pid:        uint32(ppid),
-				binaryPath: exePath,
-				cmdline:    cmdline,
+			binaryPath := exePath
+			if binaryPath == "" && len(cmdline) > 0 && filepath.IsAbs(cmdline[0]) {
+				binaryPath = cmdline[0]
+			}
+			return &ShimProcessInfo{
+				PID:        uint32(ppid),
+				BinaryPath: binaryPath,
+				Cmdline:    cmdline,
 			}
 		}
 		currentPID = ppid
@@ -63,7 +70,9 @@ func isShimProcess(exePath string, cmdline []string) bool {
 // Shim socket resolution
 // ---------------------------------------------------------------------------
 
-func resolveShimSocketAddress(stateDir, bundleDir, containerID, sandboxIDHint, namespace string) string {
+// ResolveShimSocketAddress resolves the containerd shim TTRPC socket address
+// by checking bootstrap.json, address file, or computing from convention.
+func ResolveShimSocketAddress(stateDir, bundleDir, containerID, sandboxIDHint, namespace string) string {
 	if address, err := readBootstrapAddress(filepath.Join(bundleDir, "bootstrap.json")); err == nil {
 		return address
 	}
@@ -89,6 +98,11 @@ func resolveShimSocketAddress(stateDir, bundleDir, containerID, sandboxIDHint, n
 	}
 
 	return computeShimSocketAddress(stateDir, namespace, containerID)
+}
+
+// ShimBundleDir returns the containerd runtime v2 bundle directory path.
+func ShimBundleDir(stateDir, namespace, containerID string) string {
+	return runtimeV2BundleDir(stateDir, namespace, containerID)
 }
 
 func resolveShimSandboxBundleDir(bundleDir, sandboxID string) string {
