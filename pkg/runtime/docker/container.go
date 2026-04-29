@@ -488,7 +488,7 @@ func (h *containerHandle) Network(ctx context.Context) (*runtime.ContainerNetwor
 	// Observed network interface traffic from /proc/<pid>/net/dev.
 	if h.inspect.State != nil && h.inspect.State.Pid > 0 && h.rt.procReader != nil {
 		if stats, err := h.rt.procReader.ReadNetDev(h.inspect.State.Pid); err == nil {
-			podNet.ObservedInterfaces = convertNetworkStats(stats)
+			podNet.ObservedInterfaces = runtime.ConvertNetworkStats(stats)
 		}
 	}
 
@@ -837,14 +837,14 @@ func (h *containerHandle) RWLayerStats(ctx context.Context) (runtime.ContainerRW
 
 	gd := h.inspect.GraphDriver
 	if upper, ok := gd.Data["UpperDir"]; ok && upper != "" {
-		usage, inodes := dirDiskUsage(upper)
+		usage, inodes := runtime.DirDiskUsage(upper)
 		return runtime.ContainerRWLayerStats{
 			RWLayerUsage:  usage,
 			RWLayerInodes: inodes,
 		}, nil
 	}
 	if live := h.resolveLiveRootPaths(); live != nil && live.upperdir != "" {
-		usage, inodes := dirDiskUsage(live.upperdir)
+		usage, inodes := runtime.DirDiskUsage(live.upperdir)
 		return runtime.ContainerRWLayerStats{
 			RWLayerUsage:  usage,
 			RWLayerInodes: inodes,

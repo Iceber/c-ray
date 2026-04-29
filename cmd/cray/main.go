@@ -38,8 +38,6 @@ const (
 )
 
 var (
-	version    = "dev"
-	commit     = "unknown"
 	socketPath string
 	namespace  string
 	timeout    int
@@ -120,54 +118,6 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Run 'cray <command>' without arguments to see available actions.")
 	fmt.Println("Both singular and plural resource names are accepted (e.g. container/containers).")
-}
-
-// formatContentSize formats the content size with compression type
-// Format: <size>(<compression>) or <size> if no compression
-func formatContentSize(size int64, compression string) string {
-	sizeStr := formatBytes(size)
-	if compression == "" {
-		return sizeStr + "(-)"
-	}
-	return fmt.Sprintf("%s(%s)", sizeStr, compression)
-}
-
-// formatBytes formats bytes to human-readable string
-func formatBytes(bytes int64) string {
-	const (
-		KB = 1024
-		MB = 1024 * KB
-		GB = 1024 * MB
-		TB = 1024 * GB
-	)
-
-	switch {
-	case bytes >= TB:
-		return fmt.Sprintf("%.2f TB", float64(bytes)/TB)
-	case bytes >= GB:
-		return fmt.Sprintf("%.2f GB", float64(bytes)/GB)
-	case bytes >= MB:
-		return fmt.Sprintf("%.2f MB", float64(bytes)/MB)
-	case bytes >= KB:
-		return fmt.Sprintf("%.2f KB", float64(bytes)/KB)
-	default:
-		return fmt.Sprintf("%d B", bytes)
-	}
-}
-
-// truncateDigest truncates a digest string for display
-func truncateDigest(digest string, length int) string {
-	if len(digest) <= length {
-		return digest
-	}
-	return digest[:length]
-}
-
-func getEnvOrDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
 }
 
 func newConfig() *runtime.Config {

@@ -166,13 +166,13 @@ func (h *containerHandle) buildPodNetwork(ctx context.Context, info containers.C
 	}
 	if pid > 0 && h.rt.procReader != nil {
 		if stats, err := h.rt.procReader.ReadNetDev(int(pid)); err == nil {
-			podNet.ObservedInterfaces = convertNetworkStats(stats)
+			podNet.ObservedInterfaces = runtime.ConvertNetworkStats(stats)
 		}
 	}
 
 	// Try to get netns path from spec namespace map.
 	if h.spec != nil {
-		if path := nsPathFromSpec(h.spec, "network"); path != "" {
+		if path := runtime.NsPathFromSpec(h.spec, "network"); path != "" {
 			podNet.NetNSPath = path
 		}
 	}
@@ -203,7 +203,7 @@ func (h *containerHandle) buildPodNetwork(ctx context.Context, info containers.C
 
 	// Fallback netns from spec if still unresolved.
 	if podNet.NetNSPath == "" && h.spec != nil {
-		if path := nsPathFromSpec(h.spec, "network"); path != "" {
+		if path := runtime.NsPathFromSpec(h.spec, "network"); path != "" {
 			podNet.NetNSPath = path
 		}
 	}
@@ -213,7 +213,3 @@ func (h *containerHandle) buildPodNetwork(ctx context.Context, info containers.C
 	}
 	return nil
 }
-
-var nsPathFromSpec = runtime.NsPathFromSpec
-
-var convertNetworkStats = runtime.ConvertNetworkStats

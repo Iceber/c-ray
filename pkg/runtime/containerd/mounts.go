@@ -34,17 +34,6 @@ func (r *Runtime) readLiveMounts(pid uint32) ([]*runtime.Mount, string) {
 	return v1Mounts, rootFS
 }
 
-func (r *Runtime) resolveRootFSPath(pid uint32) string {
-	if pid == 0 || r.mountReader == nil {
-		return ""
-	}
-	mounts, err := r.mountReader.ReadMounts(int(pid))
-	if err != nil {
-		return ""
-	}
-	return resolveRootFS(r, mounts)
-}
-
 // ---------------------------------------------------------------------------
 // Conversion between sysinfo.Mount ↔ runtime.Mount
 // ---------------------------------------------------------------------------

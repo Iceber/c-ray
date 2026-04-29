@@ -105,18 +105,6 @@ func isConmonProcess(exePath string, cmdline []string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// OCI spec helpers
-// ---------------------------------------------------------------------------
-
-var nsPathFromSpec = runtime.NsPathFromSpec
-
-// ---------------------------------------------------------------------------
-// Network conversion
-// ---------------------------------------------------------------------------
-
-var convertNetworkStats = runtime.ConvertNetworkStats
-
-// ---------------------------------------------------------------------------
 // Disk usage helper
 // ---------------------------------------------------------------------------
 
@@ -126,28 +114,6 @@ func dirUsage(path string) runtime.ContainerRWLayerStats {
 		RWLayerUsage:  size,
 		RWLayerInodes: inodes,
 	}
-}
-
-// ---------------------------------------------------------------------------
-// RootFS resolution
-// ---------------------------------------------------------------------------
-
-func resolveRootFSPath(rt *Runtime, pid uint32) string {
-	if pid == 0 || rt.mountReader == nil {
-		return ""
-	}
-	mounts, err := rt.mountReader.ReadMounts(int(pid))
-	if err != nil {
-		return ""
-	}
-	rootMount := rt.mountReader.FindRootMount(mounts)
-	if rootMount == nil {
-		return ""
-	}
-	if _, upperdir, _ := rt.mountReader.ParseOverlayFS(rootMount); upperdir != "" {
-		return upperdir
-	}
-	return rootMount.Source
 }
 
 type PodInfo = runtime.PodInfo

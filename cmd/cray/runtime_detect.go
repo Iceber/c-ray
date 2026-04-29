@@ -150,14 +150,12 @@ func probeCRISocket(socketPath string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), runtimeProbeTimeout)
 	defer cancel()
 
-	conn, err := grpc.DialContext(
-		ctx,
+	conn, err := grpc.NewClient(
 		socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 		}),
-		grpc.WithBlock(),
 	)
 	if err != nil {
 		return false

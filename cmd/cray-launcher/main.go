@@ -113,13 +113,13 @@ func main() {
 // precheck verifies that the Docker environment is usable.
 func precheck() error {
 	if _, err := exec.LookPath("docker"); err != nil {
-		return fmt.Errorf("'docker' CLI not found in PATH.\nDocker Desktop is required to run cray on macOS.")
+		return fmt.Errorf("'docker' CLI not found in PATH; Docker Desktop is required to run cray on macOS")
 	}
 
 	cmd := exec.Command("docker", "info", "--format", "{{.OSType}}")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("Docker daemon is not running or not accessible.\nPlease start Docker Desktop and try again.\n(%v)", err)
+		return fmt.Errorf("docker daemon is not running or not accessible; please start Docker Desktop and try again (%v)", err)
 	}
 	osType := strings.TrimSpace(string(output))
 	if osType != "linux" {

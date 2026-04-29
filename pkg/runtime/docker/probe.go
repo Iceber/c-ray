@@ -81,9 +81,7 @@ func convertDaemonInfo(info system.Info) *daemonInfo {
 
 	if len(info.DriverStatus) > 0 {
 		di.DriverStatus = make([][2]string, len(info.DriverStatus))
-		for i, pair := range info.DriverStatus {
-			di.DriverStatus[i] = pair
-		}
+		copy(di.DriverStatus, info.DriverStatus)
 	}
 
 	if info.Containerd != nil {

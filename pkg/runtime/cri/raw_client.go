@@ -187,12 +187,10 @@ func (c *Client) InspectContainerMounts(ctx context.Context, containerID string)
 		return nil, fmt.Errorf("container id is required")
 	}
 
-	conn, err := grpc.DialContext(
-		ctx,
+	conn, err := grpc.NewClient(
 		c.socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(unixDialer),
-		grpc.WithBlock(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dial cri runtime service: %w", err)
@@ -233,12 +231,10 @@ func (c *Client) InspectContainerStatus(ctx context.Context, containerID string)
 		return nil, fmt.Errorf("container id is required")
 	}
 
-	conn, err := grpc.DialContext(
-		ctx,
+	conn, err := grpc.NewClient(
 		c.socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(unixDialer),
-		grpc.WithBlock(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dial cri runtime service: %w", err)
@@ -266,12 +262,10 @@ func (c *Client) InspectPodSandboxNetwork(ctx context.Context, sandboxID string)
 		return nil, fmt.Errorf("sandbox id is required")
 	}
 
-	conn, err := grpc.DialContext(
-		ctx,
+	conn, err := grpc.NewClient(
 		c.socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(unixDialer),
-		grpc.WithBlock(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dial cri runtime service: %w", err)

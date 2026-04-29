@@ -313,7 +313,7 @@ func (h *imageHandle) resolveOverlay2Layers(diffIDs []string, gd dockertypes.Gra
 			l.Docker.ShortLinkID = layerDir.shortLinkID
 			l.Docker.ShortLinkPath = layerDir.shortLinkPath
 
-			l.UsageSize, l.UsageInodes = dirDiskUsage(layerDir.path)
+			l.UsageSize, l.UsageInodes = runtime.DirDiskUsage(layerDir.path)
 		}
 
 		layers = append(layers, l)

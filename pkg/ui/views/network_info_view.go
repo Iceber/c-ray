@@ -169,7 +169,7 @@ func buildSandboxNodeV1(network *runtime.PodNetworkInfo) *tview.TreeNode {
 		node.AddChild(components.NewTreeNode(fmt.Sprintf("  %s", components.Muted(row))).SetSelectable(true))
 	}
 	if len(network.PortMappings) > 0 {
-		portsNode := components.NewTreeNode(fmt.Sprintf("%s", components.Accent(fmt.Sprintf("  Port Mappings (%d)", len(network.PortMappings))))).
+		portsNode := components.NewTreeNode(components.Accent(fmt.Sprintf("  Port Mappings (%d)", len(network.PortMappings)))).
 			SetSelectable(true).SetExpanded(false)
 		for _, port := range network.PortMappings {
 			portsNode.AddChild(components.NewTreeNode(fmt.Sprintf("    %s",

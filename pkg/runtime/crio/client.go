@@ -87,19 +87,24 @@ func (r *Runtime) Connect(ctx context.Context) error {
 	}
 
 	// Establish CRI connection for supplementary runtime data.
-	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	conn, err := grpc.DialContext(dialCtx, r.config.SocketPath,
+	// grpc.NewClient connects lazily on first RPC; verify reachability with Version.
+	conn, err := grpc.NewClient(r.config.SocketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", r.config.SocketPath)
 		}),
-		grpc.WithBlock(),
 	)
 	if err != nil {
+		return fmt.Errorf("failed to create CRI-O client for %s: %w", r.config.SocketPath, err)
+	}
+
+	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if _, err := runtimeapi.NewRuntimeServiceClient(conn).Version(dialCtx, &runtimeapi.VersionRequest{}); err != nil {
+		conn.Close()
 		return fmt.Errorf("failed to connect to CRI-O at %s: %w", r.config.SocketPath, err)
 	}
+
 	r.conn = conn
 	r.runtimeClient = runtimeapi.NewRuntimeServiceClient(conn)
 	r.imageClient = runtimeapi.NewImageServiceClient(conn)

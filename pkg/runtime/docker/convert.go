@@ -36,9 +36,3 @@ func dockerContainerName(names []string) string {
 	}
 	return strings.TrimPrefix(names[0], "/")
 }
-
-// convertNetworkStats converts sysinfo.NetworkStats to runtime.NetworkStats.
-var convertNetworkStats = runtime.ConvertNetworkStats
-
-// dirDiskUsage walks a directory and returns total size and inode count.
-var dirDiskUsage = runtime.DirDiskUsage

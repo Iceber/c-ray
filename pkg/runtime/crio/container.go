@@ -431,13 +431,13 @@ func (h *containerHandle) buildPodNetwork(ctx context.Context) *runtime.PodNetwo
 
 	if pid := h.pid(ctx); pid > 0 && h.rt.procReader != nil {
 		if stats, err := h.rt.procReader.ReadNetDev(int(pid)); err == nil {
-			podNet.ObservedInterfaces = convertNetworkStats(stats)
+			podNet.ObservedInterfaces = runtime.ConvertNetworkStats(stats)
 		}
 	}
 
 	// Netns from spec.
 	if h.spec != nil {
-		if path := nsPathFromSpec(h.spec, "network"); path != "" {
+		if path := runtime.NsPathFromSpec(h.spec, "network"); path != "" {
 			podNet.NetNSPath = path
 		}
 	}
