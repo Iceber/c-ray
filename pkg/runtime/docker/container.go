@@ -692,10 +692,18 @@ func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile,
 		profile.OCI.ConfigPath = bundleDir + "/config.json"
 	}
 
-	// Resolve runc state directory: /run/runc/<namespace>/<id>
-	runcStateDir := "/run/runc/" + namespace + "/" + i.ID
-	profile.OCI.StateDir = runcStateDir
-	profile.OCI.StatePath = runcStateDir + "/state.json"
+	// Resolve the OCI runtime state directory.
+	//
+	// Docker does NOT use runc's CLI default (/run/runc). Instead it always
+	// invokes the OCI runtime with an explicit --root pointing at
+	//   <ExecRoot>/runtime-<runtimeName>
+	// so the per-container state lives at
+	//   <ExecRoot>/runtime-<runtimeName>/<namespace>/<id>
+	// A non-default runtime may override this via daemon.json runtimeArgs
+	// containing "--root <path>"; in that case the override wins.
+	runtimeStateDir := dockerRuntimeStateDir(h.rt.daemonInfo, runtimeName, namespace, i.ID)
+	profile.OCI.StateDir = runtimeStateDir
+	profile.OCI.StatePath = runtimeStateDir + "/state.json"
 
 	// -----------------------------------------------------------------------
 	// Shim process detection via procfs
@@ -738,8 +746,9 @@ func (h *containerHandle) Runtime(ctx context.Context) (*runtime.RuntimeProfile,
 }
 
 // dockerContainerdStateDir derives the containerd state directory from
-// daemon info. Docker's containerd socket is typically at
-// /run/containerd/containerd.sock, so the state dir is /run/containerd.
+// daemon info. For Docker's bundled containerd this is typically
+// <ExecRoot>/containerd (e.g. /var/run/docker/containerd); when Docker is
+// configured to use the system containerd it is /run/containerd.
 func dockerContainerdStateDir(di *daemonInfo) string {
 	if di == nil || di.ContainerdAddr == "" {
 		return ""
@@ -756,6 +765,64 @@ func dockerContainerdNamespace(di *daemonInfo) string {
 		}
 	}
 	return "moby"
+}
+
+// dockerExecRoot infers Docker's --exec-root.
+//
+// The Engine's /info endpoint does not expose ExecRoot, so we reconstruct it
+// from signals that are exposed:
+//
+//  1. Docker's bundled containerd places its socket at
+//     <ExecRoot>/containerd/containerd.sock, and ExecRoot itself is
+//     conventionally a "docker" directory (default /var/run/docker, or a
+//     user-set path that still terminates in "docker"). When ContainerdAddr
+//     matches that shape, the parent of its directory is ExecRoot.
+//  2. Otherwise — including when Docker is configured to talk to the system
+//     containerd at /run/containerd/containerd.sock — we fall back to
+//     Docker's compiled-in default, /var/run/docker (which on systemd-based
+//     distros resolves to /run/docker via the /var/run → /run symlink).
+func dockerExecRoot(di *daemonInfo) string {
+	if di != nil && di.ContainerdAddr != "" {
+		sockDir := filepath.Dir(di.ContainerdAddr)
+		if filepath.Base(sockDir) == "containerd" {
+			parent := filepath.Dir(sockDir)
+			if filepath.Base(parent) == "docker" {
+				return parent
+			}
+		}
+	}
+	return "/var/run/docker"
+}
+
+// dockerRuntimeStateDir resolves the OCI runtime state directory for a single
+// container managed by Docker. See call site for the layout rationale.
+func dockerRuntimeStateDir(di *daemonInfo, runtimeName, namespace, id string) string {
+	if root := dockerRuntimeArgsRoot(di, runtimeName); root != "" {
+		return filepath.Join(root, namespace, id)
+	}
+	return filepath.Join(dockerExecRoot(di), "runtime-"+runtimeName, namespace, id)
+}
+
+// dockerRuntimeArgsRoot extracts an explicit "--root <path>" override from
+// the runtimeArgs configured in daemon.json for the given runtime, if any.
+func dockerRuntimeArgsRoot(di *daemonInfo, runtimeName string) string {
+	if di == nil || runtimeName == "" {
+		return ""
+	}
+	rt, ok := di.Runtimes[runtimeName]
+	if !ok {
+		return ""
+	}
+	args := rt.Args
+	for i, a := range args {
+		switch {
+		case a == "--root" && i+1 < len(args):
+			return args[i+1]
+		case strings.HasPrefix(a, "--root="):
+			return strings.TrimPrefix(a, "--root=")
+		}
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------

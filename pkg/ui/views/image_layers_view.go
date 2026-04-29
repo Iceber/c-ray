@@ -1103,8 +1103,8 @@ func buildReadOnlyLayersNodeV1(layers []*runtime.ImageLayer) *tview.TreeNode {
 		selection := &layerTreeSelection{path: layer.Path, title: label}
 		layerNode.AddChild(components.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Rootfs Diff ID:"), components.Bright(fallbackLayerField(layer.UncompressedDigest)))).SetSelectable(true).SetReference(selection))
 		layerNode.AddChild(components.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Path:"), components.Bright(fallbackLayerField(layer.Path)))).SetSelectable(true).SetReference(selection))
-		layerNode.AddChild(components.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Content Size:"), components.Bright(formatLayerSize(layer)))).SetSelectable(true).SetReference(selection))
-		layerNode.AddChild(components.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Disk Usage:"), components.Bright(formatLayerDiskUsage(layer)))).SetSelectable(true).SetReference(selection))
+		layerNode.AddChild(components.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Content Size:"), components.Bright(formatLayerContentSize(layer)))).SetSelectable(true).SetReference(selection))
+		layerNode.AddChild(components.NewTreeNode(fmt.Sprintf("  %s %s", components.Muted("Disk Usage:"), components.Bright(formatLayerUsage(layer)))).SetSelectable(true).SetReference(selection))
 		for _, detailsNode := range buildLayerBackendDetailsV1(layer, selection) {
 			layerNode.AddChild(detailsNode)
 		}
@@ -1207,7 +1207,19 @@ func fallbackLayerField(value string) string {
 	return fallbackValue(value, "unresolved")
 }
 
-func formatLayerSize(layer *runtime.ImageLayer) string {
+func formatLayerUsage(layer *runtime.ImageLayer) string {
+	if layer == nil {
+		return "unknown"
+	}
+	if layer.UsageSize <= 0 && layer.UsageInodes <= 0 {
+		return "unknown"
+	}
+	return fmt.Sprintf("%s (%d inodes)", formatBytes(layer.UsageSize), layer.UsageInodes)
+}
+
+// formatLayerContentSize renders the layer descriptor size with the
+// compression type from the manifest, e.g. "12.3 MB (gzip)".
+func formatLayerContentSize(layer *runtime.ImageLayer) string {
 	if layer == nil || layer.Size <= 0 {
 		return "unknown"
 	}
@@ -1216,13 +1228,6 @@ func formatLayerSize(layer *runtime.ImageLayer) string {
 		compression = "unknown"
 	}
 	return fmt.Sprintf("%s (%s)", formatBytes(layer.Size), compression)
-}
-
-func formatLayerDiskUsage(layer *runtime.ImageLayer) string {
-	if layer == nil || (layer.UsageSize <= 0 && layer.UsageInodes <= 0) {
-		return "unknown"
-	}
-	return fmt.Sprintf("%s (%d inodes)", formatBytes(layer.UsageSize), layer.UsageInodes)
 }
 
 func selectedLayerPath(node *tview.TreeNode, config *runtime.ContainerConfig, storage *runtime.ContainerStorage) (string, string) {

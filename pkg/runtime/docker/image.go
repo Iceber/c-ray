@@ -77,6 +77,11 @@ func (h *imageHandle) Config(ctx context.Context) (*runtime.ImageConfigInfo, err
 	if desc.MediaType != "" {
 		info.TargetMediaType = desc.MediaType
 		info.TargetKind, info.Schema = dockerDescribeImageTarget(desc.MediaType)
+	} else {
+		// Older Docker daemons (<24) do not return Descriptor in inspect.
+		// Derive Kind/Schema from the actual image config blob contents
+		// rather than guessing from descriptor mediaType.
+		info.TargetKind, info.Schema = dockerDeriveTargetFromConfigBlob(dockerClassicConfigPath(h.rt, i.ID))
 	}
 
 	manifest := &runtime.ImageManifest{
@@ -87,13 +92,29 @@ func (h *imageHandle) Config(ctx context.Context) (*runtime.ImageConfigInfo, err
 	// Descriptor digest refers to the target object returned by the daemon.
 	// For single-platform images this is the manifest digest; for indexes it is
 	// the index digest and should not be assigned to the current-platform manifest.
-	if info.TargetKind == "Manifest" && desc.Digest != "" {
-		manifest.Digest = desc.Digest
-	} else if info.TargetKind == "" {
-		for _, rd := range i.RepoDigests {
-			if _, d, ok := strings.Cut(rd, "@"); ok && d != "" {
-				manifest.Digest = d
-				break
+	switch info.TargetKind {
+	case "Index":
+		if desc.Digest != "" {
+			info.IndexPath = dockerClassicBlobPath(h.rt, desc.Digest)
+		}
+	case "Manifest", "":
+		// Prefer the descriptor digest (modern daemons). When absent (older
+		// daemons, or fallback derivation from the config blob), recover the
+		// per-platform manifest digest from RepoDigests, which the daemon
+		// always populates with @<algo>:<digest> entries when an image was
+		// pulled or pushed by digest. This is the same value containerd would
+		// return for the platform manifest.
+		switch {
+		case desc.Digest != "":
+			manifest.Digest = desc.Digest
+			manifest.Path = dockerClassicBlobPath(h.rt, desc.Digest)
+		default:
+			for _, rd := range i.RepoDigests {
+				if _, d, ok := strings.Cut(rd, "@"); ok && d != "" {
+					manifest.Digest = d
+					manifest.Path = dockerClassicBlobPath(h.rt, d)
+					break
+				}
 			}
 		}
 	}
@@ -143,6 +164,49 @@ func dockerDescribeImageTarget(mediaType string) (string, string) {
 	return kind, schema
 }
 
+// dockerDeriveTargetFromConfigBlob inspects the image config blob to determine
+// (TargetKind, Schema) when the daemon's inspect response lacks a Descriptor.
+//
+// Classic Docker stores ONE image per image ID per platform — multi-arch images
+// are split into separate image entries — so the structural Kind is always
+// "Manifest" when a config blob exists. Schema is derived from authoritative
+// fields in the config JSON:
+//
+//   - "docker_version" present: written exclusively by the Docker engine →
+//     Schema = "Docker"
+//   - "os.features" present: OCI 1.x extension field, never used by Docker →
+//     Schema = "OCI"
+//
+// If the config blob is unreadable, or both/neither markers exist, Schema is
+// left empty rather than guessed.
+func dockerDeriveTargetFromConfigBlob(configPath string) (string, string) {
+	if configPath == "" {
+		return "", ""
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", ""
+	}
+	var probe struct {
+		DockerVersion string          `json:"docker_version"`
+		OSFeatures    json.RawMessage `json:"os.features"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return "", ""
+	}
+	hasDocker := strings.TrimSpace(probe.DockerVersion) != ""
+	hasOCI := len(probe.OSFeatures) > 0 && string(probe.OSFeatures) != "null"
+
+	schema := ""
+	switch {
+	case hasDocker && !hasOCI:
+		schema = "Docker"
+	case hasOCI && !hasDocker:
+		schema = "OCI"
+	}
+	return "Manifest", schema
+}
+
 func dockerClassicConfigPath(rt *Runtime, imageID string) string {
 	if rt == nil || rt.daemonInfo == nil {
 		return ""
@@ -157,6 +221,40 @@ func dockerClassicConfigPath(rt *Runtime, imageID string) string {
 		return ""
 	}
 	return filepath.Join(rootDir, "image", driver, "imagedb", "content", algorithm, encoded)
+}
+
+// dockerClassicBlobPath returns the path of a manifest/index blob in Docker's
+// unified content store (<DockerRootDir>/content/data/blobs/<algo>/<encoded>),
+// but only when the file actually exists on disk.
+//
+// This blob layout is the containerd content store; Docker persists manifests
+// and indexes there ONLY when the containerd image store is enabled. In
+// classic graphdriver mode (the only mode in which the surrounding code runs —
+// containerd-snapshotter mode is delegated to the containerd runtime), Docker
+// stores only the image config blob and DiffIDs; manifests and indexes are
+// never written to disk. Returning a constructed-but-nonexistent path would
+// surface a fabricated address in the UI and cause downstream consumers
+// (e.g. the Platforms view) to mis-detect the manifest as missing.
+//
+// We therefore probe the filesystem and return "" whenever the blob is not
+// present, leaving the caller free to render a clear "-" instead of a lie.
+func dockerClassicBlobPath(rt *Runtime, digest string) string {
+	if rt == nil || rt.daemonInfo == nil {
+		return ""
+	}
+	rootDir := strings.TrimSpace(rt.daemonInfo.DockerRootDir)
+	if rootDir == "" {
+		return ""
+	}
+	algorithm, encoded, ok := strings.Cut(strings.TrimSpace(digest), ":")
+	if !ok || algorithm == "" || encoded == "" {
+		return ""
+	}
+	path := filepath.Join(rootDir, "content", "data", "blobs", algorithm, encoded)
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	return path
 }
 
 func (h *imageHandle) Layers(ctx context.Context, query runtime.LayerQuery) ([]*runtime.ImageLayer, error) {
@@ -281,7 +379,44 @@ func normalizeOverlay2LayerDir(dir string) (overlay2LayerDir, bool) {
 		}
 		result.path = filepath.Clean(resolved)
 	}
+	// When the input dir was not itself a short-link path (e.g. UpperDir is
+	// always the absolute <cache_id>/diff, and on newer Docker LowerDir entries
+	// are also pre-resolved), fall back to the authoritative source: the
+	// "<cache_id>/link" file maintained by the overlay2 driver. Its single-line
+	// content is the short link ID; the corresponding "l/<id>" symlink is
+	// derived from it.
+	if result.shortLinkID == "" {
+		if id, linkPath := overlay2ReadLinkFile(result.path); id != "" {
+			result.shortLinkID = id
+			result.shortLinkPath = linkPath
+		}
+	}
 	return result, true
+}
+
+// overlay2ReadLinkFile reads "<cache_dir>/link" relative to a resolved diff
+// path (".../overlay2/<cache_id>/diff"). It returns the short link ID and the
+// "l/<id>" symlink path under the same overlay2 root, or empty strings when
+// the layout does not match.
+func overlay2ReadLinkFile(diffPath string) (string, string) {
+	cleaned := filepath.Clean(diffPath)
+	if filepath.Base(cleaned) != "diff" {
+		return "", ""
+	}
+	cacheDir := filepath.Dir(cleaned)
+	overlayRoot := filepath.Dir(cacheDir)
+	if filepath.Base(overlayRoot) != "overlay2" {
+		return "", ""
+	}
+	data, err := os.ReadFile(filepath.Join(cacheDir, "link"))
+	if err != nil {
+		return "", ""
+	}
+	id := strings.TrimSpace(string(data))
+	if id == "" {
+		return "", ""
+	}
+	return id, filepath.Join(overlayRoot, "l", id)
 }
 
 func overlay2ShortLink(path string) (string, string) {

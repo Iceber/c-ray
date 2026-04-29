@@ -318,6 +318,9 @@ func (v *ImageDetailView) setupLayout() {
 		if v.layersMergedOpen {
 			v.updateMergedHighlights()
 		}
+		if v.layersBrowserOpen {
+			v.followLayersBrowserSelection(node)
+		}
 	})
 
 	v.content = tview.NewPages()
@@ -840,19 +843,23 @@ func (v *ImageDetailView) renderPlatforms() {
 			}
 			node := components.NewTreeNode(nodeLabel).SetSelectable(true).SetExpanded(false)
 			node.AddChild(components.NewTreeNode("  " + gridKV("Digest", fallbackValue(m.Digest, "-"))).SetSelectable(true))
+			// Render Manifest and Config independently. In Docker classic
+			// graphdriver mode, the manifest blob is never persisted on disk
+			// while the config blob always is, so gating Config on the
+			// manifest's existence would hide the most useful field.
 			if pathExists(m.Path) {
 				manifestNode := components.NewTreeNode("  " + gridKV("Manifest", foldValue(m.Path))).SetSelectable(true)
 				manifestNode.SetReference(&platformsFileRef{Title: "Manifest — " + fallbackValue(m.Platform, "unknown"), Path: m.Path})
 				node.AddChild(manifestNode)
-				if pathExists(m.ConfigPath) {
-					configNode := components.NewTreeNode("  " + gridKV("Config", foldValue(m.ConfigPath))).SetSelectable(true)
-					configNode.SetReference(&platformsFileRef{Title: "Config — " + fallbackValue(m.Platform, "unknown"), Path: m.ConfigPath})
-					node.AddChild(configNode)
-				} else {
-					node.AddChild(components.NewTreeNode("  " + gridKV("Config", parsePathLabel(m.ConfigPath))).SetSelectable(true))
-				}
 			} else {
-				node.AddChild(components.NewTreeNode("  " + gridKV("Fetched to local", "False")).SetSelectable(true))
+				node.AddChild(components.NewTreeNode("  " + gridKV("Manifest", parsePathLabel(m.Path))).SetSelectable(true))
+			}
+			if pathExists(m.ConfigPath) {
+				configNode := components.NewTreeNode("  " + gridKV("Config", foldValue(m.ConfigPath))).SetSelectable(true)
+				configNode.SetReference(&platformsFileRef{Title: "Config — " + fallbackValue(m.Platform, "unknown"), Path: m.ConfigPath})
+				node.AddChild(configNode)
+			} else {
+				node.AddChild(components.NewTreeNode("  " + gridKV("Config", parsePathLabel(m.ConfigPath))).SetSelectable(true))
 			}
 			if pathExists(m.Path) {
 				for _, line := range parsedManifestHighlights(m.Path) {
@@ -1004,19 +1011,19 @@ func (v *ImageDetailView) renderLayers() {
 			components.ColorName(components.ColorFgMuted),
 			layer.Index,
 			components.Bright(shortID(id)),
-			components.Muted(formatBytes(layer.Size)),
+			components.Muted(formatBytes(layer.UsageSize)),
 		)).SetSelectable(true).SetExpanded(false)
 		node.SetReference(&imageLayerRef{layer: layer})
 
 		addField(node, "Compressed", layer.CompressedDigest)
 		addField(node, "Uncompressed", layer.UncompressedDigest)
-		node.AddChild(components.NewTreeNode("  " + gridKV("Compression", fallbackValue(layer.CompressionType, "-"))).SetSelectable(true))
 		if layer.Path != "" {
 			addField(node, "Path", layer.Path)
 		} else {
 			node.AddChild(components.NewTreeNode("  " + gridKV("Path", imageMissingPathMarker)).SetSelectable(true))
 		}
-		node.AddChild(components.NewTreeNode("  " + gridKV("Usage", fmt.Sprintf("%s / %d inodes", formatBytes(layer.UsageSize), layer.UsageInodes))).SetSelectable(true))
+		node.AddChild(components.NewTreeNode("  " + gridKV("Content Size", formatLayerContentSize(layer))).SetSelectable(true))
+		node.AddChild(components.NewTreeNode("  " + gridKV("Disk Usage", formatLayerUsage(layer))).SetSelectable(true))
 		if layer.Index < len(history) {
 			addField(node, "History", history[layer.Index])
 		}
@@ -1141,6 +1148,34 @@ func (v *ImageDetailView) closeLayersBrowser() {
 	v.app.SetFocus(v.layersView)
 	v.updateLayersFocusStyles()
 	v.updateFooter()
+}
+
+// followLayersBrowserSelection re-binds the open single-layer diff browser to
+// whatever layer is now selected in the layers tree. It is a no-op when the
+// current tree node is not a layer (e.g. a folded sub-field), keeping the
+// browser stable while navigating inside an expanded layer's children.
+func (v *ImageDetailView) followLayersBrowserSelection(node *tview.TreeNode) {
+	if node == nil {
+		return
+	}
+	ref, ok := node.GetReference().(*imageLayerRef)
+	if !ok || ref == nil || ref.layer == nil {
+		return
+	}
+	layer := ref.layer
+	if !dirExists(layer.Path) {
+		v.layersBrowserInfo.SetText(fmt.Sprintf(
+			" %s %s  %s",
+			components.Muted("Layer"), components.Bright(fmt.Sprintf("#%d", layer.Index)),
+			components.Muted("(diff path unavailable)"),
+		))
+		v.layersBrowserTree.SetRoot(components.NewTreeNode(
+			components.Muted(fmt.Sprintf("Layer #%d diff path is not accessible.", layer.Index)),
+		).SetSelectable(false))
+		v.layersBrowserPreview.SetText(" " + components.Muted("No file selected."))
+		return
+	}
+	v.initLayersBrowserTree(layer)
 }
 
 func (v *ImageDetailView) initLayersBrowserTree(layer *runtime.ImageLayer) {

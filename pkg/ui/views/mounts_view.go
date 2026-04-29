@@ -24,6 +24,7 @@ type MountsView struct {
 	container   runtime.Container
 	mounts      []*runtime.Mount
 	runtimePath string // rootfs path for the root mount display
+	loaded      bool   // true once Refresh has produced a (possibly empty) result
 	mu          sync.Mutex
 }
 
@@ -65,6 +66,7 @@ func (v *MountsView) SetContainer(c runtime.Container) {
 	v.container = c
 	v.mounts = nil
 	v.runtimePath = ""
+	v.loaded = false
 	v.mu.Unlock()
 	v.render()
 	v.updateStatusBar()
@@ -85,6 +87,7 @@ func (v *MountsView) Refresh(ctx context.Context) error {
 	if err != nil {
 		v.mu.Lock()
 		v.mounts = nil
+		v.loaded = false
 		v.mu.Unlock()
 		v.render()
 		return err
@@ -99,6 +102,7 @@ func (v *MountsView) Refresh(ctx context.Context) error {
 	v.mu.Lock()
 	v.mounts = mounts
 	v.runtimePath = runtimePath
+	v.loaded = true
 	v.mu.Unlock()
 	v.render()
 	v.updateStatusBar()
@@ -122,12 +126,16 @@ func (v *MountsView) render() {
 	mounts := make([]*runtime.Mount, len(v.mounts))
 	copy(mounts, v.mounts)
 	runtimePath := v.runtimePath
+	loaded := v.loaded
 	v.mu.Unlock()
 
 	root := components.NewTreeNode(components.Accent("Mounts")).SetSelectable(false).SetExpanded(true)
-	if len(mounts) == 0 {
+	switch {
+	case !loaded:
 		root.AddChild(components.NewTreeNode(components.Muted("Refresh to resolve mounts")).SetSelectable(false))
-	} else {
+	case len(mounts) == 0:
+		root.AddChild(components.NewTreeNode(components.Muted("No mounts reported by runtime")).SetSelectable(false))
+	default:
 		rootMount, userMounts, criMounts, runtimeMounts, otherMounts := splitMounts(mounts)
 		if rootMount != nil {
 			root.AddChild(buildMountNodeV1(rootMount, runtimePath))

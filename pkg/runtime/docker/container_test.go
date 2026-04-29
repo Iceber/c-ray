@@ -8,6 +8,7 @@ import (
 
 	dockertypes "github.com/docker/docker/api/types"
 	containertypes "github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/system"
 	pkgruntime "github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/icebergu/c-ray/pkg/sysinfo"
 )
@@ -285,4 +286,56 @@ func newTestDockerContainerHandleWithoutProc(t *testing.T) (*containerHandle, st
 	}
 
 	return rt.newContainerHandleFromInspect(inspect), upperDir, baseLayer
+}
+
+func TestDockerExecRootInferredFromBundledContainerdSocket(t *testing.T) {
+	di := &daemonInfo{ContainerdAddr: "/var/run/docker/containerd/containerd.sock"}
+	if got, want := dockerExecRoot(di), "/var/run/docker"; got != want {
+		t.Fatalf("dockerExecRoot = %q, want %q", got, want)
+	}
+}
+
+func TestDockerExecRootFallsBackToDefaultForExternalContainerd(t *testing.T) {
+	di := &daemonInfo{ContainerdAddr: "/run/containerd/containerd.sock"}
+	if got, want := dockerExecRoot(di), "/var/run/docker"; got != want {
+		t.Fatalf("dockerExecRoot = %q, want %q", got, want)
+	}
+}
+
+func TestDockerRuntimeStateDirUsesExecRootRuntimeNameLayout(t *testing.T) {
+	di := &daemonInfo{ContainerdAddr: "/var/run/docker/containerd/containerd.sock"}
+	const id = "67bf778b988444fa78d4cf02e120bf97359bd72ce797e660122d97da3fdb948f"
+
+	got := dockerRuntimeStateDir(di, "runc", "moby", id)
+	want := "/var/run/docker/runtime-runc/moby/" + id
+	if got != want {
+		t.Fatalf("dockerRuntimeStateDir = %q, want %q", got, want)
+	}
+}
+
+func TestDockerRuntimeStateDirHonoursRuntimeArgsRoot(t *testing.T) {
+	di := &daemonInfo{
+		ContainerdAddr: "/var/run/docker/containerd/containerd.sock",
+		Runtimes: map[string]system.RuntimeWithStatus{
+			"crun": {Runtime: system.Runtime{Args: []string{"--root", "/run/crun-state"}}},
+		},
+	}
+	got := dockerRuntimeStateDir(di, "crun", "moby", "abc")
+	want := "/run/crun-state/moby/abc"
+	if got != want {
+		t.Fatalf("dockerRuntimeStateDir = %q, want %q", got, want)
+	}
+}
+
+func TestDockerRuntimeStateDirHonoursRuntimeArgsRootEqualsForm(t *testing.T) {
+	di := &daemonInfo{
+		Runtimes: map[string]system.RuntimeWithStatus{
+			"crun": {Runtime: system.Runtime{Args: []string{"--root=/data/crun"}}},
+		},
+	}
+	got := dockerRuntimeStateDir(di, "crun", "moby", "abc")
+	want := "/data/crun/moby/abc"
+	if got != want {
+		t.Fatalf("dockerRuntimeStateDir = %q, want %q", got, want)
+	}
 }
