@@ -235,7 +235,7 @@ func BuildLiveExtraMount(live *runtime.Mount) *runtime.Mount {
 	m.LiveSource = live.Source
 	m.Origin = runtime.MountOriginLiveExtra
 	m.State = runtime.MountStateLiveOnly
-	m.Note = "live mountinfo entry outside CRI and spec declarations"
+	m.Note = "live mountinfo entry not declared by runtime or spec"
 	return m
 }
 

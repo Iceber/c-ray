@@ -638,7 +638,11 @@ func (h *containerHandle) Mounts(ctx context.Context) ([]*runtime.Mount, error) 
 	if h.inspectErr != nil {
 		return nil, h.inspectErr
 	}
-	return convertDockerMounts(h.inspect.Mounts), nil
+	return mergeDockerMounts(
+		convertDockerMounts(h.inspect.Mounts),
+		h.readSpecMounts(),
+		h.readLiveMounts(),
+	), nil
 }
 
 // ---------------------------------------------------------------------------

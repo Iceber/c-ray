@@ -8,6 +8,7 @@ import (
 
 	dockertypes "github.com/docker/docker/api/types"
 	containertypes "github.com/docker/docker/api/types/container"
+	mounttypes "github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/system"
 	pkgruntime "github.com/icebergu/c-ray/pkg/runtime"
 	"github.com/icebergu/c-ray/pkg/sysinfo"
@@ -101,6 +102,116 @@ func TestContainerRWLayerStatsFallsBackToLiveMountPath(t *testing.T) {
 	}
 	if stats.RWLayerInodes == 0 {
 		t.Fatal("RWLayerInodes = 0, want > 0")
+	}
+}
+
+func TestContainerMountsIncludesLiveOnlyNvidiaRuntimeMounts(t *testing.T) {
+	h, _, _ := newTestDockerContainerHandle(t)
+	h.inspect.Mounts = []dockertypes.MountPoint{
+		{
+			Type:        mounttypes.TypeBind,
+			Source:      "/host/data",
+			Destination: "/data",
+			RW:          true,
+		},
+	}
+
+	mounts, err := h.Mounts(context.Background())
+	if err != nil {
+		t.Fatalf("Mounts() error: %v", err)
+	}
+
+	var dataMount, nvidiaMount *pkgruntime.Mount
+	for _, m := range mounts {
+		switch m.Destination {
+		case "/data":
+			dataMount = m
+		case "/usr/bin/nvidia-smi":
+			nvidiaMount = m
+		}
+	}
+
+	if dataMount == nil {
+		t.Fatal("Docker inspect mount /data not found")
+	}
+	if dataMount.Origin != pkgruntime.MountOriginUser {
+		t.Fatalf("/data Origin = %s, want %s", dataMount.Origin, pkgruntime.MountOriginUser)
+	}
+	if nvidiaMount == nil {
+		t.Fatal("live NVIDIA mount /usr/bin/nvidia-smi not found")
+	}
+	if nvidiaMount.Origin != pkgruntime.MountOriginLiveExtra {
+		t.Fatalf("nvidia mount Origin = %s, want %s", nvidiaMount.Origin, pkgruntime.MountOriginLiveExtra)
+	}
+	if nvidiaMount.State != pkgruntime.MountStateLiveOnly {
+		t.Fatalf("nvidia mount State = %s, want %s", nvidiaMount.State, pkgruntime.MountStateLiveOnly)
+	}
+	if nvidiaMount.LiveSource != "/usr/bin/nvidia-smi" {
+		t.Fatalf("nvidia mount LiveSource = %s, want /usr/bin/nvidia-smi", nvidiaMount.LiveSource)
+	}
+}
+
+// TestContainerMountsClassifiesRuntimeDefaultsFromBundleSpec verifies that
+// mounts injected by runc / dockerd (procfs, sysfs, /etc/resolv.conf, ...) and
+// declared in the bundle's config.json — but absent from `docker inspect`'s
+// Mounts list — are surfaced as MountOriginRuntimeDefault rather than
+// MountOriginLiveExtra.
+func TestContainerMountsClassifiesRuntimeDefaultsFromBundleSpec(t *testing.T) {
+	h, _, _ := newTestDockerContainerHandle(t)
+
+	// Set up a fake containerd state dir so dockerBundleDir() can resolve.
+	stateDir := filepath.Join(t.TempDir(), "containerd")
+	bundleDir := filepath.Join(stateDir, "io.containerd.runtime.v2.task", "moby", h.inspect.ID)
+	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
+		t.Fatalf("mkdir bundle: %v", err)
+	}
+	specJSON := `{
+        "mounts": [
+            {"destination": "/proc", "type": "proc", "source": "proc"},
+            {"destination": "/sys", "type": "sysfs", "source": "sysfs", "options": ["ro"]},
+            {"destination": "/etc/resolv.conf", "type": "bind", "source": "/var/lib/docker/containers/x/resolv.conf", "options": ["bind"]},
+            {"destination": "/data", "type": "bind", "source": "/host/data", "options": ["rbind"]}
+        ]
+    }`
+	if err := os.WriteFile(filepath.Join(bundleDir, "config.json"), []byte(specJSON), 0o644); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	h.rt.daemonInfo = &daemonInfo{
+		ContainerdAddr: filepath.Join(stateDir, "containerd.sock"),
+		ContainerdNS:   map[string]string{"containers": "moby"},
+	}
+	h.inspect.Mounts = []dockertypes.MountPoint{
+		{
+			Type:        mounttypes.TypeBind,
+			Source:      "/host/data",
+			Destination: "/data",
+			RW:          true,
+		},
+	}
+
+	mounts, err := h.Mounts(context.Background())
+	if err != nil {
+		t.Fatalf("Mounts() error: %v", err)
+	}
+
+	got := make(map[string]*pkgruntime.Mount, len(mounts))
+	for _, m := range mounts {
+		got[m.Destination] = m
+	}
+
+	if dm := got["/data"]; dm == nil {
+		t.Fatal("/data mount missing")
+	} else if dm.Origin != pkgruntime.MountOriginUser {
+		t.Fatalf("/data Origin = %s, want %s", dm.Origin, pkgruntime.MountOriginUser)
+	}
+	for _, dest := range []string{"/proc", "/sys", "/etc/resolv.conf"} {
+		m := got[dest]
+		if m == nil {
+			t.Fatalf("expected runtime-default mount %s missing", dest)
+		}
+		if m.Origin != pkgruntime.MountOriginRuntimeDefault {
+			t.Fatalf("%s Origin = %s, want %s", dest, m.Origin, pkgruntime.MountOriginRuntimeDefault)
+		}
 	}
 }
 
@@ -214,7 +325,9 @@ func newTestDockerContainerHandle(t *testing.T) (*containerHandle, string, strin
 	if err := os.MkdirAll(pidDir, 0o755); err != nil {
 		t.Fatalf("failed to create proc dir: %v", err)
 	}
-	mountinfo := "1746 1246 0:259 / / rw,relatime - overlay overlay rw,lowerdir=" + lowerTop + ":" + baseLayer + ",upperdir=" + upperDir + ",workdir=" + workDir + "\n"
+	mountinfo := "" +
+		"1746 1246 0:259 / / rw,relatime - overlay overlay rw,lowerdir=" + lowerTop + ":" + baseLayer + ",upperdir=" + upperDir + ",workdir=" + workDir + "\n" +
+		"1750 1746 8:1 /usr/bin/nvidia-smi /usr/bin/nvidia-smi ro,relatime - ext4 /usr/bin/nvidia-smi ro\n"
 	if err := os.WriteFile(filepath.Join(pidDir, "mountinfo"), []byte(mountinfo), 0o644); err != nil {
 		t.Fatalf("failed to write mountinfo: %v", err)
 	}
