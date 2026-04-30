@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/runtime"
@@ -23,20 +26,41 @@ type runtimePathRef struct {
 	Path  string
 }
 
+// runtimeBrowserEntry is the per-node payload for the runtime preview
+// browser tree. It mirrors the structure used by the layer browser so users
+// can expand directories and inspect individual files.
+type runtimeBrowserEntry struct {
+	path    string
+	isDir   bool
+	loaded  bool
+	isError bool
+}
+
 // previewMaxBytes caps the amount of file content loaded into the preview pane.
-const runtimePreviewMaxBytes = 64 * 1024
+const runtimePreviewMaxBytes = 512 * 1024
+
+// runtime preview focus targets.
+const (
+	runtimeFocusTree    = 0
+	runtimeFocusBrowser = 1
+	runtimeFocusContent = 2
+)
 
 // RuntimeInfoView renders the Runtime page.
 type RuntimeInfoView struct {
 	*tview.Flex
 
 	app         *tview.Application
-	body        *tview.Flex // tree | preview
+	body        *tview.Flex // tree | rightPane
+	rightPane   *tview.Flex // browserTree / preview
 	tree        *tview.TreeView
+	browserTree *tview.TreeView
 	preview     *tview.TextView
 	statusBar   *tview.TextView
 	container   runtime.Container
 	previewOpen bool
+	focus       int // runtimeFocus*
+	currentRef  *runtimePathRef
 	mu          sync.Mutex
 }
 
@@ -63,6 +87,18 @@ func NewRuntimeInfoView(app *tview.Application) *RuntimeInfoView {
 	v.preview.SetBorder(true).SetBorderColor(components.ColorFgBorder)
 	v.preview.SetTitle(fmt.Sprintf(" %s ", components.Accent("Preview"))).SetTitleAlign(tview.AlignLeft)
 	v.preview.SetBackgroundColor(components.ColorBg)
+
+	v.browserTree = tview.NewTreeView()
+	components.InitTreeView(v.browserTree)
+	v.browserTree.SetBorder(true).SetBorderColor(components.ColorFgBorder)
+	v.browserTree.SetTitle(fmt.Sprintf(" %s ", components.Accent("Browser"))).SetTitleAlign(tview.AlignLeft)
+	v.browserTree.SetRoot(components.NewTreeNode(components.Muted("No path selected")).SetSelectable(false))
+	v.browserTree.SetSelectedFunc(func(node *tview.TreeNode) { v.toggleBrowserNode(node) })
+	v.browserTree.SetChangedFunc(func(node *tview.TreeNode) { v.renderBrowserPreview(node) })
+
+	v.rightPane = tview.NewFlex().SetDirection(tview.FlexRow)
+	v.rightPane.AddItem(v.browserTree, 0, 2, false)
+	v.rightPane.AddItem(v.preview, 0, 3, false)
 
 	v.body = tview.NewFlex().SetDirection(tview.FlexColumn)
 	v.body.AddItem(v.tree, 0, 1, true)
@@ -121,18 +157,105 @@ func (v *RuntimeInfoView) renderError(err error) {
 
 // HandleInput processes tree interaction.
 func (v *RuntimeInfoView) HandleInput(event *tcell.EventKey) *tcell.EventKey {
+	if event == nil {
+		return event
+	}
 	if event.Rune() == 'p' || event.Rune() == 'P' {
 		v.togglePreview()
 		return nil
+	}
+	// Tab / Shift+Tab cycle focus between tree, browser tree and preview content
+	// while the preview pane is open, so each pane can use its own keyboard
+	// navigation (browser: arrows + Enter to expand; preview: PgUp/PgDn etc.).
+	if v.previewOpen && (event.Key() == tcell.KeyTab || event.Key() == tcell.KeyBacktab) {
+		v.cyclePreviewFocus(event.Key() == tcell.KeyBacktab)
+		return nil
+	}
+	switch v.focus {
+	case runtimeFocusBrowser:
+		return v.handleBrowserInput(event)
+	case runtimeFocusContent:
+		// Forward all keys to the TextView so its scroll handlers run.
+		return event
 	}
 	return components.HandleTreeInput(event, v.tree, v.expandAll, func(node *tview.TreeNode) {
 		v.updatePreview(node)
 	})
 }
 
-// GetFocusPrimitive returns the tree focus target.
+// handleBrowserInput routes keys for the right-pane browser tree.
+func (v *RuntimeInfoView) handleBrowserInput(event *tcell.EventKey) *tcell.EventKey {
+	switch event.Key() {
+	case tcell.KeyEnter:
+		v.toggleBrowserNode(v.browserTree.GetCurrentNode())
+		return nil
+	}
+	switch event.Rune() {
+	case 'e', 'E':
+		v.toggleBrowserNode(v.browserTree.GetCurrentNode())
+		return nil
+	case 'a', 'A':
+		if root := v.browserTree.GetRoot(); root != nil {
+			// Lazy-load any unloaded directory descendants before expanding.
+			v.loadAllBrowserChildren(root)
+			components.ExpandAllNodes(root)
+		}
+		return nil
+	}
+	return event
+}
+
+// GetFocusPrimitive returns the current focus target for this view.
 func (v *RuntimeInfoView) GetFocusPrimitive() tview.Primitive {
-	return v.tree
+	if !v.previewOpen {
+		return v.tree
+	}
+	switch v.focus {
+	case runtimeFocusBrowser:
+		return v.browserTree
+	case runtimeFocusContent:
+		return v.preview
+	default:
+		return v.tree
+	}
+}
+
+// cyclePreviewFocus advances focus through tree → browser → content (or reverse).
+func (v *RuntimeInfoView) cyclePreviewFocus(reverse bool) {
+	if !v.previewOpen {
+		v.focus = runtimeFocusTree
+		return
+	}
+	step := 1
+	if reverse {
+		step = -1
+	}
+	v.focus = ((v.focus + step) + 3) % 3
+	v.applyPreviewFocusStyle()
+	if v.app != nil {
+		v.app.SetFocus(v.GetFocusPrimitive())
+	}
+	v.updateStatusBar()
+}
+
+// applyPreviewFocusStyle highlights whichever pane currently owns focus.
+func (v *RuntimeInfoView) applyPreviewFocusStyle() {
+	components.ApplyTreeFocusStyle(v.tree, v.focus == runtimeFocusTree)
+	if v.previewOpen {
+		components.ApplyTreeFocusStyle(v.browserTree, v.focus == runtimeFocusBrowser)
+	} else {
+		components.ApplyTreeFocusStyle(v.browserTree, false)
+	}
+	v.browserTree.SetBorderColor(components.ColorFgBorder)
+	v.preview.SetBorderColor(components.ColorFgBorder)
+	if v.previewOpen {
+		switch v.focus {
+		case runtimeFocusBrowser:
+			v.browserTree.SetBorderColor(components.ColorFgAccent)
+		case runtimeFocusContent:
+			v.preview.SetBorderColor(components.ColorFgAccent)
+		}
+	}
 }
 
 func (v *RuntimeInfoView) renderEmpty() {
@@ -170,79 +293,272 @@ func (v *RuntimeInfoView) expandAll() {
 	v.tree.SetCurrentNode(root)
 }
 
-// togglePreview shows or hides the preview pane next to the tree.
+// togglePreview shows or hides the right-side browser + preview pane.
 func (v *RuntimeInfoView) togglePreview() {
 	v.previewOpen = !v.previewOpen
 	v.body.Clear()
 	v.body.AddItem(v.tree, 0, 1, true)
 	if v.previewOpen {
-		v.body.AddItem(v.preview, 0, 1, false)
+		v.body.AddItem(v.rightPane, 0, 1, false)
+		v.currentRef = nil
 		v.updatePreview(v.tree.GetCurrentNode())
+	} else {
+		// Closing the preview returns focus to the main tree.
+		v.focus = runtimeFocusTree
+		if v.app != nil {
+			v.app.SetFocus(v.tree)
+		}
 	}
+	v.applyPreviewFocusStyle()
 	v.updateStatusBar()
 }
 
-// updatePreview refreshes the preview pane content for the given tree node.
-// It is a no-op when the preview pane is hidden.
+// updatePreview synchronises the right pane with the currently selected node
+// in the main runtime tree. It is a no-op when the pane is hidden.
 func (v *RuntimeInfoView) updatePreview(node *tview.TreeNode) {
 	if !v.previewOpen {
 		return
 	}
 	if node == nil {
+		v.currentRef = nil
+		v.resetBrowserMessage("Select a path field to browse its content.")
 		v.preview.SetTitle(fmt.Sprintf(" %s ", components.Accent("Preview")))
 		v.preview.SetText(" " + components.Muted("Select a path field to preview its content."))
+		v.preview.ScrollToBeginning()
 		return
 	}
 	ref, ok := node.GetReference().(*runtimePathRef)
 	if !ok || ref == nil || ref.Path == "" {
+		v.currentRef = nil
+		v.resetBrowserMessage("Selected node has no associated path.")
 		v.preview.SetTitle(fmt.Sprintf(" %s ", components.Accent("Preview")))
 		v.preview.SetText(" " + components.Muted("Selected node has no associated path."))
+		v.preview.ScrollToBeginning()
 		return
 	}
-	v.preview.SetTitle(fmt.Sprintf(" %s %s ", components.Accent(ref.Title), components.Muted(ref.Path)))
-	v.preview.SetText(loadRuntimePathPreview(ref.Path))
+	// Avoid rebuilding the browser tree when the same path is reselected, so
+	// the user's expansion state is preserved.
+	if v.currentRef != nil && v.currentRef.Path == ref.Path && v.currentRef.Title == ref.Title {
+		return
+	}
+	v.currentRef = ref
+	v.rebuildBrowser(ref)
+}
+
+// resetBrowserMessage replaces the browser tree with a single non-selectable
+// placeholder line.
+func (v *RuntimeInfoView) resetBrowserMessage(msg string) {
+	root := components.NewTreeNode(components.Muted(msg)).SetSelectable(false)
+	v.browserTree.SetRoot(root).SetCurrentNode(root)
+	v.browserTree.SetTitle(fmt.Sprintf(" %s ", components.Accent("Browser")))
+}
+
+// rebuildBrowser populates the browser tree with the path referenced by the
+// current main-tree selection. Directories lazily expand on demand.
+func (v *RuntimeInfoView) rebuildBrowser(ref *runtimePathRef) {
+	info, err := os.Stat(ref.Path)
+	if err != nil {
+		root := components.NewTreeNode(fmt.Sprintf("[%s]%s[-]",
+			components.ColorName(components.ColorFgError),
+			fmt.Sprintf("stat %s: %v", ref.Path, err))).
+			SetSelectable(true).SetReference(&runtimeBrowserEntry{path: ref.Path, isError: true})
+		v.browserTree.SetRoot(root).SetCurrentNode(root)
+		v.browserTree.SetTitle(fmt.Sprintf(" %s %s ", components.Accent(ref.Title), components.Muted(ref.Path)))
+		v.preview.SetTitle(fmt.Sprintf(" %s ", components.Accent("Preview")))
+		v.preview.SetText(fmt.Sprintf(" [%s]%v[-]", components.ColorName(components.ColorFgError), err))
+		v.preview.ScrollToBeginning()
+		return
+	}
+	entry := &runtimeBrowserEntry{path: ref.Path, isDir: info.IsDir()}
+	label := filepath.Base(ref.Path)
+	if label == "" || label == "." {
+		label = ref.Path
+	}
+	if entry.isDir {
+		label += "/"
+	}
+	root := components.NewTreeNode(runtimeBrowserNodeText(label, entry.isDir)).
+		SetSelectable(true).SetExpanded(true).SetReference(entry)
+	if entry.isDir {
+		v.loadBrowserChildren(root, entry)
+	}
+	v.browserTree.SetRoot(root).SetCurrentNode(root)
+	v.browserTree.SetTitle(fmt.Sprintf(" %s %s ", components.Accent(ref.Title), components.Muted(ref.Path)))
+	v.renderBrowserPreview(root)
+}
+
+// runtimeBrowserNodeText formats a browser tree node label.
+func runtimeBrowserNodeText(name string, isDir bool) string {
+	if isDir {
+		return fmt.Sprintf("[%s]%s[-]", components.ColorName(components.ColorFgAccentAlt), name)
+	}
+	return name
+}
+
+// toggleBrowserNode expands/collapses a directory node or refreshes the file
+// preview for a leaf node.
+func (v *RuntimeInfoView) toggleBrowserNode(node *tview.TreeNode) {
+	if node == nil {
+		return
+	}
+	entry, _ := node.GetReference().(*runtimeBrowserEntry)
+	if entry == nil || !entry.isDir {
+		v.renderBrowserPreview(node)
+		return
+	}
+	v.loadBrowserChildren(node, entry)
+	node.SetExpanded(!node.IsExpanded())
+	v.renderBrowserPreview(node)
+}
+
+// loadBrowserChildren lazily reads directory entries the first time a
+// directory node is touched.
+func (v *RuntimeInfoView) loadBrowserChildren(node *tview.TreeNode, entry *runtimeBrowserEntry) {
+	if node == nil || entry == nil || !entry.isDir || entry.loaded {
+		return
+	}
+	node.ClearChildren()
+	entries, err := os.ReadDir(entry.path)
+	if err != nil {
+		node.AddChild(components.NewTreeNode(fmt.Sprintf("[%s]%v[-]",
+			components.ColorName(components.ColorFgError), err)).SetSelectable(false))
+		entry.loaded = true
+		return
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].IsDir() != entries[j].IsDir() {
+			return entries[i].IsDir()
+		}
+		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
+	})
+	for _, de := range entries {
+		childPath := filepath.Join(entry.path, de.Name())
+		isDir := de.IsDir()
+		// Resolve symlinks one level so the user can still drill into them
+		// when they point at directories.
+		if !isDir && de.Type()&os.ModeSymlink != 0 {
+			if st, err := os.Stat(childPath); err == nil && st.IsDir() {
+				isDir = true
+			}
+		}
+		name := de.Name()
+		if isDir {
+			name += "/"
+		}
+		childEntry := &runtimeBrowserEntry{path: childPath, isDir: isDir}
+		childNode := components.NewTreeNode(runtimeBrowserNodeText(name, isDir)).
+			SetSelectable(true).SetExpanded(false).SetReference(childEntry)
+		node.AddChild(childNode)
+	}
+	entry.loaded = true
+}
+
+// loadAllBrowserChildren walks the browser tree, lazily loading every
+// directory it encounters so an "expand all" can take effect.
+func (v *RuntimeInfoView) loadAllBrowserChildren(node *tview.TreeNode) {
+	if node == nil {
+		return
+	}
+	if entry, ok := node.GetReference().(*runtimeBrowserEntry); ok && entry != nil && entry.isDir {
+		v.loadBrowserChildren(node, entry)
+	}
+	for _, child := range node.GetChildren() {
+		v.loadAllBrowserChildren(child)
+	}
+}
+
+// renderBrowserPreview updates the preview pane to reflect the currently
+// selected node in the browser tree.
+func (v *RuntimeInfoView) renderBrowserPreview(node *tview.TreeNode) {
+	if !v.previewOpen || node == nil {
+		return
+	}
+	entry, _ := node.GetReference().(*runtimeBrowserEntry)
+	if entry == nil {
+		v.preview.SetTitle(fmt.Sprintf(" %s ", components.Accent("Preview")))
+		v.preview.SetText(" " + components.Muted("No selection"))
+		v.preview.ScrollToBeginning()
+		return
+	}
+	if entry.isError {
+		return
+	}
+	if entry.isDir {
+		v.preview.SetTitle(fmt.Sprintf(" %s %s ", components.Accent("Directory"), components.Muted(entry.path)))
+		v.preview.SetText(formatRuntimeDirSummary(entry.path))
+		v.preview.ScrollToBeginning()
+		return
+	}
+	v.preview.SetTitle(fmt.Sprintf(" %s %s ", components.Accent("Preview"), components.Muted(filepath.Base(entry.path))))
+	v.preview.SetText(loadRuntimeFilePreview(entry.path))
 	v.preview.ScrollToBeginning()
 }
 
-// loadRuntimePathPreview reads the file/dir at path and returns formatted
-// preview content. For directories it returns a sorted entry listing; for
-// regular files it returns the first runtimePreviewMaxBytes bytes (JSON
-// pretty-printed when applicable).
-func loadRuntimePathPreview(path string) string {
+// formatRuntimeDirSummary returns a metadata header + sorted listing for path.
+func formatRuntimeDirSummary(path string) string {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Sprintf(" [%s]%v[-]", components.ColorName(components.ColorFgError), err)
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].IsDir() != entries[j].IsDir() {
+			return entries[i].IsDir()
+		}
+		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
+	})
+	var b strings.Builder
+	fmt.Fprintf(&b, " %s\n", components.Muted(fmt.Sprintf("Directory · %d entries", len(entries))))
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() {
+			name += "/"
+		}
+		info, err := e.Info()
+		if err == nil && !e.IsDir() {
+			fmt.Fprintf(&b, " %s  %s\n", formatBytesPad(info.Size(), 10), name)
+		} else {
+			fmt.Fprintf(&b, " %s  %s\n", strings.Repeat(" ", 10), name)
+		}
+	}
+	return b.String()
+}
+
+// formatBytesPad returns formatBytes left-padded to width for column alignment.
+func formatBytesPad(n int64, width int) string {
+	s := formatBytes(n)
+	if len(s) >= width {
+		return s
+	}
+	return strings.Repeat(" ", width-len(s)) + s
+}
+
+// loadRuntimeFilePreview reads a file and returns formatted preview text.
+// JSON files are pretty-printed; binary content is suppressed.
+func loadRuntimeFilePreview(path string) string {
 	st, err := os.Stat(path)
 	if err != nil {
-		return fmt.Sprintf(" [%s]stat error: %v[-]", components.ColorName(components.ColorFgError), err)
+		return fmt.Sprintf(" [%s]%v[-]", components.ColorName(components.ColorFgError), err)
 	}
-	if st.IsDir() {
-		entries, err := os.ReadDir(path)
-		if err != nil {
-			return fmt.Sprintf(" [%s]readdir error: %v[-]", components.ColorName(components.ColorFgError), err)
-		}
-		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-		var b strings.Builder
-		fmt.Fprintf(&b, " %s\n", components.Muted(fmt.Sprintf("Directory · %d entries", len(entries))))
-		for _, e := range entries {
-			marker := " "
-			if e.IsDir() {
-				marker = "/"
-			}
-			fmt.Fprintf(&b, " %s%s\n", e.Name(), marker)
-		}
-		return b.String()
+	if st.Size() > runtimePreviewMaxBytes {
+		return fmt.Sprintf(" %s\n %s",
+			components.KV("Size:", formatBytes(st.Size())),
+			components.Muted(fmt.Sprintf("File too large to preview (limit %s)", formatBytes(runtimePreviewMaxBytes))))
 	}
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Sprintf(" [%s]open error: %v[-]", components.ColorName(components.ColorFgError), err)
 	}
 	defer f.Close()
-	buf := make([]byte, runtimePreviewMaxBytes)
-	n, _ := f.Read(buf)
-	data := buf[:n]
-	// Refuse to render obvious binaries.
-	if bytes.IndexByte(data, 0) >= 0 {
-		return fmt.Sprintf(" %s (%d bytes shown)", components.Muted("[binary content suppressed]"), n)
+	data, err := io.ReadAll(io.LimitReader(f, runtimePreviewMaxBytes+1))
+	if err != nil {
+		return fmt.Sprintf(" [%s]read error: %v[-]", components.ColorName(components.ColorFgError), err)
 	}
-	// Pretty-print JSON when applicable.
+	if int64(len(data)) > runtimePreviewMaxBytes {
+		data = data[:runtimePreviewMaxBytes]
+	}
+	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
+		return fmt.Sprintf(" %s (%s)", components.Muted("[binary content suppressed]"), formatBytes(st.Size()))
+	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
 		var pretty bytes.Buffer
@@ -250,8 +566,8 @@ func loadRuntimePathPreview(path string) string {
 			return pretty.String()
 		}
 	}
-	if int64(n) < st.Size() {
-		return string(data) + fmt.Sprintf("\n\n %s", components.Muted(fmt.Sprintf("[truncated; showing %d of %d bytes]", n, st.Size())))
+	if int64(len(data)) < st.Size() {
+		return string(data) + fmt.Sprintf("\n\n %s", components.Muted(fmt.Sprintf("[truncated; showing %d of %d bytes]", len(data), st.Size())))
 	}
 	return string(data)
 }
@@ -261,12 +577,31 @@ func (v *RuntimeInfoView) updateStatusBar() {
 	if v.previewOpen {
 		previewHint = components.KeyHint("p", "close preview")
 	}
-	v.statusBar.SetText(fmt.Sprintf(
-		" %s  |  %s  %s  %s",
-		components.Muted("Runtime: shim, OCI runtime and namespace anchors"),
+	hints := []string{
 		components.KeyHint("e", "toggle"),
 		components.KeyHint("a", "expand/collapse"),
 		previewHint,
+	}
+	if v.previewOpen {
+		switch v.focus {
+		case runtimeFocusBrowser:
+			hints = append(hints,
+				components.KeyHint("Tab", "focus content"),
+				components.KeyHint("Enter", "open dir/file"),
+			)
+		case runtimeFocusContent:
+			hints = append(hints,
+				components.KeyHint("Tab", "focus tree"),
+				components.KeyHint("↑/↓ PgUp/PgDn", "scroll"),
+			)
+		default:
+			hints = append(hints, components.KeyHint("Tab", "focus browser"))
+		}
+	}
+	v.statusBar.SetText(fmt.Sprintf(
+		" %s  |  %s",
+		components.Muted("Runtime: shim, OCI runtime and namespace anchors"),
+		strings.Join(hints, "  "),
 	))
 }
 

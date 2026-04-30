@@ -254,14 +254,21 @@ func (v *ContainerDetailView) HandleInput(event *tcell.EventKey) *tcell.EventKey
 		}
 		return nil
 	case tcell.KeyTab:
-		// Give the active subview first chance to consume Tab (e.g. layer browser pane switch).
+		// Give the active subview first chance to consume Tab (e.g. layer browser pane switch
+		// or runtime preview focus toggle).
 		if v.activeTab == DetailTabFilesystem && v.filesystemView.HandleInput(event) == nil {
+			return nil
+		}
+		if v.activeTab == DetailTabRuntime && v.runtimeView.HandleInput(event) == nil {
 			return nil
 		}
 		v.switchTab((v.activeTab + 1) % 5)
 		return nil
 	case tcell.KeyBacktab:
 		if v.activeTab == DetailTabFilesystem && v.filesystemView.HandleInput(event) == nil {
+			return nil
+		}
+		if v.activeTab == DetailTabRuntime && v.runtimeView.HandleInput(event) == nil {
 			return nil
 		}
 		v.switchTab((v.activeTab + 4) % 5)
