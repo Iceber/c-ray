@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"syscall"
 
 	"github.com/icebergu/c-ray/pkg/runtime"
@@ -49,6 +50,7 @@ func main() {
 	flag.StringVar(&namespace, "namespace", os.Getenv("CONTAINERD_NAMESPACE"), "containerd namespace (auto: k8s.io for CRI-enabled containerd, default for plain containerd)")
 	flag.IntVar(&timeout, "timeout", defaultTimeout, "connection timeout in seconds")
 	flag.Parse()
+	socketPath = strings.TrimPrefix(socketPath, "unix://")
 
 	args := flag.Args()
 

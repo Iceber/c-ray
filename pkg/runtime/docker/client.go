@@ -69,7 +69,7 @@ func (r *Runtime) Connect(ctx context.Context) error {
 		dockerclient.WithAPIVersionNegotiation(),
 	}
 	if r.config.SocketPath != "" {
-		opts = append(opts, dockerclient.WithHost("unix://"+r.config.SocketPath))
+		opts = append(opts, dockerclient.WithHost("unix://" + r.config.SocketPath))
 	} else {
 		opts = append(opts, dockerclient.FromEnv)
 	}

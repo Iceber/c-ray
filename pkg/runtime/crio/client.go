@@ -88,7 +88,7 @@ func (r *Runtime) Connect(ctx context.Context) error {
 
 	// Establish CRI connection for supplementary runtime data.
 	// grpc.NewClient connects lazily on first RPC; verify reachability with Version.
-	conn, err := grpc.NewClient(r.config.SocketPath,
+	conn, err := grpc.NewClient("unix://"+r.config.SocketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", r.config.SocketPath)

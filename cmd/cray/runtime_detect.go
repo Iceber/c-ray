@@ -151,7 +151,7 @@ func probeCRISocket(socketPath string) bool {
 	defer cancel()
 
 	conn, err := grpc.NewClient(
-		socketPath,
+		"unix://"+socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
@@ -172,7 +172,7 @@ func probeDockerSocket(socketPath string) bool {
 
 	cli, err := dockerclient.NewClientWithOpts(
 		dockerclient.WithAPIVersionNegotiation(),
-		dockerclient.WithHost("unix://"+socketPath),
+		dockerclient.WithHost("unix://" + socketPath),
 	)
 	if err != nil {
 		return false

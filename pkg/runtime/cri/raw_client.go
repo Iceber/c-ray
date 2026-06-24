@@ -188,7 +188,7 @@ func (c *Client) InspectContainerMounts(ctx context.Context, containerID string)
 	}
 
 	conn, err := grpc.NewClient(
-		c.socketPath,
+		"unix://"+c.socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(unixDialer),
 	)
@@ -232,7 +232,7 @@ func (c *Client) InspectContainerStatus(ctx context.Context, containerID string)
 	}
 
 	conn, err := grpc.NewClient(
-		c.socketPath,
+		"unix://"+c.socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(unixDialer),
 	)
@@ -263,7 +263,7 @@ func (c *Client) InspectPodSandboxNetwork(ctx context.Context, sandboxID string)
 	}
 
 	conn, err := grpc.NewClient(
-		c.socketPath,
+		"unix://"+c.socketPath,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(unixDialer),
 	)
