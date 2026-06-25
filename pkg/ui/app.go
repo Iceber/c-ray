@@ -3,6 +3,11 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"sync"
+	"sync/atomic"
+	"syscall"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/icebergu/c-ray/pkg/runtime"
@@ -19,6 +24,8 @@ type App struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	nav      *Navigator
+	stopOnce sync.Once
+	stopping atomic.Bool
 
 	mainView   *views.MainView
 	detailView *views.ContainerDetailView
@@ -36,10 +43,23 @@ func NewApp(rt runtime.Runtime) *App {
 		cancel:   cancel,
 	}
 	views.TrackApplicationLifecycle(app.tviewApp)
+	app.stopAfterFirstDraw()
 	app.nav = NewNavigator(app.tviewApp, app.pages)
 	app.setupUI()
 	app.setupKeybindings()
 	return app
+}
+
+func (a *App) stopAfterFirstDraw() {
+	previous := a.tviewApp.GetAfterDrawFunc()
+	a.tviewApp.SetAfterDrawFunc(func(screen tcell.Screen) {
+		if previous != nil {
+			previous(screen)
+		}
+		if a.stopping.Load() {
+			go a.tviewApp.Stop()
+		}
+	})
 }
 
 func (a *App) setupUI() {
@@ -186,6 +206,24 @@ func (a *App) Run() error {
 	if err := a.runtime.Connect(a.ctx); err != nil {
 		return fmt.Errorf("failed to connect to runtime: %w", err)
 	}
+	defer a.Stop()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGQUIT)
+	defer func() {
+		signal.Stop(sigCh)
+		close(sigCh)
+	}()
+	go func() {
+		for range sigCh {
+			a.Stop()
+			return
+		}
+	}()
+	if a.stopping.Load() {
+		return nil
+	}
+
 	a.mainView.StartAutoRefresh()
 	go a.mainView.RefreshAll()
 	return a.tviewApp.Run()
@@ -193,14 +231,17 @@ func (a *App) Run() error {
 
 // Stop stops the application.
 func (a *App) Stop() {
-	if a.mainView != nil {
-		a.mainView.StopAutoRefresh()
-	}
-	if a.detailView != nil {
-		a.detailView.Leave()
-	}
-	a.cancel()
-	a.runtime.Close()
-	views.UntrackApplicationLifecycle(a.tviewApp)
+	a.stopping.Store(true)
+	a.stopOnce.Do(func() {
+		if a.mainView != nil {
+			a.mainView.StopAutoRefresh()
+		}
+		if a.detailView != nil {
+			a.detailView.Leave()
+		}
+		a.cancel()
+		a.runtime.Close()
+		views.UntrackApplicationLifecycle(a.tviewApp)
+	})
 	a.tviewApp.Stop()
 }
